@@ -1,6 +1,6 @@
 # Hexata GUI
 
-A lightweight, keyboard-first GUI for playing and analyzing Hex with the [KataHex](https://www.hexwiki.net/index.php/KataHex) engine. Built with substantial AI assistance.
+A lightweight, keyboard-first GUI for analyzing Hex with the [KataHex](https://www.hexwiki.net/index.php/KataHex) engine. Built with substantial AI assistance.
 
 ![GUI example](ex1.png)
 
@@ -8,7 +8,7 @@ A lightweight, keyboard-first GUI for playing and analyzing Hex with the [KataHe
 - Interactive board with optional move numbers and drag-to-move editing.
 - Live engine analysis overlays (winrate/visits, priors, candidates, Elo view).
 - Dedicated candidate search mode with automatic switching.
-- Move list panel with undo/redo and navigation (HexWorld-style shortcuts).
+- Move list panel with undo/redo and navigation ([HexWorld](https://hexworld.org/board/#14c1)-style shortcuts).
 - Clipboard import/export to HexWorld.
 - Adjustable board size and analysis noise.
 - Fast, responsive feel with low engine and UI latency.
@@ -38,7 +38,7 @@ A lightweight, keyboard-first GUI for playing and analyzing Hex with the [KataHe
 ## Notes on tricky parts
 A few implementation details were tricky to get right and are useful background for understanding the design:
 - Three coordinate systems are in play: GUI board coordinates, engine play coordinates, and KataHex analyze tokens.
-- Engine analysis output isn’t cleanly synchronized. The GUI uses a minimal handshake (mute until the first "=" after `kata-analyze`) to keep latency low while avoiding mixed roots.
+- KataHex uses a nonstandard GTP-ish dialect. The GUI uses a minimal handshake (mute until the first "=" after `kata-analyze`) to keep latency low while avoiding analysis leakage.
 - Candidate search isn’t a native KataHex mode. The GUI simulates it by cycling candidates as temporary roots and collecting per-candidate results, but because each position is evaluated from scratch (with only partial internal caching), the switching policy needs to reduce wasted rebuild time and make steady progress per candidate.
 - Candidate search runs with analysisWideRootNoise set to 0, matching non-root analysis behavior for cleaner comparisons.
 
