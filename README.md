@@ -5,7 +5,7 @@ A lightweight, keyboard-first GUI for playing and analyzing Hex with the [KataHe
 ![GUI example](ex1.png)
 
 ## Main features
-- Interactive board with hover, drag-to-move, and move numbers.
+- Interactive board with optional move numbers and drag-to-move editing.
 - Live engine analysis overlays (winrate/visits, priors, candidates, Elo view).
 - Dedicated candidate search mode with automatic switching.
 - Move list panel with undo/redo and navigation (HexWorld-style shortcuts).
@@ -36,7 +36,7 @@ A lightweight, keyboard-first GUI for playing and analyzing Hex with the [KataHe
 - `hexworld.py`: HexWorld import/export parsing utilities.
 
 ## Notes on tricky parts
-Building this GUI surfaced a few non-obvious challenges that are worth knowing before diving into the code:
+A few implementation details were tricky to get right and are useful background for understanding the design:
 - Three coordinate systems are in play: GUI board coordinates, engine play coordinates, and KataHex analyze tokens.
 - Engine analysis output isn’t cleanly synchronized. The GUI uses a minimal handshake (mute until the first "=" after `kata-analyze`) to keep latency low while avoiding mixed roots.
 - Candidate search isn’t a native KataHex mode. The GUI simulates it by cycling candidates as temporary roots and collecting per-candidate results, but because each position is evaluated from scratch (with only partial internal caching), the switching policy needs to reduce wasted rebuild time and make steady progress per candidate.
