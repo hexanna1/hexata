@@ -378,7 +378,7 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
                         else:
                             t = clamp01(cand_wr) ** 0.9
                             fill = lerp_rgb(CANDIDATE_LOW, CANDIDATE_HIGH, t)
-                        if app.candidate_current == (col, row):
+                        if app.candidate_run is not None and app.candidate_run.key == (col, row):
                             fill = CANDIDATE_ACTIVE
                     elif show_prior:
                         pr = prior_map.get((col, row))
@@ -658,7 +658,9 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
             (analysis_txt, analysis_color),
         ]
         if app.candidates:
-            cand_key = app.candidate_current or ui.last_cand_display
+            cand_key = (
+                app.candidate_run.key if app.candidate_run is not None else ui.last_cand_display
+            )
             if cand_key is None:
                 next_keys = core.sorted_candidates_by_visits()
                 cand_key = next_keys[0] if next_keys else None
@@ -921,8 +923,8 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
         # Snapshot live analysis for this position so undo/redo can instantly display cached overlays.
         now = time.monotonic()
         core.tick(now)
-        if app.candidate_current is not None:
-            ui.last_cand_display = app.candidate_current
+        if app.candidate_run is not None:
+            ui.last_cand_display = app.candidate_run.key
 
         pressed = pygame.key.get_pressed()
         show_prior = bool(pressed[pygame.K_t])

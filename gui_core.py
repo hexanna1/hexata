@@ -9,6 +9,14 @@ from hexworld import parse_hexworld_position
 
 
 @dataclass
+class CandidateRun:
+    key: Tuple[int, int]
+    base_visits: int
+    target_visits: float
+    started_at: float
+
+
+@dataclass
 class AppState:
     pending_size: int
     to_play: Side
@@ -17,10 +25,7 @@ class AppState:
     candidates: set[Tuple[int, int]]
     candidate_results: dict[Tuple[int, int], Tuple[Optional[float], Optional[int]]]
     candidate_analysis: List[AnalysisMove]
-    candidate_current: Optional[Tuple[int, int]]
-    candidate_current_base_visits: Optional[int]
-    candidate_target_visits: Optional[float]
-    candidate_started_at: Optional[float]
+    candidate_run: Optional[CandidateRun]
     candidate_ratio: float
     candidate_root_rev: Optional[int]
     analysis_cache: dict[tuple[int, int], list[AnalysisMove]]
@@ -42,10 +47,7 @@ class GuiCore:
             candidates=set(),
             candidate_results={},
             candidate_analysis=[],
-            candidate_current=None,
-            candidate_current_base_visits=None,
-            candidate_target_visits=None,
-            candidate_started_at=None,
+            candidate_run=None,
             candidate_ratio=1.6,
             candidate_root_rev=None,
             analysis_cache={},
@@ -108,12 +110,9 @@ class GuiCore:
         return Side.BLUE if side == Side.RED else Side.RED
 
     def stop_candidate_search(self) -> None:
-        if self.app.candidate_current is not None:
+        if self.app.candidate_run is not None:
             self.engine.undo()
-        self.app.candidate_current = None
-        self.app.candidate_current_base_visits = None
-        self.app.candidate_target_visits = None
-        self.app.candidate_started_at = None
+        self.app.candidate_run = None
 
     def clear_candidates(self) -> None:
         self.app.candidates.clear()
@@ -140,10 +139,6 @@ class GuiCore:
             return
         if self.app.candidate_root_rev is None:
             self.app.candidate_root_rev = self.board.rev
-        self.app.candidate_current = None
-        self.app.candidate_current_base_visits = None
-        self.app.candidate_target_visits = None
-        self.app.candidate_started_at = None
 
     def set_analysis_wide_root_noise(self, value: float) -> None:
         value = max(0.0, min(2.0, float(value)))
@@ -287,55 +282,51 @@ class GuiCore:
         if not self.app.analysis_running or not self.app.candidates:
             return
         while True:
-            if self.app.candidate_current is None:
+            if self.app.candidate_run is None:
                 next_keys = self.sorted_candidates_by_visits()
                 if not next_keys:
                     return
                 col, row = next_keys[0]
                 if not self.board.is_empty(col, row):
                     return
-                self.app.candidate_current = (col, row)
                 self.engine.clear_analysis()
                 self.engine.play(self.app.to_play, col, row)
                 # Candidate search is a pseudo-root search; suppress root noise.
                 self._start_analysis(self.flip_side(self.app.to_play), is_candidate=True)
                 prev_visits = self.app.candidate_results.get((col, row), (None, None))[1]
                 base_visits = prev_visits or 0
-                self.app.candidate_current_base_visits = base_visits
-                self.app.candidate_target_visits = (
-                    base_visits * self.app.candidate_ratio
+                self.app.candidate_run = CandidateRun(
+                    key=(col, row),
+                    base_visits=base_visits,
+                    target_visits=base_visits * self.app.candidate_ratio,
+                    started_at=now,
                 )
-                self.app.candidate_started_at = now
                 return
 
             child = self.engine.get_analysis()
             winrate, visits = self.aggregate_child_analysis(child)
-            key = self.app.candidate_current
-            if key is not None:
-                prev_best = self.app.candidate_results.get(key, (None, None))[1] or 0
-                if visits > prev_best:
-                    self.app.candidate_results[key] = (winrate, visits)
-                    if winrate is not None and visits > 0:
-                        self._promote_candidate_to_cache(key, winrate, visits)
-                    self.rebuild_candidate_analysis()
-
-            if self.app.candidate_started_at is not None and now - self.app.candidate_started_at < 1.0:
-                return
-
-            target = self.app.candidate_target_visits
-            if len(self.app.candidates) <= 1:
-                return
-            if target is None or visits <= target:
-                return
-            if key is not None:
+            run = self.app.candidate_run
+            key = run.key
+            prev_best = self.app.candidate_results.get(key, (None, None))[1] or 0
+            if visits > prev_best:
                 self.app.candidate_results[key] = (winrate, visits)
                 if winrate is not None and visits > 0:
                     self._promote_candidate_to_cache(key, winrate, visits)
+                self.rebuild_candidate_analysis()
+
+            if now - run.started_at < 1.0:
+                return
+
+            target = run.target_visits
+            if len(self.app.candidates) <= 1:
+                return
+            if visits <= target:
+                return
+            self.app.candidate_results[key] = (winrate, visits)
+            if winrate is not None and visits > 0:
+                self._promote_candidate_to_cache(key, winrate, visits)
             self.engine.undo()
-            self.app.candidate_current = None
-            self.app.candidate_current_base_visits = None
-            self.app.candidate_target_visits = None
-            self.app.candidate_started_at = None
+            self.app.candidate_run = None
             self.rebuild_candidate_analysis()
 
     def get_active_analysis(self) -> List[AnalysisMove]:
@@ -578,7 +569,7 @@ class GuiCore:
 
         self.app.candidates.remove(key)
         self.app.candidate_results.pop(key, None)
-        if key == self.app.candidate_current:
+        if self.app.candidate_run is not None and key == self.app.candidate_run.key:
             self.stop_candidate_search()
 
         if not self.app.candidates:
