@@ -439,6 +439,9 @@ class GuiCore:
         was_running = self.app.analysis_running
         if was_running and stop_engine:
             self.stop_analysis()
+        if was_running and (not stop_engine):
+            self.stop_candidate_search()
+            self.engine.clear_analysis()
         fn()
         if clear_analysis:
             self.engine.clear_analysis()
