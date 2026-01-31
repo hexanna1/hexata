@@ -64,6 +64,28 @@ class GuiCore:
         self.app.analysis_cache.clear()
         self.cache_reset_sig()
 
+    def clear_cached_analysis_from_ply(self, cutoff_len: int, *, keep_current: bool) -> None:
+        if cutoff_len <= 0:
+            self.clear_all_cached_analysis()
+            return
+        if keep_current:
+            keep_len = cutoff_len
+            pruned = {
+                key: val
+                for key, val in self.app.analysis_cache.items()
+                if key[0] <= keep_len
+            }
+        else:
+            pruned = {
+                key: val
+                for key, val in self.app.analysis_cache.items()
+                if key[0] < cutoff_len
+            }
+        if pruned == self.app.analysis_cache:
+            return
+        self.app.analysis_cache = pruned
+        self.cache_reset_sig()
+
     def clear_analysis_caches(self) -> None:
         was_running = self.app.analysis_running
         had_candidates = bool(self.app.candidates)
@@ -676,7 +698,7 @@ class GuiCore:
             mutate, clear_analysis=self.app.analysis_running, stop_engine=False
         )
         if did:
-            self.clear_all_cached_analysis()
+            self.clear_cached_analysis_from_ply(len(self.board.history), keep_current=True)
         return did
 
     def try_play_move(self, col: int, row: int) -> bool:
@@ -694,7 +716,7 @@ class GuiCore:
                 return
 
             if self.app.future_moves:
-                self.clear_all_cached_analysis()
+                self.clear_cached_analysis_from_ply(len(self.board.history), keep_current=False)
                 self.app.future_moves.clear()
 
             did = True
@@ -715,7 +737,7 @@ class GuiCore:
             if not self.apply_pass_to_state():
                 return
             if self.app.future_moves:
-                self.clear_all_cached_analysis()
+                self.clear_cached_analysis_from_ply(len(self.board.history), keep_current=False)
                 self.app.future_moves.clear()
             did = True
 
