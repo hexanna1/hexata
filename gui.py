@@ -47,7 +47,7 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
     CANDIDATE_LOW = (244, 232, 250)
     CANDIDATE_HIGH = (170, 125, 210)
     CANDIDATE_UNKNOWN = (228, 214, 245)
-    CANDIDATE_ACTIVE = (235, 205, 255)
+    CANDIDATE_ACTIVE = (250, 196, 92)
 
     HUD_H = 48
     BOARD_PAD = 16
@@ -359,6 +359,7 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
         if app.candidates:
             for key in app.candidates:
                 candidate_wr_map[key] = app.candidate_results.get(key, (None, None))[0]
+        cand_count = len(app.candidates) if app.candidates else 0
 
         denom = math.log(max(2, top_visits))
         max_prior = max(prior_map.values()) if prior_map else None
@@ -378,7 +379,11 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
                         else:
                             t = clamp01(cand_wr) ** 0.9
                             fill = lerp_rgb(CANDIDATE_LOW, CANDIDATE_HIGH, t)
-                        if app.candidate_run is not None and app.candidate_run.key == (col, row):
+                        if (
+                            cand_count > 1
+                            and app.candidate_run is not None
+                            and app.candidate_run.key == (col, row)
+                        ):
                             fill = CANDIDATE_ACTIVE
                     elif show_prior:
                         pr = prior_map.get((col, row))
