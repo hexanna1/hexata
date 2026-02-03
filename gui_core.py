@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from typing import List, NoReturn, Optional, Tuple
 
 from board import HexBoard, Move, MoveKind, Side, coord_to_human
@@ -16,11 +17,17 @@ class CandidateRun:
     started_at: float
 
 
+class AnalysisMode(Enum):
+    OFF = "off"
+    LIVE = "live"
+    CANDIDATE = "candidate"
+
+
 @dataclass
 class AppState:
     pending_size: int
     to_play: Side
-    analysis_running: bool
+    analysis_mode: AnalysisMode
     future_moves: list[Move]
     candidates: set[Tuple[int, int]]
     candidate_results: dict[Tuple[int, int], Tuple[Optional[float], Optional[int]]]
@@ -32,6 +39,10 @@ class AppState:
     last_cache_sig: Optional[tuple]
     analysis_wide_root_noise: float
 
+    @property
+    def analysis_running(self) -> bool:
+        return self.analysis_mode is not AnalysisMode.OFF
+
 
 class GuiCore:
     def __init__(self, board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int = 15) -> None:
@@ -42,7 +53,7 @@ class GuiCore:
         self.app = AppState(
             pending_size=board.n,
             to_play=Side.RED,
-            analysis_running=False,
+            analysis_mode=AnalysisMode.OFF,
             future_moves=[],
             candidates=set(),
             candidate_results={},
@@ -110,9 +121,25 @@ class GuiCore:
         return Side.BLUE if side == Side.RED else Side.RED
 
     def stop_candidate_search(self) -> None:
-        if self.app.candidate_run is not None:
-            self.engine.undo()
-        self.app.candidate_run = None
+        self._end_candidate_run()
+
+    def _set_analysis_mode(
+        self, mode: AnalysisMode, *, reset_candidate_results: bool = False
+    ) -> None:
+        """Centralize analysis/candidate transitions."""
+        if mode is AnalysisMode.OFF:
+            self.app.analysis_mode = mode
+            self.stop_analysis()
+            return
+
+        self.app.analysis_mode = mode
+        if mode is AnalysisMode.CANDIDATE:
+            self.start_candidate_search(reset_results=reset_candidate_results)
+            return
+
+        # Live analysis.
+        self.stop_candidate_search()
+        self._start_analysis(self.app.to_play, is_candidate=False)
 
     def clear_candidates(self) -> None:
         self.app.candidates.clear()
@@ -278,6 +305,26 @@ class GuiCore:
 
         return sorted(self.app.candidates, key=visit_key)
 
+    def _begin_candidate_run(self, key: Tuple[int, int], now: float) -> None:
+        col, row = key
+        self.engine.clear_analysis()
+        self.engine.play(self.app.to_play, col, row)
+        # Candidate search is a pseudo-root search; suppress root noise.
+        self._start_analysis(self.flip_side(self.app.to_play), is_candidate=True)
+        prev_visits = self.app.candidate_results.get(key, (None, None))[1]
+        base_visits = prev_visits or 0
+        self.app.candidate_run = CandidateRun(
+            key=key,
+            base_visits=base_visits,
+            target_visits=base_visits * self.app.candidate_ratio,
+            started_at=now,
+        )
+
+    def _end_candidate_run(self) -> None:
+        if self.app.candidate_run is not None:
+            self.engine.undo()
+        self.app.candidate_run = None
+
     def step_candidate_search(self, now: float) -> None:
         if not self.app.analysis_running or not self.app.candidates:
             return
@@ -289,18 +336,7 @@ class GuiCore:
                 col, row = next_keys[0]
                 if not self.board.is_empty(col, row):
                     return
-                self.engine.clear_analysis()
-                self.engine.play(self.app.to_play, col, row)
-                # Candidate search is a pseudo-root search; suppress root noise.
-                self._start_analysis(self.flip_side(self.app.to_play), is_candidate=True)
-                prev_visits = self.app.candidate_results.get((col, row), (None, None))[1]
-                base_visits = prev_visits or 0
-                self.app.candidate_run = CandidateRun(
-                    key=(col, row),
-                    base_visits=base_visits,
-                    target_visits=base_visits * self.app.candidate_ratio,
-                    started_at=now,
-                )
+                self._begin_candidate_run((col, row), now)
                 return
 
             child = self.engine.get_analysis()
@@ -325,8 +361,7 @@ class GuiCore:
             self.app.candidate_results[key] = (winrate, visits)
             if winrate is not None and visits > 0:
                 self._promote_candidate_to_cache(key, winrate, visits)
-            self.engine.undo()
-            self.app.candidate_run = None
+            self._end_candidate_run()
             self.rebuild_candidate_analysis()
 
     def get_active_analysis(self) -> List[AnalysisMove]:
@@ -363,9 +398,9 @@ class GuiCore:
         if not self.app.analysis_running:
             return
         if self.app.candidates:
-            self.start_candidate_search(reset_results=False)
+            self._set_analysis_mode(AnalysisMode.CANDIDATE)
         else:
-            self._start_analysis(self.app.to_play, is_candidate=False)
+            self._set_analysis_mode(AnalysisMode.LIVE)
 
     def stop_analysis(self) -> None:
         self.stop_candidate_search()
@@ -464,14 +499,12 @@ class GuiCore:
 
     def toggle_analysis(self) -> None:
         if self.app.analysis_running:
-            self.app.analysis_running = False
-            self.stop_analysis()
+            self._set_analysis_mode(AnalysisMode.OFF)
         else:
-            self.app.analysis_running = True
             if self.app.candidates:
-                self.start_candidate_search(reset_results=False)
+                self._set_analysis_mode(AnalysisMode.CANDIDATE)
             else:
-                self._start_analysis(self.app.to_play, is_candidate=False)
+                self._set_analysis_mode(AnalysisMode.LIVE)
 
     def load_hexworld_text(self, text: str) -> bool:
         try:
@@ -575,7 +608,7 @@ class GuiCore:
         if not self.app.candidates:
             self.clear_candidates()
             if self.app.analysis_running:
-                self._start_analysis(self.app.to_play, is_candidate=False)
+                self._set_analysis_mode(AnalysisMode.LIVE)
         else:
             self.rebuild_candidate_analysis()
 

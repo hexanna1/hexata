@@ -899,29 +899,26 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
         ui.drag_added = True
         ui.drag_last_cell = ui.hover_cell
 
-    ui = UiState()
-    running = True
-    while running:
+    def handle_events(ui: UiState) -> None:
+        nonlocal running
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
                 running = False
-
             elif ev.type == pygame.KEYDOWN:
                 handle_keydown(ev, ui)
-
             elif ev.type == pygame.MOUSEBUTTONDOWN:
                 handle_mouse_down(ev, ui)
-
             elif ev.type == pygame.MOUSEBUTTONUP:
                 handle_mouse_up(ev, ui)
-
             elif ev.type == pygame.MOUSEMOTION:
                 handle_mouse_motion(ev, ui)
             elif ev.type == pygame.VIDEORESIZE:
                 apply_window_size(ev.w, ev.h)
 
+    def update_frame_state(
+        now: float, ui: UiState
+    ) -> Tuple[bool, bool, Optional[Tuple[int, int]], int]:
         # Snapshot live analysis for this position so undo/redo can instantly display cached overlays.
-        now = time.monotonic()
         core.tick(now)
         if app.candidate_run is not None:
             ui.last_cand_display = app.candidate_run.key
@@ -933,6 +930,7 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
             mods & (pygame.KMOD_CTRL | pygame.KMOD_META | pygame.KMOD_GUI | pygame.KMOD_SHIFT)
         )
         top_cell, top_visits = core.get_top_move()
+
         if app.analysis_running:
             total_visits = 0
             for r in core.engine.get_analysis():
@@ -956,6 +954,15 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
             ui.speed_last_total = None
             ui.speed_vps = None
 
+        return show_prior, show_coords, top_cell, top_visits
+
+    def draw_frame(
+        show_prior: bool,
+        show_coords: bool,
+        top_cell: Optional[Tuple[int, int]],
+        top_visits: int,
+        ui: UiState,
+    ) -> None:
         screen.fill(BG)
         draw_hud()
         drag_target = None
@@ -990,6 +997,14 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
         draw_movelist_panel()
         if ui.show_help:
             draw_help_overlay()
+
+    ui = UiState()
+    running = True
+    while running:
+        handle_events(ui)
+        now = time.monotonic()
+        show_prior, show_coords, top_cell, top_visits = update_frame_state(now, ui)
+        draw_frame(show_prior, show_coords, top_cell, top_visits, ui)
         pygame.display.flip()
         clock.tick(60)
 
