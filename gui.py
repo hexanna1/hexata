@@ -5,6 +5,7 @@ import subprocess
 import sys
 import warnings
 import time
+from datetime import datetime
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
@@ -215,6 +216,15 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
             except Exception:
                 return False
         return False
+
+    def save_screenshot() -> Optional[str]:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        shots_dir = os.path.join(base_dir, "screenshots")
+        os.makedirs(shots_dir, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        path = os.path.join(shots_dir, f"hexata-{stamp}.png")
+        pygame.image.save(screen, path)
+        return path
 
     def _get_clipboard_fallback() -> Optional[str]:
         if sys.platform != "darwin":
@@ -439,6 +449,7 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
             return
         last_idx = len(board.history) - 1
         if show_all:
+            number_tint = 0.45
             for idx in range(len(board.history)):
                 mv = board.history[idx]
                 coords = core.move_coords(mv)
@@ -447,7 +458,11 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
                 ax, ay = coords[0] - 1, coords[1] - 1
                 cx, cy = center(ax, ay)
                 txt = str(idx + 1)
-                colr = OFF_WHITE if idx == last_idx else BLACK
+                if idx == last_idx:
+                    colr = OFF_WHITE
+                else:
+                    base = RED if mv.side == Side.RED else BLUE
+                    colr = lerp_rgb(base, OFF_WHITE, number_tint)
                 surf = render(fonts.board_small, txt, colr)
                 screen.blit(surf, (cx - surf.get_width() / 2, cy - surf.get_height() / 2))
             return
@@ -852,7 +867,7 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
             "del:delete tail   shift+n:new",
             "+/-:pending size   enter:apply size",
             "[/]:set analysisWideRootNoise",
-            "d:engine debug",
+            "d:engine debug   ctrl+s:screenshot",
             "left-drag:move stone",
             "right-click:toggle cand   right-drag:toggle cands",
             "shift+x:clear cands",
@@ -927,6 +942,10 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
             ev.mod & (pygame.KMOD_META | pygame.KMOD_GUI | pygame.KMOD_CTRL)
         ):
             copy_hexworld_url()
+        elif ev.key == pygame.K_s and (
+            ev.mod & (pygame.KMOD_META | pygame.KMOD_GUI | pygame.KMOD_CTRL)
+        ):
+            save_screenshot()
         elif ev.key == pygame.K_c and (ev.mod & pygame.KMOD_SHIFT):
             core.clear_analysis_caches()
         elif ev.key == pygame.K_p and (ev.mod & pygame.KMOD_SHIFT):
