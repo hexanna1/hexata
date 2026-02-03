@@ -546,6 +546,126 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
             screen.blit(surf, (cx, y))
             cx += surf.get_width()
 
+    GRAPH_MIN_MOVES = 50
+    GRAPH_MIN_HEIGHT = 40
+    GRAPH_LINE_WIDTH = 2
+    GRAPH_DOT_RADIUS = 3
+    GRAPH_LABEL_PAD = 6
+    GRAPH_EDGE_PAD = 2
+    GRAPH_PAD = 0
+    GRAPH_ELO_CLAMP = 1000.0
+
+    def draw_eval_graph(
+        rect: pygame.Rect, cursor_ply: int, total_moves: int, show_elo: bool
+    ) -> None:
+
+        pygame.draw.rect(screen, PANEL_BG, rect)
+        pygame.draw.rect(screen, PANEL_EDGE, rect, 1)
+
+        n_moves = total_moves
+        if rect.width <= 1 or rect.height <= 1:
+            return
+
+        def best_reply_winrate(ply_len: int, side_to_play: Side) -> Optional[float]:
+            recs = app.analysis_cache.get((ply_len, int(side_to_play)))
+            if not recs:
+                return None
+            # Only use ordered (live) analysis; candidate cache entries have no order.
+            best = None
+            for r in recs:
+                if r.order is None or r.winrate is None:
+                    continue
+                if best is None or r.order < best.order:
+                    best = r
+            if best is None or best.winrate is None:
+                return None
+            return best.winrate
+
+        def x_for_move(m: int) -> int:
+            return int(rect.left + (m - 1) * rect.width / denom)
+
+        def winrate_to_elo(v: float) -> float:
+            if v <= 0.0:
+                return -GRAPH_ELO_CLAMP
+            if v >= 1.0:
+                return GRAPH_ELO_CLAMP
+            elo = 400.0 * math.log10(v / (1.0 - v))
+            if elo > GRAPH_ELO_CLAMP:
+                return GRAPH_ELO_CLAMP
+            if elo < -GRAPH_ELO_CLAMP:
+                return -GRAPH_ELO_CLAMP
+            return elo
+
+        def y_for_plot(v: float) -> int:
+            if show_elo:
+                v = winrate_to_elo(v)
+                t = (v + GRAPH_ELO_CLAMP) / (2.0 * GRAPH_ELO_CLAMP)
+            else:
+                t = 0.0 if v < 0.0 else 1.0 if v > 1.0 else v
+            return int(rect.bottom - t * rect.height)
+
+        mid_y = y_for_plot(0.5)
+        pygame.draw.line(screen, GRID_EDGE, (rect.left, mid_y), (rect.right, mid_y), 1)
+
+        if n_moves <= 0:
+            return
+
+        values: dict[int, float] = {}
+        max_analyzed = 0
+        for m in range(1, n_moves + 1):
+            side_to_play = Side.BLUE if m % 2 == 1 else Side.RED
+            best_wr = best_reply_winrate(m, side_to_play)
+            if best_wr is None:
+                continue
+            # Red-perspective winrate for the current position.
+            red_wr = best_wr if side_to_play == Side.RED else 1.0 - best_wr
+            values[m] = red_wr
+            if m > max_analyzed:
+                max_analyzed = m
+
+        if max_analyzed <= 0:
+            return
+
+        max_moves = max(GRAPH_MIN_MOVES, max_analyzed)
+        denom = max(1, max_moves - 1)
+
+        def draw_segment(points: List[Tuple[int, int]]) -> None:
+            if len(points) >= 2:
+                pygame.draw.lines(screen, RED, False, points, GRAPH_LINE_WIDTH)
+                pygame.draw.aalines(screen, RED, False, points)
+            elif len(points) == 1:
+                pygame.draw.circle(screen, RED, points[0], 2, 0)
+
+        points: List[Tuple[int, int]] = []
+        for m in range(1, n_moves + 1):
+            val = values.get(m)
+            if val is None:
+                draw_segment(points)
+                points = []
+                continue
+            points.append((x_for_move(m), y_for_plot(val)))
+        draw_segment(points)
+
+        if 1 <= cursor_ply <= n_moves:
+            m = cursor_ply
+            val = values.get(m)
+            if val is not None:
+                cx = x_for_move(m)
+                cy = y_for_plot(val)
+                pygame.draw.circle(screen, RED, (cx, cy), GRAPH_DOT_RADIUS, 0)
+
+                label = fmt_wr_or_elo(val, show_elo)
+                surf = render(hud_small, label, RED)
+                lx = cx + GRAPH_LABEL_PAD
+                ly = cy - surf.get_height() / 2
+                if lx + surf.get_width() > rect.right - GRAPH_EDGE_PAD:
+                    lx = cx - surf.get_width() - GRAPH_LABEL_PAD
+                if ly < rect.top + GRAPH_EDGE_PAD:
+                    ly = rect.top + GRAPH_EDGE_PAD
+                if ly + surf.get_height() > rect.bottom - GRAPH_EDGE_PAD:
+                    ly = rect.bottom - surf.get_height() - GRAPH_EDGE_PAD
+                screen.blit(surf, (lx, ly))
+
     def draw_movelist_panel() -> None:
         x0 = layout.board_px_w
         pygame.draw.rect(screen, PANEL_BG, pygame.Rect(x0, 0, PANEL_W, screen.get_height()))
@@ -560,25 +680,26 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
         if app.future_moves:
             moves.extend(reversed(app.future_moves))
 
-        total_plies = len(moves)
+        total_moves = len(moves)
         cursor_ply = len(board.history)
-        nrows = (total_plies + 1) // 2
+        nrows = (total_moves + 1) // 2
 
         line_h = movelist_font.get_sized_height() + 4
         io_line_h = io_font.get_sized_height() + 2
         io_header_h = 18
         io_max_lines = 30
         io_panel_h = io_header_h + (io_line_h * io_max_lines) + 10
-        io_top = (
-            max(y, screen.get_height() - io_panel_h)
-            if ui.show_engine_debug
-            else screen.get_height()
-        )
+        graph_h = 0
+        if not ui.show_engine_debug:
+            avail = screen.get_height() - y
+            graph_h = max(0, min(PANEL_W, avail))
+        graph_top = screen.get_height() - graph_h - GRAPH_PAD
+        io_top = max(y, screen.get_height() - io_panel_h) if ui.show_engine_debug else graph_top
         max_lines = max(0, (io_top - y - 6) // line_h)
 
         start = 0
         if max_lines and nrows > max_lines:
-            if cursor_ply == total_plies:
+            if cursor_ply == total_moves:
                 start = nrows - max_lines
             else:
                 focus_row = 0 if cursor_ply == 0 else (cursor_ply - 1) // 2
@@ -593,7 +714,7 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
 
             red_mv = core.move_to_label(moves[red_i])
             blue_mv = (
-                core.move_to_label(moves[blue_i]) if blue_i < total_plies else None
+                core.move_to_label(moves[blue_i]) if blue_i < total_moves else None
             )
 
             odd = 2 * row_idx + 1
@@ -631,7 +752,14 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
                     line = f"{prefix} {msg}"
                 screen.blit(render(io_font, line, BLACK), (x0 + pad, io_y))
                 io_y += io_line_h
-
+        elif graph_h >= GRAPH_MIN_HEIGHT:
+            graph_rect = pygame.Rect(
+                x0,
+                graph_top,
+                PANEL_W,
+                screen.get_height() - graph_top,
+            )
+            draw_eval_graph(graph_rect, cursor_ply, total_moves, ui.show_elo)
     def draw_hud() -> None:
         pygame.draw.rect(screen, BG, pygame.Rect(0, 0, screen.get_width(), HUD_H))
 
