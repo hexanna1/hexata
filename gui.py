@@ -500,7 +500,7 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
 
         ax, ay = col - 1, row - 1
         pts = poly(ax, ay)
-        colr = RED if app.to_play == Side.RED else BLUE
+        colr = RED if core.current_side() == Side.RED else BLUE
         thickness = max(3, int(layout.r * 0.12))
         pygame.draw.polygon(screen, colr, pts, thickness)
 
@@ -844,8 +844,9 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
     def draw_hud() -> None:
         pygame.draw.rect(screen, BG, pygame.Rect(0, 0, screen.get_width(), HUD_H))
 
-        turn_color = RED if app.to_play == Side.RED else BLUE
-        turn_name = "Red" if app.to_play == Side.RED else "Blue"
+        turn_side = core.current_side()
+        turn_color = RED if turn_side == Side.RED else BLUE
+        turn_name = "Red" if turn_side == Side.RED else "Blue"
         analysis_txt = "ON" if app.analysis_running else "OFF"
         analysis_color = BLACK if app.analysis_running else GRAY
 

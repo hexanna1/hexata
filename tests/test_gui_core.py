@@ -2,7 +2,7 @@ import unittest
 
 from board import HexBoard, Move, Side
 from engine import AnalysisMove
-from gui_core import AnalysisMode, GuiCore
+from gui_core import GuiCore
 
 
 class FakeEngine:
@@ -55,7 +55,7 @@ class GuiCoreTests(unittest.TestCase):
 
     def _start_candidate_run(self, core: GuiCore, col: int, row: int, *, now: float = 0.0):
         core.add_candidate(col, row)
-        core._set_analysis_mode(AnalysisMode.CANDIDATE)
+        core._set_analysis_enabled(True)
         core.step_candidate_search(now=now)
 
     def _play_two_moves(self, core: GuiCore) -> None:
@@ -244,19 +244,19 @@ class GuiCoreTests(unittest.TestCase):
 
         core.clear_all_cached_analysis()
         core.add_candidate(1, 1)
-        core.app.candidate_analysis = [
-            AnalysisMove("a1", order=1, col=1, row=1, winrate=0.4, visits=5, prior=None)
-        ]
-        self.assertEqual(core.get_active_analysis(), core.app.candidate_analysis)
+        core.app.candidate_results[(1, 1)] = (0.4, 5)
+        active = core.get_active_analysis()
+        self.assertEqual(len(active), 1)
+        self.assertEqual((active[0].col, active[0].row), (1, 1))
 
         core.clear_candidates()
-        core._set_analysis_mode(AnalysisMode.LIVE)
+        core._set_analysis_enabled(True)
         engine.analysis = [
             AnalysisMove("b2", order=1, col=2, row=2, winrate=0.6, visits=8, prior=None)
         ]
         self.assertEqual(core.get_active_analysis(), engine.analysis)
 
-        core._set_analysis_mode(AnalysisMode.OFF)
+        core._set_analysis_enabled(False)
         self.assertEqual(core.get_active_analysis(), [])
 
     def test_single_candidate_does_not_rotate_or_undo(self):
