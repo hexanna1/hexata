@@ -18,7 +18,7 @@ warnings.filterwarnings(
 
 import pygame
 
-from board import HexBoard, Side, coord_to_human
+from board import HexBoard, Side, coord_to_human, col_to_human_letters
 from engine import KataHexEngine, AnalysisMove
 from gui_core import GuiCore
 
@@ -55,6 +55,7 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
     MIN_R = 4
     BASE_R = 24
     MAX_R = 38
+    LABEL_PAD_K = 0.85
     PANEL_W = 230
     DEFAULT_WIN_W = 1456
     DEFAULT_WIN_H = 808
@@ -165,20 +166,73 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
     io_font = pygame.freetype.SysFont(["Menlo", "Consolas", "monospace"], 12)
 
     @dataclass
+    class BaselineText:
+        font: pygame.freetype.Font
+        baseline_offset: float
+        line_ref_y: float
+
+        @classmethod
+        def for_font(cls, font: pygame.freetype.Font) -> "BaselineText":
+            # Align glyphs to a consistent baseline using a single reference string.
+            _surf, rect = font.render("Ag01", fgcolor=BLACK)
+            return cls(
+                font=font,
+                baseline_offset=rect.y - rect.height / 2,
+                line_ref_y=rect.y,
+            )
+
+        def blit_center(self, text: str, color, cx: float, cy: float) -> None:
+            surf, rect = self.font.render(text, fgcolor=color)
+            x = cx - surf.get_width() / 2
+            y = cy + self.baseline_offset - rect.y
+            screen.blit(surf, (x, y))
+
+        def blit_line(self, text: str, color, x: float, y: float) -> float:
+            surf, rect = self.font.render(text, fgcolor=color)
+            screen.blit(surf, (x, y + self.line_ref_y - rect.y))
+            return surf.get_width()
+
+    @dataclass
     class FontState:
         board_small: pygame.freetype.Font
         hud_font: pygame.freetype.Font
         hud_small: pygame.freetype.Font
+        movelist_font: pygame.freetype.Font
+        io_font: pygame.freetype.Font
+
+    @dataclass
+    class TextRenderer:
+        board: BaselineText
+        movelist: BaselineText
+        hud: BaselineText
+        hud_small: BaselineText
+        io: BaselineText
+        line_hud_small: int
+        line_io: int
+
+        @classmethod
+        def from_fonts(cls, fonts: FontState) -> "TextRenderer":
+            return cls(
+                board=BaselineText.for_font(fonts.board_small),
+                movelist=BaselineText.for_font(fonts.movelist_font),
+                hud=BaselineText.for_font(fonts.hud_font),
+                hud_small=BaselineText.for_font(fonts.hud_small),
+                io=BaselineText.for_font(fonts.io_font),
+                line_hud_small=fonts.hud_small.get_sized_height(),
+                line_io=fonts.io_font.get_sized_height(),
+            )
+
+        def update_board_small(self, board_small: pygame.freetype.Font) -> None:
+            self.board = BaselineText.for_font(board_small)
 
     fonts = FontState(
         board_small=make_board_small(layout.r),
         hud_font=hud_font,
         hud_small=hud_small,
+        movelist_font=movelist_font,
+        io_font=io_font,
     )
-
-    def render(ft: pygame.freetype.Font, text: str, color) -> pygame.Surface:
-        surf, _rect = ft.render(text, fgcolor=color)
-        return surf
+    text = TextRenderer.from_fonts(fonts)
 
     def get_clipboard_text() -> Optional[str]:
         if not scrap_ok:
@@ -240,8 +294,9 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
         span = 1.5 * (n - 1)
         board_w = SQ3 * MIN_R * (span + 1)
         board_h = MIN_R * (span + 2)
-        win_w = int(board_w + PANEL_W + 2 * BOARD_PAD)
-        win_h = int(board_h + HUD_H + 2 * BOARD_PAD)
+        label_pad = LABEL_PAD_K * MIN_R
+        win_w = int(board_w + label_pad + PANEL_W + 2 * BOARD_PAD)
+        win_h = int(board_h + label_pad + HUD_H + 2 * BOARD_PAD)
         return win_w, win_h
 
     def apply_window_size(win_w: int, win_h: int) -> Tuple[int, int]:
@@ -254,27 +309,32 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
         layout.board_px_w = max(0, win_w - PANEL_W)
         layout.board_px_h = win_h
 
-        usable_w = max(0.0, layout.board_px_w - 2 * BOARD_PAD)
-        usable_h = max(0.0, layout.board_px_h - HUD_H - 2 * BOARD_PAD)
+        usable_w0 = max(0.0, layout.board_px_w - 2 * BOARD_PAD)
+        usable_h0 = max(0.0, layout.board_px_h - HUD_H - 2 * BOARD_PAD)
 
         span = 1.5 * (board.n - 1)
         denom_w = SQ3 * (span + 1)
         denom_h = span + 2
-        r_w = usable_w / denom_w if denom_w > 0 else MIN_R
-        r_h = usable_h / denom_h if denom_h > 0 else MIN_R
+        pad_k = LABEL_PAD_K
+        r_w = usable_w0 / (denom_w + pad_k) if denom_w > 0 else MIN_R
+        r_h = usable_h0 / (denom_h + pad_k) if denom_h > 0 else MIN_R
         layout.r = int(max(MIN_R, min(r_w, r_h, MAX_R)))
 
         layout.wstep = SQ3 * layout.r
         layout.hstep = 1.5 * layout.r
+        label_pad = pad_k * layout.r
+        usable_w = max(0.0, usable_w0 - label_pad)
+        usable_h = max(0.0, usable_h0 - label_pad)
 
         board_w = SQ3 * layout.r * (span + 1)
         board_h = layout.r * (span + 2)
         extra_w = max(0.0, usable_w - board_w)
         extra_h = max(0.0, usable_h - board_h)
-        layout.origin_x = BOARD_PAD + extra_w / 2 + (SQ3 * layout.r) / 2
-        layout.origin_y = HUD_H + BOARD_PAD + extra_h / 2 + layout.r
+        layout.origin_x = BOARD_PAD + label_pad + extra_w / 2 + (SQ3 * layout.r) / 2
+        layout.origin_y = HUD_H + BOARD_PAD + label_pad + extra_h / 2 + layout.r
 
         fonts.board_small = make_board_small(layout.r)
+        text.update_board_small(fonts.board_small)
         pygame.display.set_caption(f"Hex {board.n}x{board.n}")
         return win_w, win_h
 
@@ -463,8 +523,7 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
                 else:
                     base = RED if mv.side == Side.RED else BLUE
                     colr = lerp_rgb(base, OFF_WHITE, number_tint)
-                surf = render(fonts.board_small, txt, colr)
-                screen.blit(surf, (cx - surf.get_width() / 2, cy - surf.get_height() / 2))
+                text.board.blit_center(txt, colr, cx, cy)
             return
 
         mv = board.history[-1]
@@ -492,6 +551,20 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
                         screen, side["color"], corner(ax, ay, c1), corner(ax, ay, c2), thickness
                     )
 
+    def draw_side_coords() -> None:
+        col_color = GRAY
+        row_color = GRAY
+        for col in range(1, board.n + 1):
+            ax, ay = col - 1, -1
+            cx, cy = center(ax, ay)
+            txt = col_to_human_letters(col)
+            text.board.blit_center(txt, col_color, cx, cy)
+        for row in range(1, board.n + 1):
+            ax, ay = -1, row - 1
+            cx, cy = center(ax, ay)
+            txt = str(row)
+            text.board.blit_center(txt, row_color, cx, cy)
+
     def draw_ghost_cell(cell: Tuple[int, int], side: Side) -> None:
         ax, ay = cell[0] - 1, cell[1] - 1
         pts = poly(ax, ay)
@@ -511,8 +584,7 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
                     colr = WHITE if occ >= 0 else BLACK
 
                     txt = coord_to_human(col, row)
-                    surf = render(fonts.board_small, txt, colr)
-                    screen.blit(surf, (cx - surf.get_width() / 2, cy - surf.get_height() / 2))
+                    text.board.blit_center(txt, colr, cx, cy)
             return
 
         for r in core.get_active_analysis():
@@ -528,8 +600,7 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
                 pr = fmt_prior(r.prior)
                 if not pr:
                     continue
-                surf = render(fonts.board_small, pr, BLACK)
-                screen.blit(surf, (cx - surf.get_width() / 2, cy - surf.get_height() / 2))
+                text.board.blit_center(pr, BLACK, cx, cy)
                 continue
 
             wr = fmt_wr_or_elo(r.winrate, ui.show_elo)
@@ -537,34 +608,24 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
             if not wr and not vv:
                 continue
 
-            surf1 = render(fonts.board_small, wr, BLACK)
-            surf2 = render(fonts.board_small, vv, BLACK)
-
             gap = 1
-            total_h = surf1.get_height() + gap + surf2.get_height()
-            y0 = cy - total_h / 2
-            screen.blit(surf1, (cx - surf1.get_width() / 2, y0))
-            screen.blit(surf2, (cx - surf2.get_width() / 2, y0 + surf1.get_height() + gap))
+            rect1 = text.board.font.get_rect(wr)
+            rect2 = text.board.font.get_rect(vv)
+            total_h = rect1.height + gap + rect2.height
+            top = cy - total_h / 2
+            x1 = cx - rect1.width / 2
+            y1 = top - text.board.line_ref_y + rect1.y
+            text.board.blit_line(wr, BLACK, x1, y1)
+            top2 = top + rect1.height + gap
+            x2 = cx - rect2.width / 2
+            y2 = top2 - text.board.line_ref_y + rect2.y
+            text.board.blit_line(vv, BLACK, x2, y2)
 
     def blit_segments(x: int, y: int, parts: List[Tuple[str, Tuple[int, int, int]]], use_small: bool) -> None:
-        ft = fonts.hud_small if use_small else fonts.hud_font
+        blit_line = text.hud_small.blit_line if use_small else text.hud.blit_line
         cx = x
         for txt, col in parts:
-            surf = render(ft, txt, col)
-            screen.blit(surf, (cx, y))
-            cx += surf.get_width()
-
-    def blit_segments_with_font(
-        x: int,
-        y: int,
-        parts: List[Tuple[str, Tuple[int, int, int]]],
-        ft: pygame.freetype.Font,
-    ) -> None:
-        cx = x
-        for txt, col in parts:
-            surf = render(ft, txt, col)
-            screen.blit(surf, (cx, y))
-            cx += surf.get_width()
+            cx += blit_line(txt, col, cx, y)
 
     GRAPH_MIN_MOVES = 50
     GRAPH_MIN_HEIGHT = 40
@@ -675,21 +736,21 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
                 pygame.draw.circle(screen, RED, (cx, cy), GRAPH_DOT_RADIUS, 0)
 
                 label = fmt_wr_or_elo(val, show_elo)
-                surf = render(hud_small, label, RED)
+                label_rect = text.hud_small.font.get_rect(label)
+                line_h = text.hud_small.font.get_sized_height()
                 lx = cx + GRAPH_LABEL_PAD
-                ly = cy - surf.get_height() / 2
-                if lx + surf.get_width() > rect.right - GRAPH_EDGE_PAD:
-                    lx = cx - surf.get_width() - GRAPH_LABEL_PAD
+                ly = cy - line_h / 2
+                if lx + label_rect.width > rect.right - GRAPH_EDGE_PAD:
+                    lx = cx - label_rect.width - GRAPH_LABEL_PAD
                 if ly < rect.top + GRAPH_EDGE_PAD:
                     ly = rect.top + GRAPH_EDGE_PAD
-                if ly + surf.get_height() > rect.bottom - GRAPH_EDGE_PAD:
-                    ly = rect.bottom - surf.get_height() - GRAPH_EDGE_PAD
-                screen.blit(surf, (lx, ly))
+                if ly + line_h > rect.bottom - GRAPH_EDGE_PAD:
+                    ly = rect.bottom - line_h - GRAPH_EDGE_PAD
+                text.hud_small.blit_line(label, RED, lx, ly)
 
     def draw_movelist_panel() -> None:
         x0 = layout.board_px_w
         pygame.draw.rect(screen, PANEL_BG, pygame.Rect(x0, 0, PANEL_W, screen.get_height()))
-        pygame.draw.line(screen, PANEL_EDGE, (x0, 0), (x0, screen.get_height()), 1)
 
         pad = 12
         y = 10
@@ -705,10 +766,9 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
         nrows = (total_moves + 1) // 2
 
         line_h = movelist_font.get_sized_height() + 4
-        io_line_h = io_font.get_sized_height() + 2
-        io_header_h = 18
+        io_line_h = text.line_io + 2
         io_max_lines = 30
-        io_panel_h = io_header_h + (io_line_h * io_max_lines) + 10
+        io_panel_h = (io_line_h * io_max_lines) + 10
         graph_h = 0
         if not ui.show_engine_debug:
             avail = screen.get_height() - y
@@ -750,18 +810,17 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
                 blue_col = BLUE if blue_i < cursor_ply else GRAY
                 parts.append((blue_mv, blue_col))
 
-            blit_segments_with_font(x0 + pad, y, parts, movelist_font)
+            cx = x0 + pad
+            for txt, col in parts:
+                cx += text.movelist.blit_line(txt, col, cx, y)
             y += line_h
 
         if ui.show_engine_debug:
             io_rect = pygame.Rect(x0, io_top, PANEL_W, screen.get_height() - io_top)
             pygame.draw.rect(screen, PANEL_BG, io_rect)
-            pygame.draw.line(screen, PANEL_EDGE, (x0, io_top), (x0 + PANEL_W, io_top), 1)
+            pygame.draw.rect(screen, PANEL_EDGE, io_rect, 1)
 
-            io_header = "Engine Debug"
-            screen.blit(render(hud_small, io_header, BLACK), (x0 + pad, io_top + 4))
-
-            io_y = io_top + io_header_h
+            io_y = io_top + 4
             logs = core.engine.get_io_log(io_max_lines)
             start_idx = max(0, len(logs) - io_max_lines)
             for direction, msg, count in logs[start_idx:]:
@@ -770,7 +829,7 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
                     line = f"{prefix} {msg} ({count})"
                 else:
                     line = f"{prefix} {msg}"
-                screen.blit(render(io_font, line, BLACK), (x0 + pad, io_y))
+                text.io.blit_line(line, BLACK, x0 + pad, io_y)
                 io_y += io_line_h
         elif graph_h >= GRAPH_MIN_HEIGHT:
             graph_rect = pygame.Rect(
@@ -780,6 +839,8 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
                 screen.get_height() - graph_top,
             )
             draw_eval_graph(graph_rect, cursor_ply, total_moves, ui.show_elo)
+
+        pygame.draw.line(screen, PANEL_EDGE, (x0, 0), (x0, screen.get_height()), 1)
     def draw_hud() -> None:
         pygame.draw.rect(screen, BG, pygame.Rect(0, 0, screen.get_width(), HUD_H))
 
@@ -840,22 +901,22 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
         blit_segments(12, 10, parts, use_small=False)
 
         help_line = "space:analysis • ,:play best • +/-/enter:size • ?:help"
-        screen.blit(render(fonts.hud_small, help_line, BLACK), (12, 32))
+        text.hud_small.blit_line(help_line, BLACK, 12, 32)
 
         awrn = f"{app.analysis_wide_root_noise:.2f}".rstrip("0").rstrip(".")
         awrn_text = "AWRN –" if app.candidates else f"AWRN {awrn}"
-        awrn_surf = render(fonts.hud_small, awrn_text, GRAY)
-        awrn_x = max(12, layout.board_px_w - awrn_surf.get_width() - 12)
-        screen.blit(awrn_surf, (awrn_x, 10))
+        awrn_w = fonts.hud_small.get_rect(awrn_text).width
+        awrn_x = max(12, layout.board_px_w - awrn_w - 12)
+        text.hud_small.blit_line(awrn_text, GRAY, awrn_x, 10)
         vps_suffix = " visits/s"
         if ui.speed_vps is not None and ui.speed_vps > 0:
             vps_text = f"{fmt_visits(int(ui.speed_vps))}{vps_suffix}"
         else:
             vps_text = f"–{vps_suffix}"
-        vps_surf = render(fonts.hud_small, vps_text, GRAY)
-        vps_x = max(12, layout.board_px_w - vps_surf.get_width() - 12)
-        vps_y = 10 + awrn_surf.get_height() + 2
-        screen.blit(vps_surf, (vps_x, vps_y))
+        vps_w = fonts.hud_small.get_rect(vps_text).width
+        vps_x = max(12, layout.board_px_w - vps_w - 12)
+        vps_y = 10 + text.line_hud_small + 2
+        text.hud_small.blit_line(vps_text, GRAY, vps_x, vps_y)
 
     def draw_help_overlay() -> None:
         lines = [
@@ -874,17 +935,18 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
         ]
         pad = 8
         gap = 2
-        surfs = [render(fonts.hud_small, line, BLACK) for line in lines]
+        surfs = [fonts.hud_small.render(line, fgcolor=BLACK)[0] for line in lines]
         w = max(s.get_width() for s in surfs)
-        h = sum(s.get_height() for s in surfs) + gap * (len(surfs) - 1)
+        line_h = text.line_hud_small
+        h = line_h * len(lines) + gap * (len(surfs) - 1)
         x = 12
         y = HUD_H + 12
         rect = pygame.Rect(x - pad, y - pad, w + pad * 2, h + pad * 2)
         pygame.draw.rect(screen, PANEL_BG, rect)
         pygame.draw.rect(screen, PANEL_EDGE, rect, 1)
-        for surf in surfs:
-            screen.blit(surf, (x, y))
-            y += surf.get_height() + gap
+        for line in lines:
+            text.hud_small.blit_line(line, BLACK, x, y)
+            y += line_h + gap
 
     @dataclass
     class UiState:
@@ -1143,6 +1205,7 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
             dot_r = max(2, int(layout.r * 0.12))
             pygame.draw.circle(screen, HOVER_DOT, (int(cx), int(cy)), dot_r, 0)
         draw_borders()
+        draw_side_coords()
         draw_analysis_text(show_prior, show_coords)
         if not show_coords:
             draw_move_numbers(ui.show_move_numbers)
