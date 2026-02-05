@@ -1056,10 +1056,10 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
             core.clear_analysis_caches()
         elif ev.key == pygame.K_p and (mods & pygame.KMOD_SHIFT) and not has_ctrl:
             core.try_pass_move()
-        elif has_ctrl and ev.key in (pygame.K_UP, pygame.K_n):
-            core.step_forward_n(10)
-        elif has_ctrl and ev.key in (pygame.K_DOWN, pygame.K_p):
+        elif has_ctrl and ev.key in (pygame.K_UP, pygame.K_LEFT, pygame.K_p):
             core.step_back_n(10)
+        elif has_ctrl and ev.key in (pygame.K_DOWN, pygame.K_RIGHT, pygame.K_n):
+            core.step_forward_n(10)
         elif ev.key in (pygame.K_UP, pygame.K_p, pygame.K_LEFT):
             core.step_back()
         elif ev.key in (pygame.K_DOWN, pygame.K_n, pygame.K_RIGHT):
