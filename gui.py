@@ -970,6 +970,7 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
             "Help (? to hide)",
             "space:analysis   ,:play best/PV   esc:quit",
             "p:prev   n:next   f:first   l:last   shift+p:pass",
+            "ctrl+p:prev 10   ctrl+n:next 10",
             "t:priors   c:coords   m:moves   e:elo",
             "ctrl+v:load   ctrl+c:copy   shift+c:clear cache",
             "del:delete tail   shift+n:new",
@@ -1017,6 +1018,8 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
     def handle_keydown(ev: pygame.event.Event, ui: UiState) -> None:
         nonlocal running
         awrn_steps = [0.00, 0.01, 0.02, 0.04, 0.10, 0.20, 0.50, 1.00, 2.00]
+        mods = ev.mod
+        has_ctrl = bool(mods & (pygame.KMOD_META | pygame.KMOD_GUI | pygame.KMOD_CTRL))
 
         def step_awrn(direction: int) -> None:
             current = app.analysis_wide_root_noise
@@ -1041,24 +1044,22 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
             core.toggle_analysis()
         elif ev.key == pygame.K_e:
             ui.show_elo = not ui.show_elo
-        elif ev.key == pygame.K_n and (ev.mod & pygame.KMOD_SHIFT):
+        elif ev.key == pygame.K_n and (mods & pygame.KMOD_SHIFT) and not has_ctrl:
             core.new_game()
-        elif ev.key == pygame.K_v and (
-            ev.mod & (pygame.KMOD_META | pygame.KMOD_GUI | pygame.KMOD_CTRL)
-        ):
+        elif ev.key == pygame.K_v and has_ctrl:
             load_from_clipboard()
-        elif ev.key == pygame.K_c and (
-            ev.mod & (pygame.KMOD_META | pygame.KMOD_GUI | pygame.KMOD_CTRL)
-        ):
+        elif ev.key == pygame.K_c and has_ctrl:
             copy_hexworld_url()
-        elif ev.key == pygame.K_s and (
-            ev.mod & (pygame.KMOD_META | pygame.KMOD_GUI | pygame.KMOD_CTRL)
-        ):
+        elif ev.key == pygame.K_s and has_ctrl:
             save_screenshot()
-        elif ev.key == pygame.K_c and (ev.mod & pygame.KMOD_SHIFT):
+        elif ev.key == pygame.K_c and (mods & pygame.KMOD_SHIFT):
             core.clear_analysis_caches()
-        elif ev.key == pygame.K_p and (ev.mod & pygame.KMOD_SHIFT):
+        elif ev.key == pygame.K_p and (mods & pygame.KMOD_SHIFT) and not has_ctrl:
             core.try_pass_move()
+        elif has_ctrl and ev.key in (pygame.K_UP, pygame.K_n):
+            core.step_forward_n(10)
+        elif has_ctrl and ev.key in (pygame.K_DOWN, pygame.K_p):
+            core.step_back_n(10)
         elif ev.key in (pygame.K_UP, pygame.K_p, pygame.K_LEFT):
             core.step_back()
         elif ev.key in (pygame.K_DOWN, pygame.K_n, pygame.K_RIGHT):

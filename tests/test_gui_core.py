@@ -101,6 +101,25 @@ class GuiCoreTests(unittest.TestCase):
         self.assertEqual(core.app.future_moves, [])
         self.assertEqual(core.move_coords(board.history[-1]), core.move_coords(last))
 
+    def test_step_back_n_steps_as_much_as_possible(self):
+        core, _engine = self._mk_core()
+
+        self._play_two_moves(core)
+
+        self.assertTrue(core.step_back_n(10))
+        self.assertEqual(len(core.board.history), 0)
+        self.assertEqual(len(core.app.future_moves), 2)
+
+    def test_step_forward_n_steps_as_much_as_possible(self):
+        core, _engine = self._mk_core()
+
+        self._play_two_moves(core)
+        core.step_back_n(10)
+
+        self.assertTrue(core.step_forward_n(10))
+        self.assertEqual(len(core.board.history), 2)
+        self.assertEqual(core.app.future_moves, [])
+
     def test_truncate_future_moves_on_conflict(self):
         core, _engine = self._mk_core()
         board = core.board
@@ -331,6 +350,24 @@ class GuiCoreTests(unittest.TestCase):
                     self.assertEqual(len(core.board.history), history_len)
                     self._assert_no_undo(new_calls)
                 self.assertEqual(core.app.future_moves, [])
+
+    def test_delete_tail_prunes_future_cache_when_truncating(self):
+        core, _engine = self._mk_core()
+
+        self._play_two_moves(core)
+        core.app.analysis_cache[(0, int(Side.RED))] = ["a"]
+        core.app.analysis_cache[(1, int(Side.BLUE))] = ["b"]
+        core.app.analysis_cache[(2, int(Side.RED))] = ["c"]
+
+        core.go_first()
+        self.assertTrue(core.app.future_moves)
+
+        core.delete_tail()
+
+        self.assertEqual(core.app.future_moves, [])
+        self.assertIn((0, int(Side.RED)), core.app.analysis_cache)
+        self.assertNotIn((1, int(Side.BLUE)), core.app.analysis_cache)
+        self.assertNotIn((2, int(Side.RED)), core.app.analysis_cache)
 
 
 if __name__ == "__main__":

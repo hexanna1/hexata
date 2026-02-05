@@ -71,23 +71,10 @@ class GuiCore:
         self.app.analysis_cache.clear()
         self.cache_reset_sig()
 
-    def clear_cached_analysis_from_ply(self, cutoff_len: int, *, keep_current: bool) -> None:
-        if cutoff_len <= 0:
-            self.clear_all_cached_analysis()
-            return
-        if keep_current:
-            keep_len = cutoff_len
-            pruned = {
-                key: val
-                for key, val in self.app.analysis_cache.items()
-                if key[0] <= keep_len
-            }
-        else:
-            pruned = {
-                key: val
-                for key, val in self.app.analysis_cache.items()
-                if key[0] < cutoff_len
-            }
+    def clear_cached_analysis_from_ply(self, start_ply: int) -> None:
+        pruned = {
+            key: val for key, val in self.app.analysis_cache.items() if key[0] < start_ply
+        }
         if pruned == self.app.analysis_cache:
             return
         self.app.analysis_cache = pruned
@@ -615,38 +602,49 @@ class GuiCore:
         return False
 
     def step_back(self) -> bool:
-        if not self.board.history:
+        return self.step_back_n(1)
+
+    def step_forward(self) -> bool:
+        return self.step_forward_n(1)
+
+    def step_back_n(self, count: int) -> bool:
+        if count <= 0 or not self.board.history:
             return False
-        last = self.board.history[-1]
         did = False
 
         def mutate() -> None:
             nonlocal did
-            did = self.undo_one()
+            for _ in range(count):
+                if not self.board.history:
+                    break
+                last = self.board.history[-1]
+                if not self.undo_one():
+                    break
+                self.app.future_moves.append(last)
+                did = True
 
         self.with_analysis_paused(
             mutate, clear_analysis=self.app.analysis_running, stop_engine=False
         )
-        if did:
-            self.app.future_moves.append(last)
         return did
 
-    def step_forward(self) -> bool:
-        if not self.app.future_moves:
+    def step_forward_n(self, count: int) -> bool:
+        if count <= 0 or not self.app.future_moves:
             return False
-
-        mv = self.app.future_moves[-1]
         did = False
 
         def mutate() -> None:
             nonlocal did
-            if not self.apply_move_to_state_from_move(mv):
-                return
-            did = True
+            for _ in range(count):
+                if not self.app.future_moves:
+                    break
+                mv = self.app.future_moves[-1]
+                if not self.apply_move_to_state_from_move(mv):
+                    break
+                self.app.future_moves.pop()
+                did = True
 
         self.with_analysis_paused(mutate, stop_engine=False)
-        if did:
-            self.app.future_moves.pop()
         return did
 
     def go_first(self) -> bool:
@@ -688,6 +686,7 @@ class GuiCore:
     def delete_tail(self) -> bool:
         if self.app.future_moves:
             self.app.future_moves.clear()
+            self.clear_cached_analysis_from_ply(len(self.board.history) + 1)
             return True
         if not self.board.history:
             return False
@@ -702,7 +701,7 @@ class GuiCore:
             mutate, clear_analysis=self.app.analysis_running, stop_engine=False
         )
         if did:
-            self.clear_cached_analysis_from_ply(len(self.board.history), keep_current=True)
+            self.clear_cached_analysis_from_ply(len(self.board.history) + 1)
         return did
 
     def try_play_moves(self, moves: Sequence[Tuple[int, int]]) -> bool:
@@ -728,7 +727,9 @@ class GuiCore:
                 return
 
             if self.app.future_moves:
-                self.clear_cached_analysis_from_ply(len(self.board.history), keep_current=False)
+                self.clear_cached_analysis_from_ply(
+                    len(self.board.history) + 1
+                )
                 self.app.future_moves.clear()
 
             for col, row in remaining:
@@ -755,7 +756,9 @@ class GuiCore:
             if not self.apply_pass_to_state():
                 return
             if self.app.future_moves:
-                self.clear_cached_analysis_from_ply(len(self.board.history), keep_current=False)
+                self.clear_cached_analysis_from_ply(
+                    len(self.board.history) + 1
+                )
                 self.app.future_moves.clear()
             did = True
 
