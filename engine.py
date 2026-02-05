@@ -94,6 +94,7 @@ class AnalysisMove:
     winrate: Optional[float]
     visits: Optional[int]
     prior: Optional[float]
+    pv: Optional[Tuple[Tuple[int, int], ...]]
 
 
 def parse_kata_analyze_line(line: str, board_n: int) -> List[AnalysisMove]:
@@ -104,8 +105,19 @@ def parse_kata_analyze_line(line: str, board_n: int) -> List[AnalysisMove]:
     for m in _INFO_REC_RE.finditer(line):
         move, rest = m.group(1), m.group(2)
         pv_pos = rest.find(" pv ")
+        pv: Optional[Tuple[Tuple[int, int], ...]] = None
         if pv_pos >= 0:
+            pv_str = rest[pv_pos + 4 :].strip()
             rest = rest[:pv_pos]
+            if pv_str:
+                pv_list: List[Tuple[int, int]] = []
+                for tok in pv_str.split():
+                    coord = parse_analysis_move_token(tok, board_n=board_n)
+                    if coord is None:
+                        break
+                    pv_list.append(coord)
+                if pv_list:
+                    pv = tuple(pv_list)
 
         visits = _get_field(rest, "visits", int)
         if visits == 0:
@@ -129,6 +141,7 @@ def parse_kata_analyze_line(line: str, board_n: int) -> List[AnalysisMove]:
                 winrate=winrate,
                 visits=visits,
                 prior=prior,
+                pv=pv,
             )
         )
 

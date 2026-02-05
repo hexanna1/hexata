@@ -569,11 +569,55 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
         ax, ay = cell[0] - 1, cell[1] - 1
         pts = poly(ax, ay)
         base = RED if side == Side.RED else BLUE
-        ghost = lerp_rgb(base, OFF_WHITE, 0.45)
+        ghost = lerp_rgb(base, OFF_WHITE, 0.5)
         pygame.draw.polygon(screen, ghost, pts, 0)
         pygame.draw.polygon(screen, GRID_EDGE, pts, 1)
 
-    def draw_analysis_text(show_prior: bool, show_coords: bool) -> None:
+    def get_hover_pv(
+        hover_cell: Optional[Tuple[int, int]],
+    ) -> Optional[Tuple[Tuple[int, int], ...]]:
+        if hover_cell is None:
+            return None
+        if app.candidates:
+            return None
+        col, row = hover_cell
+        if not board.is_empty(col, row):
+            return None
+        for r in core.get_active_analysis():
+            if r.col == col and r.row == row and r.pv:
+                return r.pv
+        return None
+
+    def should_show_pv(pv: Optional[Tuple[Tuple[int, int], ...]]) -> bool:
+        return bool(pv) and len(pv) > 1
+
+    def draw_pv_ghosts(pv: Tuple[Tuple[int, int], ...], start_side: Side) -> None:
+        side = start_side
+        for cell in pv:
+            if board.is_empty(*cell):
+                draw_ghost_cell(cell, side)
+            side = core.flip_side(side)
+
+    def draw_pv_numbers(pv: Tuple[Tuple[int, int], ...], start_side: Side) -> None:
+        side = start_side
+        for idx, cell in enumerate(pv):
+            if idx == 0:
+                side = core.flip_side(side)
+                continue
+            if not board.is_empty(*cell):
+                side = core.flip_side(side)
+                continue
+            ax, ay = cell[0] - 1, cell[1] - 1
+            cx, cy = center(ax, ay)
+            text.board.blit_center(str(idx + 1), OFF_WHITE, cx, cy)
+            side = core.flip_side(side)
+
+    def draw_analysis_text(
+        show_prior: bool,
+        show_coords: bool,
+        *,
+        suppress_cells: Optional[set[Tuple[int, int]]] = None,
+    ) -> None:
         if show_coords:
             for row in range(1, board.n + 1):
                 for col in range(1, board.n + 1):
@@ -591,6 +635,8 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
             if r.col is None or r.row is None:
                 continue
             col, row = r.col, r.row
+            if suppress_cells and (col, row) in suppress_cells:
+                continue
             if not board.is_empty(col, row):
                 continue
             ax, ay = col - 1, row - 1
@@ -922,7 +968,7 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
     def draw_help_overlay() -> None:
         lines = [
             "Help (? to hide)",
-            "space:analysis   ,:play best   esc:quit",
+            "space:analysis   ,:play best/PV   esc:quit",
             "p:prev   n:next   f:first   l:last   shift+p:pass",
             "t:priors   c:coords   m:moves   e:elo",
             "ctrl+v:load   ctrl+c:copy   shift+c:clear cache",
@@ -1029,10 +1075,14 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
             if had and app.analysis_running:
                 core.resume_analysis()
         elif ev.key == pygame.K_COMMA:
-            top, _top_visits = core.get_top_move()
-            if top is not None:
-                col, row = top
-                core.try_play_move(col, row)
+            pv = get_hover_pv(ui.hover_cell)
+            if should_show_pv(pv):
+                core.try_play_moves(list(pv))
+            else:
+                top, _top_visits = core.get_top_move()
+                if top is not None:
+                    col, row = top
+                    core.try_play_move(col, row)
         elif ev.key in (pygame.K_PLUS, pygame.K_EQUALS):
             app.pending_size = min(42, app.pending_size + 1)
         elif ev.key in (pygame.K_MINUS, pygame.K_UNDERSCORE):
@@ -1180,6 +1230,9 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
     ) -> None:
         screen.fill(BG)
         draw_hud()
+        pv = get_hover_pv(ui.hover_cell)
+        show_pv = should_show_pv(pv)
+        pv_cells = set(pv[1:]) if show_pv else None
         drag_target = None
         drag_side = None
         drag_source = None
@@ -1194,20 +1247,24 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
                 ):
                     drag_target = ui.hover_cell
         draw_grid_and_stones(top_cell, top_visits, show_prior, skip_cell=None)
+        if show_pv:
+            draw_pv_ghosts(pv, core.current_side())
         if drag_side is not None:
             if drag_source is not None:
                 draw_ghost_cell(drag_source, drag_side)
             if drag_target is not None:
                 draw_ghost_cell(drag_target, drag_side)
         draw_next_future_outline()
-        if drag_target is None and ui.hover_cell is not None and board.is_empty(*ui.hover_cell):
+        if drag_target is None and ui.hover_cell is not None and board.is_empty(*ui.hover_cell) and not show_pv:
             ax, ay = ui.hover_cell[0] - 1, ui.hover_cell[1] - 1
             cx, cy = center(ax, ay)
             dot_r = max(2, int(layout.r * 0.12))
             pygame.draw.circle(screen, HOVER_DOT, (int(cx), int(cy)), dot_r, 0)
         draw_borders()
         draw_side_coords()
-        draw_analysis_text(show_prior, show_coords)
+        draw_analysis_text(show_prior, show_coords, suppress_cells=pv_cells)
+        if not show_coords and show_pv:
+            draw_pv_numbers(pv, core.current_side())
         if not show_coords:
             draw_move_numbers(ui.show_move_numbers)
         draw_movelist_panel()

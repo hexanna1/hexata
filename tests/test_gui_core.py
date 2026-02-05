@@ -155,10 +155,10 @@ class GuiCoreTests(unittest.TestCase):
         core, _engine = self._mk_core()
 
         primary = [
-            AnalysisMove("a1", order=1, col=1, row=1, winrate=0.4, visits=10, prior=0.2),
+            AnalysisMove("a1", order=1, col=1, row=1, winrate=0.4, visits=10, prior=0.2, pv=None),
         ]
         secondary = [
-            AnalysisMove("a1", order=9, col=1, row=1, winrate=0.7, visits=50, prior=0.9),
+            AnalysisMove("a1", order=9, col=1, row=1, winrate=0.7, visits=50, prior=0.9, pv=None),
         ]
 
         merged = core._merge_analysis_lists(primary, secondary)
@@ -238,7 +238,7 @@ class GuiCoreTests(unittest.TestCase):
         core, engine = self._mk_core()
 
         cache_key = core.cache_key()
-        cached = [AnalysisMove("a1", order=1, col=1, row=1, winrate=0.5, visits=10, prior=0.2)]
+        cached = [AnalysisMove("a1", order=1, col=1, row=1, winrate=0.5, visits=10, prior=0.2, pv=None)]
         core.app.analysis_cache[cache_key] = cached
         self.assertEqual(core.get_active_analysis(), cached)
 
@@ -252,7 +252,7 @@ class GuiCoreTests(unittest.TestCase):
         core.clear_candidates()
         core._set_analysis_enabled(True)
         engine.analysis = [
-            AnalysisMove("b2", order=1, col=2, row=2, winrate=0.6, visits=8, prior=None)
+            AnalysisMove("b2", order=1, col=2, row=2, winrate=0.6, visits=8, prior=None, pv=None)
         ]
         self.assertEqual(core.get_active_analysis(), engine.analysis)
 

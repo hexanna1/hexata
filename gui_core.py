@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, NoReturn, Optional, Tuple
+from typing import List, NoReturn, Optional, Sequence, Tuple
 
 from board import HexBoard, Move, MoveKind, Side, coord_to_human
 from engine import KataHexEngine, AnalysisMove
@@ -194,6 +194,7 @@ class GuiCore:
         best = primary if self._visits(primary.visits) >= self._visits(secondary.visits) else secondary
         order = primary.order if primary.order is not None else secondary.order
         prior = primary.prior if primary.prior is not None else secondary.prior
+        pv = primary.pv if primary.pv is not None else secondary.pv
         return AnalysisMove(
             move=primary.move,
             order=order,
@@ -202,6 +203,7 @@ class GuiCore:
             winrate=best.winrate,
             visits=best.visits,
             prior=prior,
+            pv=pv,
         )
 
     def _merge_analysis_lists(
@@ -237,6 +239,7 @@ class GuiCore:
             winrate=winrate,
             visits=visits,
             prior=None,
+            pv=None,
         )
         merged = self._merge_analysis_lists(base, [incoming])
         if merged == base:
@@ -284,6 +287,7 @@ class GuiCore:
                     winrate=wr,
                     visits=visits,
                     prior=None,
+                    pv=None,
                 )
             )
         return out
@@ -701,28 +705,42 @@ class GuiCore:
             self.clear_cached_analysis_from_ply(len(self.board.history), keep_current=True)
         return did
 
-    def try_play_move(self, col: int, row: int) -> bool:
-        if self.app.future_moves:
-            mv = self.app.future_moves[-1]
-            coords = self.move_coords(mv)
-            if coords == (col, row):
-                return self.step_forward()
-
+    def try_play_moves(self, moves: Sequence[Tuple[int, int]]) -> bool:
+        if not moves:
+            return False
         did = False
 
         def mutate() -> None:
             nonlocal did
-            if not self.apply_move_to_state(col, row):
+            remaining = list(moves)
+            while remaining and self.app.future_moves:
+                mv = self.app.future_moves[-1]
+                coords = self.move_coords(mv)
+                if coords != remaining[0]:
+                    break
+                if not self.apply_move_to_state_from_move(mv):
+                    return
+                self.app.future_moves.pop()
+                remaining.pop(0)
+                did = True
+
+            if not remaining:
                 return
 
             if self.app.future_moves:
                 self.clear_cached_analysis_from_ply(len(self.board.history), keep_current=False)
                 self.app.future_moves.clear()
 
-            did = True
+            for col, row in remaining:
+                if not self.apply_move_to_state(col, row):
+                    return
+                did = True
 
         self.with_analysis_paused(mutate, stop_engine=False)
         return did
+
+    def try_play_move(self, col: int, row: int) -> bool:
+        return self.try_play_moves([(col, row)])
 
     def try_pass_move(self) -> bool:
         if self.app.future_moves:
