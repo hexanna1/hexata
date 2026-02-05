@@ -11,7 +11,6 @@ from hexworld import parse_hexworld_position
 @dataclass
 class CandidateRun:
     key: Tuple[int, int]
-    base_visits: int
     target_visits: float
     started_at: float
 
@@ -306,7 +305,6 @@ class GuiCore:
         base_visits = prev_visits or 0
         self.app.candidate_run = CandidateRun(
             key=key,
-            base_visits=base_visits,
             target_visits=base_visits * self.app.candidate_ratio,
             started_at=now,
         )
@@ -348,9 +346,6 @@ class GuiCore:
                 return
             if visits <= target:
                 return
-            self.app.candidate_results[key] = (winrate, visits)
-            if winrate is not None and visits > 0:
-                self._promote_candidate_to_cache(key, winrate, visits)
             self._end_candidate_run()
 
     def get_active_analysis(self) -> List[AnalysisMove]:

@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import os
 import re
-import shlex
 import sys
 import threading
 import subprocess
@@ -10,20 +8,6 @@ from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
 from board import Side
-
-# -------------------- paths / engine cmd --------------------
-ENGINE_CMD_STR = (
-    "path/to/katahex gtp -config path/to/engine.cfg -model path/to/weights.bin.gz"
-)
-
-
-def _expand_cmd(cmd_str: str) -> List[str]:
-    parts = shlex.split(cmd_str)
-    return [os.path.expanduser(p) for p in parts]
-
-
-ENGINE_CMD = _expand_cmd(ENGINE_CMD_STR)
-
 
 # -------------------- coords --------------------
 # Three coordinate systems:
@@ -153,11 +137,8 @@ def parse_kata_analyze_line(line: str, board_n: int) -> List[AnalysisMove]:
 
 
 # -------------------- engine plumbing --------------------
-def _pump(stream, echo_filter: Optional[Callable[[str], bool]], cb=None):
+def _pump(stream, cb: Optional[Callable[[str], None]] = None) -> None:
     for line in iter(stream.readline, ""):
-        if echo_filter is None or echo_filter(line):
-            sys.stdout.write(line)
-            sys.stdout.flush()
         if cb:
             cb(line)
 
@@ -179,9 +160,8 @@ class KataHexEngine:
         self,
         board_size: int,
         *,
-        cmd: Optional[List[str]] = None,
-        echo_engine_output: bool = False,
-        echo_analysis_only: bool = True,
+        cmd: List[str],
+        engine_echo: bool = False,
         suppress_stderr: bool = True,
     ):
         self.board_n = board_size
@@ -193,6 +173,7 @@ class KataHexEngine:
         self._io_lock = threading.Lock()
         self._io_log: List[Tuple[str, str, int]] = []
         self._io_max = 200
+        self._engine_echo = engine_echo
 
         # KataHex uses a nonstandard GTP-ish dialect. The simplest sync that
         # works reliably is to mute analysis until the first "=" response after
@@ -214,13 +195,8 @@ class KataHexEngine:
                     return
                 self._by_move = {r.move: r for r in recs}
 
-        def echo_filter(line: str) -> bool:
-            if not echo_engine_output:
-                return False
-            return ("info move " in line) if echo_analysis_only else True
-
         self.proc = subprocess.Popen(
-            cmd or ENGINE_CMD,
+            cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=(subprocess.DEVNULL if suppress_stderr else subprocess.PIPE),
@@ -229,16 +205,17 @@ class KataHexEngine:
         )
 
         def on_stdout_line(line: str) -> None:
+            self._echo_debug(line)
             self._log_io("in", line)
             on_line(line)
 
         threading.Thread(
             target=_pump,
-            args=(self.proc.stdout, echo_filter, on_stdout_line),
+            args=(self.proc.stdout, on_stdout_line),
             daemon=True,
         ).start()
         if not suppress_stderr and self.proc.stderr is not None:
-            threading.Thread(target=_pump, args=(self.proc.stderr, echo_filter, None), daemon=True).start()
+            threading.Thread(target=_pump, args=(self.proc.stderr, self._echo_debug), daemon=True).start()
 
         self.set_board_size(board_size)
         self.clear_board()
@@ -313,6 +290,12 @@ class KataHexEngine:
     def _truncate_io(msg: str, n: int = 20) -> str:
         cleaned = msg.replace("\n", " ").strip()
         return cleaned[:n]
+
+    def _echo_debug(self, msg: str) -> None:
+        if not self._engine_echo:
+            return
+        sys.stderr.write(msg)
+        sys.stderr.flush()
 
     def _log_io(self, direction: str, msg: str) -> None:
         short = self._truncate_io(msg)

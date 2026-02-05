@@ -16,8 +16,8 @@ A lightweight, keyboard-first GUI for analyzing Hex with the [KataHex](https://w
 ## Quick setup
 - Install deps: `pip install -r requirements.txt` (pygame only).
 - Install KataHex separately (engine binary, config, and model weights): [KataHex 20240812](https://github.com/hzyhhzy/KataGomo_fork/releases/tag/Hex_20240812)
-- Edit `ENGINE_CMD_STR` in `engine.py` to point at your KataHex binary, config, and model.
-- Example format: `ENGINE_CMD_STR = "path/to/katahex gtp -config path/to/engine.cfg -model path/to/weights.bin.gz"`
+- Edit `config.ini` and set `[engine].cmd` to point at your KataHex binary, config, and model.
+- Example format: `cmd = path/to/katahex gtp -config path/to/engine.cfg -model path/to/weights.bin.gz`
 - Run: `python3 main.py`
 
 ## Quick controls

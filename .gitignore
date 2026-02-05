@@ -211,3 +211,6 @@ __marimo__/
 
 # GUI screenshots
 screenshots/
+
+# Local config overrides
+config.local.ini
