@@ -9,6 +9,7 @@ A lightweight, keyboard-first GUI for analyzing Hex with the [KataHex](https://w
 - Live engine analysis overlays (winrate/visits, priors, candidates, Elo view, PVs).
 - Dedicated candidate search mode with automatic switching.
 - Move list panel with undo/redo, navigation ([HexWorld](https://hexworld.org/board/#14c1)-style shortcuts), and eval graph (winrate or Elo).
+- Native handling for pass and swap moves.
 - Clipboard import/export to HexWorld.
 - Adjustable board size and analysis noise.
 - Fast, responsive feel with low engine and UI latency.
@@ -43,7 +44,6 @@ A few implementation details were tricky to get right and are useful background 
 - Candidate search runs with analysisWideRootNoise set to 0, matching non-root analysis behavior for cleaner comparisons.
 
 ## Limitations
-- No native swap rule handling (except when loading a HexWorld position).
 - No branching move history, buttons, or clickable move list.
 - Only tested on macOS; other platforms or some HiDPI setups may need tweaks.
 - No robust engine error handling or recovery yet, though it hasn’t been an issue in testing.

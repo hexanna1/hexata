@@ -18,7 +18,7 @@ warnings.filterwarnings(
 
 import pygame
 
-from board import HexBoard, Side, coord_to_human, col_to_human_letters
+from board import HexBoard, MoveKind, Side, coord_to_human, col_to_human_letters
 from engine import KataHexEngine, AnalysisMove
 from gui_core import GuiCore
 
@@ -517,8 +517,12 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
                     continue
                 ax, ay = coords[0] - 1, coords[1] - 1
                 cx, cy = center(ax, ay)
-                txt = str(idx + 1)
-                if idx == last_idx:
+                txt = "S" if core.is_swapped_stone_index(idx) else str(idx + 1)
+                swap_active_here = (
+                    core.is_swapped_stone_index(idx)
+                    and board.history[last_idx].kind == MoveKind.SWAP
+                )
+                if idx == last_idx or swap_active_here:
                     colr = OFF_WHITE
                 else:
                     base = RED if mv.side == Side.RED else BLUE
@@ -528,6 +532,8 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
 
         mv = board.history[-1]
         coords = core.move_coords(mv)
+        if coords is None and mv.kind == MoveKind.SWAP and board.history:
+            coords = core.move_coords(board.history[0])
         if coords is None:
             return
         ax, ay = coords[0] - 1, coords[1] - 1
@@ -838,9 +844,9 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
             red_i = 2 * row_idx
             blue_i = red_i + 1
 
-            red_mv = core.move_to_label(moves[red_i])
+            red_mv = core.move_to_label_in_sequence(moves, red_i)
             blue_mv = (
-                core.move_to_label(moves[blue_i]) if blue_i < total_moves else None
+                core.move_to_label_in_sequence(moves, blue_i) if blue_i < total_moves else None
             )
 
             odd = 2 * row_idx + 1
@@ -947,7 +953,7 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
                     parts += [(" ", BLACK), (f"({vv})", BLACK)]
         blit_segments(12, 10, parts, use_small=False)
 
-        help_line = "space:analysis • ,:play best • +/-/enter:size • ?:help"
+        help_line = "space:analysis • ,:play best • s:swap • +/-/enter:size • ?:help"
         text.hud_small.blit_line(help_line, BLACK, 12, 32)
 
         awrn = f"{app.analysis_wide_root_noise:.2f}".rstrip("0").rstrip(".")
@@ -969,7 +975,7 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
         lines = [
             "Help (? to hide)",
             "space:analysis   ,:play best/PV   esc:quit",
-            "p:prev   n:next   f:first   l:last   shift+p:pass",
+            "p:prev   n:next   f:first   l:last   shift+p:pass   s:swap",
             "ctrl+p:prev 10   ctrl+n:next 10",
             "t:priors   c:coords   m:moves   e:elo",
             "ctrl+v:load   ctrl+c:copy   shift+c:clear cache",
@@ -1014,6 +1020,7 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
         speed_last_t: Optional[float] = None
         speed_last_total: Optional[int] = None
         speed_vps: Optional[float] = None
+        swap_click_candidate: bool = False
 
     def handle_keydown(ev: pygame.event.Event, ui: UiState) -> None:
         nonlocal running
@@ -1056,6 +1063,8 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
             core.clear_analysis_caches()
         elif ev.key == pygame.K_p and (mods & pygame.KMOD_SHIFT) and not has_ctrl:
             core.try_pass_move()
+        elif ev.key == pygame.K_s and not has_ctrl:
+            core.try_swap_move()
         elif has_ctrl and ev.key in (pygame.K_p, pygame.K_LEFT, pygame.K_UP):
             core.step_back_n(10)
         elif has_ctrl and ev.key in (pygame.K_n, pygame.K_RIGHT, pygame.K_DOWN):
@@ -1100,6 +1109,7 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
         if ev.button == 1:
             mx, my = window_to_surface_pos(ev.pos)
             cell = pixel_to_cell(mx, my)
+            ui.swap_click_candidate = False
             if cell is None:
                 return
             col, row = cell
@@ -1109,6 +1119,10 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
             idx = core.find_history_index(col, row)
             if idx is None:
                 return
+            if core.can_swap_move():
+                first = board.history[0] if board.history else None
+                first_coords = core.move_coords(first) if first is not None else None
+                ui.swap_click_candidate = first_coords == (col, row)
             ui.drag_move = True
             ui.drag_move_from = cell
             ui.drag_move_idx = idx
@@ -1131,9 +1145,17 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
                 ):
                     col, row = cell
                     core.try_drag_move(ui.drag_move_idx, ui.drag_move_from, col, row)
+                elif (
+                    cell is not None
+                    and ui.drag_move_from is not None
+                    and cell == ui.drag_move_from
+                    and ui.swap_click_candidate
+                ):
+                    core.try_swap_move()
             ui.drag_move = False
             ui.drag_move_from = None
             ui.drag_move_idx = None
+            ui.swap_click_candidate = False
         elif ev.button == 3:
             mx, my = window_to_surface_pos(ev.pos)
             cell = pixel_to_cell(mx, my)
@@ -1199,7 +1221,7 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
 
         if app.analysis_running:
             total_visits = 0
-            for r in core.engine.get_analysis():
+            for r in core.get_engine_analysis():
                 if r.visits:
                     total_visits += r.visits
             if total_visits > 0:

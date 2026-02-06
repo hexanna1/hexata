@@ -1,6 +1,6 @@
 import unittest
 
-from board import HexBoard, Move, Side
+from board import HexBoard, Move, MoveKind, Side
 from engine import AnalysisMove
 from gui_core import GuiCore
 
@@ -280,6 +280,169 @@ class GuiCoreTests(unittest.TestCase):
         self.assertTrue(did)
         self.assertEqual(self._history_coords(core), [(1, 1), (2, 1), None])
         self.assertEqual(self._future_coords(core), [(3, 1)])
+
+    def test_try_swap_move_sequence_updates_board_and_engine_mapping(self):
+        core, engine = self._mk_core()
+
+        core.try_play_move(3, 2)  # c2
+        self.assertTrue(core.try_swap_move())
+        core.try_play_move(5, 4)  # e4
+
+        self.assertEqual([mv.kind for mv in core.board.history], [MoveKind.PLACE, MoveKind.SWAP, MoveKind.PLACE])
+        self.assertEqual(self._history_coords(core), [(2, 3), None, (5, 4)])  # b3, swap, e4
+        self.assertEqual(core.board.history[0].side, Side.BLUE)
+        self.assertEqual(core.board.history[2].side, Side.RED)
+        self.assertEqual(core.board.get(2, 3), int(Side.BLUE))
+        self.assertEqual(core.board.get(5, 4), int(Side.RED))
+        self.assertEqual(core.board.get(3, 2), -1)
+        self.assertEqual(engine.played, [(Side.RED, 3, 2), (Side.BLUE, 4, 5)])  # c2, d5
+
+    def test_movelist_label_uses_original_opening_after_swap(self):
+        core, _engine = self._mk_core()
+
+        core.try_play_move(3, 2)  # c2
+        core.try_swap_move()
+        core.try_play_move(5, 4)  # e4
+
+        moves = list(core.board.history)
+        labels = [core.move_to_label_in_sequence(moves, i) for i in range(len(moves))]
+        self.assertEqual(labels, ["c2", "swap", "e4"])
+
+    def test_try_swap_move_prefers_redo_swap_over_new_swap(self):
+        core, _engine = self._mk_core()
+
+        core.try_play_move(3, 2)  # c2
+        core.try_swap_move()
+        core.try_play_move(5, 4)  # e4
+        core.step_back_n(2)  # now at c2 with swap/e4 in future
+
+        did = core.try_swap_move()
+
+        self.assertTrue(did)
+        self.assertEqual([mv.kind for mv in core.board.history], [MoveKind.PLACE, MoveKind.SWAP])
+        self.assertEqual(self._history_coords(core), [(2, 3), None])
+        self.assertEqual(self._future_coords(core), [(5, 4)])
+
+    def test_drag_first_move_with_future_swap_updates_swap_and_truncates_conflict(self):
+        core, _engine = self._mk_core()
+
+        core.try_play_move(3, 2)  # c2
+        core.try_swap_move()
+        core.try_play_move(2, 4)  # b4
+        core.step_back_n(2)  # history: c2, future: swap, b4
+
+        did = core.try_drag_move(0, (3, 2), 4, 2)  # d2 -> swap target b4
+
+        self.assertTrue(did)
+        self.assertEqual(self._history_coords(core), [(4, 2)])
+        self.assertEqual([mv.kind for mv in reversed(core.app.future_moves)], [MoveKind.SWAP])
+        swap_mv = core.app.future_moves[-1]
+        self.assertEqual((swap_mv.col, swap_mv.row), (4, 2))
+        seq = list(core.board.history) + list(reversed(core.app.future_moves))
+        self.assertEqual([core.move_to_label_in_sequence(seq, i) for i in range(len(seq))], ["d2", "swap"])
+
+    def test_drag_swapped_stone_truncates_future_on_stone_conflict(self):
+        core, _engine = self._mk_core()
+
+        core.try_play_move(3, 2)  # c2
+        core.try_swap_move()
+        core.try_play_move(5, 4)  # e4
+        core.step_back()  # history: c2,swap ; future: e4
+
+        did = core.try_drag_move(0, (2, 3), 5, 4)  # drag swapped stone onto future e4
+
+        self.assertTrue(did)
+        self.assertEqual(core.app.future_moves, [])
+        self.assertEqual([mv.kind for mv in core.board.history], [MoveKind.PLACE, MoveKind.SWAP])
+        self.assertEqual((core.board.history[1].col, core.board.history[1].row), (4, 5))
+
+    def test_drag_in_swapped_position_keeps_legal_future_moves(self):
+        core, _engine = self._mk_core()
+
+        core.try_play_move(3, 2)  # c2
+        core.try_swap_move()
+        core.try_play_move(5, 4)  # e4
+        core.try_play_move(1, 5)  # a5
+        core.step_back()  # history: c2,swap,e4 ; future: a5
+
+        did = core.try_drag_move(2, (5, 4), 5, 5)  # e4 -> e5
+
+        self.assertTrue(did)
+        self.assertEqual(self._history_coords(core), [(2, 3), None, (5, 5)])
+        self.assertEqual(self._future_coords(core), [(1, 5)])
+
+    def test_drag_first_move_with_future_swap_keeps_legal_reuse(self):
+        core, _engine = self._mk_core()
+
+        core.try_play_move(3, 2)  # c2
+        core.try_swap_move()
+        core.try_play_move(4, 2)  # d2
+        core.step_back_n(2)  # history: c2, future: swap, d2
+
+        did = core.try_drag_move(0, (3, 2), 4, 2)  # c2 -> d2
+
+        self.assertTrue(did)
+        self.assertEqual(self._history_coords(core), [(4, 2)])
+        self.assertEqual([mv.kind for mv in reversed(core.app.future_moves)], [MoveKind.SWAP, MoveKind.PLACE])
+        seq = list(core.board.history) + list(reversed(core.app.future_moves))
+        self.assertEqual([core.move_to_label_in_sequence(seq, i) for i in range(len(seq))], ["d2", "swap", "d2"])
+
+        core.step_forward_n(2)
+        self.assertEqual(self._history_coords(core), [(2, 4), None, (4, 2)])
+        self.assertEqual(core.board.get(2, 4), int(Side.BLUE))
+        self.assertEqual(core.board.get(4, 2), int(Side.RED))
+
+    def test_build_hexworld_url_emits_swap_token(self):
+        core, _engine = self._mk_core()
+
+        core.try_play_move(3, 2)  # c2
+        core.try_swap_move()
+        core.try_play_move(5, 4)  # e4
+
+        self.assertEqual(core.build_hexworld_url(), "https://hexworld.org/board/#5c1,c2:se4")
+
+    def test_load_hexworld_text_with_swap(self):
+        core, engine = self._mk_core()
+
+        ok = core.load_hexworld_text("https://hexworld.org/board/#5c1,c2:se4")
+
+        self.assertTrue(ok)
+        self.assertEqual([mv.kind for mv in core.board.history], [MoveKind.PLACE, MoveKind.SWAP, MoveKind.PLACE])
+        self.assertEqual(self._history_coords(core), [(2, 3), None, (5, 4)])
+        self.assertEqual([mv.side for mv in core.board.history], [Side.BLUE, Side.BLUE, Side.RED])
+        self.assertEqual(core.current_side(), Side.BLUE)
+        self.assertEqual(core.board.get(2, 3), int(Side.BLUE))
+        self.assertEqual(core.board.get(5, 4), int(Side.RED))
+        self.assertEqual(core.board.get(3, 2), -1)
+        self.assertEqual(engine.played, [(Side.RED, 3, 2), (Side.BLUE, 4, 5)])
+
+    def test_load_hexworld_text_allows_post_swap_reuse_of_opening_coord(self):
+        core, _engine = self._mk_core()
+
+        ok = core.load_hexworld_text("https://hexworld.org/board/#5c1,c2:sc2")
+
+        self.assertTrue(ok)
+        self.assertEqual([mv.kind for mv in core.board.history], [MoveKind.PLACE, MoveKind.SWAP, MoveKind.PLACE])
+        self.assertEqual(core.board.get(2, 3), int(Side.BLUE))  # swapped opening stone
+        self.assertEqual(core.board.get(3, 2), int(Side.RED))  # legal reuse of c2 after swap
+
+    def test_swap_branch_clears_stale_same_ply_analysis_cache(self):
+        core, _engine = self._mk_core()
+
+        core.try_play_move(3, 2)  # c2
+        core.try_play_move(4, 2)  # d2
+        stale_key = core.cache_key()
+        core.app.analysis_cache[stale_key] = [
+            AnalysisMove("a1", order=1, col=1, row=1, winrate=0.5, visits=100, prior=0.1, pv=None)
+        ]
+
+        core.step_back()  # history: c2 ; future: d2
+        did = core.try_swap_move()  # branch to swap at ply 2
+
+        self.assertTrue(did)
+        self.assertEqual(core.cache_key(), stale_key)
+        self.assertNotIn(stale_key, core.app.analysis_cache)
+        self.assertEqual(core.get_active_analysis(), [])
 
     def test_clear_analysis_caches_while_candidate_mode_resets_results_but_keeps_candidates(self):
         core, _engine = self._mk_core()

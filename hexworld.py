@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import List, Tuple
 
-from board import Move, Side
+from board import Move, MoveKind, Side
 
 _MOVE_TOKEN_RE = re.compile(r":p|:s|:rw|:rb|[A-Za-z]+[0-9]+")
 _CELL_RE = re.compile(r"^([A-Za-z]+)([0-9]+)$")
@@ -64,7 +64,7 @@ def parse_hexworld_position(s: str) -> Tuple[int, List[Move], List[Move], Side]:
 
     Supported move tokens:
       - ':p' pass (toggles side, no placement)
-      - ':s' swap (subsequent cell moves are transposed; does not change side)
+      - ':s' swap (move 2 only; consumes turn and records explicit swap move)
       - ':rw' / ':rb' resign markers (ignored)
       - cell coords like 'h9'
     """
@@ -81,17 +81,29 @@ def parse_hexworld_position(s: str) -> Tuple[int, List[Move], List[Move], Side]:
     past_stream = parts[1] if len(parts) >= 2 else ""
     future_stream = parts[2] if len(parts) >= 3 else ""
 
-    def apply_stream(
-        stream: str, *, to_move: Side, swap_after: bool
-    ) -> Tuple[List[Move], Side, bool]:
+    def apply_stream(stream: str, *, to_move: Side, all_moves: List[Move]) -> Tuple[List[Move], Side]:
         out: List[Move] = []
         for tok in _tokenize_moves(stream):
             if tok == ":p":
-                out.append(Move.pass_(side=to_move))
+                mv = Move.pass_(side=to_move)
+                out.append(mv)
+                all_moves.append(mv)
                 to_move = _other_side(to_move)
                 continue
             if tok == ":s":
-                swap_after = True
+                if any(mv.kind == MoveKind.SWAP for mv in all_moves):
+                    raise ValueError("Duplicate swap token ':s'")
+                if len(all_moves) != 1:
+                    raise ValueError("Swap token ':s' is only legal on move 2")
+                first = all_moves[0]
+                if first.kind != MoveKind.PLACE or first.side != Side.RED:
+                    raise ValueError("Swap token ':s' requires a red opening placement")
+                if first.col is None or first.row is None:
+                    raise ValueError("Bad opening move before swap")
+                mv = Move.swap(side=to_move, col=first.col, row=first.row)
+                out.append(mv)
+                all_moves.append(mv)
+                to_move = _other_side(to_move)
                 continue
             if tok in (":rw", ":rb"):
                 continue
@@ -100,21 +112,19 @@ def parse_hexworld_position(s: str) -> Tuple[int, List[Move], List[Move], Side]:
             if not (1 <= col <= size and 1 <= row <= size):
                 raise ValueError(f"Move {tok!r} out of bounds for size {size}")
 
-            if swap_after:
-                col, row = row, col
-            out.append(Move.place(side=to_move, col=col, row=row))
+            mv = Move.place(side=to_move, col=col, row=row)
+            out.append(mv)
+            all_moves.append(mv)
             to_move = _other_side(to_move)
 
-        return out, to_move, swap_after
+        return out, to_move
 
     to_move = Side.RED
-    swap_after = False
-    past_moves, to_move, swap_after = apply_stream(
-        past_stream, to_move=to_move, swap_after=swap_after
-    )
+    all_moves: List[Move] = []
+    past_moves, to_move = apply_stream(past_stream, to_move=to_move, all_moves=all_moves)
     to_play = to_move
-    future_moves, _to_move_end, _swap_after = apply_stream(
-        future_stream, to_move=to_move, swap_after=swap_after
+    future_moves, _to_move_end = apply_stream(
+        future_stream, to_move=to_move, all_moves=all_moves
     )
 
     return size, past_moves, future_moves, to_play

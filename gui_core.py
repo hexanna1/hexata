@@ -103,6 +103,63 @@ class GuiCore:
     def flip_side(self, side: Side) -> Side:
         return Side.BLUE if side == Side.RED else Side.RED
 
+    def swap_active(self) -> bool:
+        return len(self.board.history) >= 2 and self.board.history[1].kind == MoveKind.SWAP
+
+    def _map_side_to_engine(self, side: Side) -> Side:
+        if self.swap_active():
+            return self.flip_side(side)
+        return side
+
+    def _map_coords_to_engine(self, col: int, row: int) -> Tuple[int, int]:
+        if self.swap_active():
+            return (row, col)
+        return (col, row)
+
+    def _map_coords_from_engine(self, col: int, row: int) -> Tuple[int, int]:
+        if self.swap_active():
+            return (row, col)
+        return (col, row)
+
+    def play_engine_mapped(self, side: Side, col: Optional[int], row: Optional[int]) -> None:
+        mapped_side = self._map_side_to_engine(side)
+        if col is None or row is None:
+            self.engine.play(mapped_side, None, None)
+            return
+        mapped_col, mapped_row = self._map_coords_to_engine(col, row)
+        self.engine.play(mapped_side, mapped_col, mapped_row)
+
+    def get_engine_analysis(self) -> List[AnalysisMove]:
+        recs = self.engine.get_analysis()
+        if not self.swap_active():
+            return recs
+
+        out: List[AnalysisMove] = []
+        for r in recs:
+            col, row = r.col, r.row
+            move = r.move
+            if col is not None and row is not None:
+                col, row = self._map_coords_from_engine(col, row)
+                move = coord_to_human(col, row)
+
+            pv = r.pv
+            if pv is not None:
+                pv = tuple(self._map_coords_from_engine(c, rr) for c, rr in pv)
+
+            out.append(
+                AnalysisMove(
+                    move=move,
+                    order=r.order,
+                    col=col,
+                    row=row,
+                    winrate=r.winrate,
+                    visits=r.visits,
+                    prior=r.prior,
+                    pv=pv,
+                )
+            )
+        return out
+
     def stop_candidate_search(self) -> None:
         self._end_candidate_run()
 
@@ -158,7 +215,7 @@ class GuiCore:
     def _start_analysis(self, side_to_analyze: Side, *, is_candidate: bool) -> None:
         root_noise = 0.0 if is_candidate else self.app.analysis_wide_root_noise
         self.engine.kata_set_param("analysisWideRootNoise", root_noise)
-        self.engine.start_analysis(side_to_analyze, self.analyze_interval_cs)
+        self.engine.start_analysis(self._map_side_to_engine(side_to_analyze), self.analyze_interval_cs)
 
     def aggregate_child_analysis(self, recs: List[AnalysisMove]) -> Tuple[Optional[float], int]:
         total_visits = 0
@@ -292,7 +349,7 @@ class GuiCore:
     def _begin_candidate_run(self, key: Tuple[int, int], now: float) -> None:
         col, row = key
         self.engine.clear_analysis()
-        self.engine.play(self.current_side(), col, row)
+        self.play_engine_mapped(self.current_side(), col, row)
         # Candidate search is a pseudo-root search; suppress root noise.
         self._start_analysis(self.flip_side(self.current_side()), is_candidate=True)
         prev_visits = self.app.candidate_results.get(key, (None, None))[1]
@@ -322,7 +379,7 @@ class GuiCore:
                 self._begin_candidate_run((col, row), now)
                 return
 
-            child = self.engine.get_analysis()
+            child = self.get_engine_analysis()
             winrate, visits = self.aggregate_child_analysis(child)
             run = self.app.candidate_run
             key = run.key
@@ -350,7 +407,7 @@ class GuiCore:
         if self.app.candidates:
             return self.get_candidate_analysis()
         if self.app.analysis_running:
-            live = self.engine.get_analysis()
+            live = self.get_engine_analysis()
             if live:
                 return live
         return []
@@ -358,7 +415,7 @@ class GuiCore:
     def maybe_update_analysis_cache(self) -> None:
         if not self.app.analysis_running or self.app.candidates:
             return
-        live = self.engine.get_analysis()
+        live = self.get_engine_analysis()
         if not live:
             return
 
@@ -390,7 +447,7 @@ class GuiCore:
         if not self.board.place(side, col, row):
             return False
         self.engine.clear_analysis()
-        self.engine.play(side, col, row)
+        self.play_engine_mapped(side, col, row)
         return True
 
     def apply_pass_to_state(self) -> bool:
@@ -398,17 +455,63 @@ class GuiCore:
         if not self.board.pass_move(side):
             return False
         self.engine.clear_analysis()
-        self.engine.play(side, None, None)
+        self.play_engine_mapped(side, None, None)
+        return True
+
+    def apply_swap_to_state(self) -> bool:
+        side = self.current_side()
+        if not self.board.swap_move(side):
+            return False
+        self.engine.clear_analysis()
         return True
 
     def _assert_never(self, value: MoveKind) -> NoReturn:
         raise AssertionError(f"Unhandled move kind: {value}")
+
+    @staticmethod
+    def _apply_move_to_board_model(board: HexBoard, mv: Move) -> bool:
+        match mv.kind:
+            case MoveKind.PLACE:
+                return board.place(mv.side, mv.col, mv.row)
+            case MoveKind.PASS:
+                return board.pass_move(mv.side)
+            case MoveKind.SWAP:
+                return board.swap_move(mv.side)
+        raise AssertionError(f"Unhandled move kind: {mv.kind}")
+
+    @staticmethod
+    def _first_illegal_move_index(board: HexBoard, moves: Sequence[Move]) -> Optional[int]:
+        for i, mv in enumerate(moves):
+            if not GuiCore._apply_move_to_board_model(board, mv):
+                return i
+        return None
+
+    @staticmethod
+    def _copy_board_state(board: HexBoard) -> HexBoard:
+        out = HexBoard(board.n)
+        out.rev = board.rev
+        out.occ = list(board.occ)
+        out.history = list(board.history)
+        return out
+
+    @staticmethod
+    def _opening_token_coords(moves: Sequence[Move]) -> Optional[Tuple[int, int]]:
+        if len(moves) < 2:
+            return None
+        first, second = moves[0], moves[1]
+        if first.kind != MoveKind.PLACE or second.kind != MoveKind.SWAP:
+            return None
+        if second.col is None or second.row is None:
+            return None
+        return (second.col, second.row)
 
     def move_coords(self, mv: Move) -> Optional[Tuple[int, int]]:
         match mv.kind:
             case MoveKind.PLACE:
                 return (mv.col, mv.row)
             case MoveKind.PASS:
+                return None
+            case MoveKind.SWAP:
                 return None
         return self._assert_never(mv.kind)
 
@@ -418,15 +521,22 @@ class GuiCore:
                 return self.apply_move_to_state(mv.col, mv.row)
             case MoveKind.PASS:
                 return self.apply_pass_to_state()
+            case MoveKind.SWAP:
+                return self.apply_swap_to_state()
         return self._assert_never(mv.kind)
 
     def play_move_on_engine(self, mv: Move) -> None:
-        coords = self.move_coords(mv)
-        if coords is None:
-            self.engine.play(mv.side, None, None)
-            return
-        col, row = coords
-        self.engine.play(mv.side, col, row)
+        match mv.kind:
+            case MoveKind.PLACE:
+                col, row = mv.col, mv.row
+                self.play_engine_mapped(mv.side, col, row)
+                return
+            case MoveKind.PASS:
+                self.play_engine_mapped(mv.side, None, None)
+                return
+            case MoveKind.SWAP:
+                return
+        self._assert_never(mv.kind)
 
     def rebuild_engine_from_history(self) -> None:
         self.engine.clear_board()
@@ -443,20 +553,11 @@ class GuiCore:
     def truncate_future_moves_on_conflict(self) -> None:
         if not self.app.future_moves:
             return
-        occupied = {self.move_coords(mv) for mv in self.board.history}
-        occupied.discard(None)
+
         redo = list(reversed(self.app.future_moves))
-        cut = len(redo)
-        for i, mv in enumerate(redo):
-            coords = self.move_coords(mv)
-            if coords is None:
-                continue
-            key = coords
-            if key in occupied:
-                cut = i
-                break
-            occupied.add(key)
-        if cut == len(redo):
+        probe = self._copy_board_state(self.board)
+        cut = self._first_illegal_move_index(probe, redo)
+        if cut is None:
             return
         self.app.future_moves = list(reversed(redo[:cut]))
 
@@ -493,16 +594,16 @@ class GuiCore:
             logger.info("HexWorld size %s out of range (4-42).", size)
             return False
 
-        seen = set()
-        for mv in past_moves + future_moves_parsed:
-            coords = self.move_coords(mv)
-            if coords is None:
-                continue
-            key = coords
-            if key in seen:
-                logger.info("HexWorld duplicate move: %s", coord_to_human(*coords))
-                return False
-            seen.add(key)
+        all_moves = past_moves + future_moves_parsed
+        probe = HexBoard(size)
+        illegal_index = self._first_illegal_move_index(probe, all_moves)
+        if illegal_index is not None:
+            mv = all_moves[illegal_index]
+            if mv.kind == MoveKind.PLACE:
+                logger.info("HexWorld illegal/duplicate move: %s", coord_to_human(mv.col, mv.row))
+            elif mv.kind == MoveKind.SWAP:
+                logger.info("HexWorld illegal swap token placement")
+            return False
 
         def mutate() -> None:
             self.engine.set_board_size(size)
@@ -513,13 +614,8 @@ class GuiCore:
             self.clear_all_cached_analysis()
 
             for mv in past_moves:
-                match mv.kind:
-                    case MoveKind.PLACE:
-                        self.board.place(mv.side, mv.col, mv.row)
-                    case MoveKind.PASS:
-                        self.board.pass_move(mv.side)
-                    case _:
-                        self._assert_never(mv.kind)
+                if not self._apply_move_to_board_model(self.board, mv):
+                    raise AssertionError(f"Illegal move while loading: {mv}")
                 self.play_move_on_engine(mv)
 
             self.app.future_moves.extend(reversed(future_moves_parsed))
@@ -533,7 +629,34 @@ class GuiCore:
                 return coord_to_human(mv.col, mv.row)
             case MoveKind.PASS:
                 return "pass"
+            case MoveKind.SWAP:
+                return "swap"
         return self._assert_never(mv.kind)
+
+    def move_to_label_in_sequence(self, moves: Sequence[Move], index: int) -> str:
+        mv = moves[index]
+        opening = self._opening_token_coords(moves)
+        if index == 0 and opening is not None:
+            return coord_to_human(*opening)
+        return self.move_to_label(mv)
+
+    def is_swapped_stone_index(self, idx: int) -> bool:
+        return (
+            self.swap_active()
+            and idx == 0
+            and len(self.board.history) >= 2
+            and self.board.history[1].kind == MoveKind.SWAP
+        )
+
+    def _moves_to_hexworld_stream(self, moves: Sequence[Move]) -> str:
+        out: List[str] = []
+        opening = self._opening_token_coords(moves)
+        for idx, mv in enumerate(moves):
+            if idx == 0 and opening is not None:
+                out.append(coord_to_human(*opening))
+                continue
+            out.append(self._move_to_hexworld(mv))
+        return "".join(out)
 
     def _move_to_hexworld(self, mv: Move) -> str:
         match mv.kind:
@@ -541,18 +664,21 @@ class GuiCore:
                 return coord_to_human(mv.col, mv.row)
             case MoveKind.PASS:
                 return ":p"
+            case MoveKind.SWAP:
+                return ":s"
         return self._assert_never(mv.kind)
 
     def build_hexworld_url(self) -> str:
         prefix = f"{self.board.n}c1"
-        past = "".join(self._move_to_hexworld(mv) for mv in self.board.history)
+        past = self._moves_to_hexworld_stream(self.board.history)
         if not self.app.future_moves:
             url = f"https://hexworld.org/board/#{prefix}"
             if past:
                 url = f"{url},{past}"
             return url
 
-        future = "".join(self._move_to_hexworld(mv) for mv in reversed(self.app.future_moves))
+        future_moves = list(reversed(self.app.future_moves))
+        future = self._moves_to_hexworld_stream(future_moves)
         return f"https://hexworld.org/board/#{prefix},{past},{future}"
 
     def add_candidate(self, col: int, row: int) -> None:
@@ -599,8 +725,12 @@ class GuiCore:
         self.with_analysis_paused(mutate, stop_engine=False)
 
     def undo_one(self) -> bool:
+        if not self.board.history:
+            return False
+        last = self.board.history[-1]
         if self.board.undo():
-            self.engine.undo()
+            if last.kind != MoveKind.SWAP:
+                self.engine.undo()
             return True
         return False
 
@@ -746,10 +876,20 @@ class GuiCore:
     def try_play_move(self, col: int, row: int) -> bool:
         return self.try_play_moves([(col, row)])
 
+    def can_swap_move(self) -> bool:
+        if len(self.board.history) != 1:
+            return False
+        first = self.board.history[0]
+        if first.kind != MoveKind.PLACE:
+            return False
+        if first.side != Side.RED:
+            return False
+        return self.current_side() == Side.BLUE
+
     def try_pass_move(self) -> bool:
         if self.app.future_moves:
             mv = self.app.future_moves[-1]
-            if self.move_coords(mv) is None:
+            if mv.kind == MoveKind.PASS:
                 return self.step_forward()
 
         did = False
@@ -761,6 +901,29 @@ class GuiCore:
             if self.app.future_moves:
                 self.clear_cached_analysis_from_ply(
                     len(self.board.history) + 1
+                )
+                self.app.future_moves.clear()
+            did = True
+
+        self.with_analysis_paused(mutate, stop_engine=False)
+        return did
+
+    def try_swap_move(self) -> bool:
+        if self.app.future_moves:
+            mv = self.app.future_moves[-1]
+            if mv.kind == MoveKind.SWAP:
+                return self.step_forward()
+
+        did = False
+
+        def mutate() -> None:
+            nonlocal did
+            branch_ply = len(self.board.history) + 1
+            if not self.apply_swap_to_state():
+                return
+            if self.app.future_moves:
+                self.clear_cached_analysis_from_ply(
+                    branch_ply
                 )
                 self.app.future_moves.clear()
             did = True
@@ -781,6 +944,9 @@ class GuiCore:
                 return
             if not self.board.move_in_history(idx, col, row):
                 return
+            if idx == 0 and self.app.future_moves and self.app.future_moves[-1].kind == MoveKind.SWAP:
+                swap_mv = self.app.future_moves[-1]
+                self.app.future_moves[-1] = Move.swap(side=swap_mv.side, col=col, row=row)
             self.clear_all_cached_analysis()
             self.truncate_future_moves_on_conflict()
             self.rebuild_engine_from_history()
