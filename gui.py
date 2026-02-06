@@ -975,8 +975,9 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
         lines = [
             "Help (? to hide)",
             "space:analysis   ,:play best/PV   esc:quit",
-            "p:prev   n:next   f:first   l:last   shift+p:pass   s:swap",
+            "p:prev   n:next   f:first   l:last   scroll:prev/next",
             "ctrl+p:prev 10   ctrl+n:next 10",
+            "shift+p:pass   s:swap",
             "t:priors   c:coords   m:moves   e:elo",
             "ctrl+v:load   ctrl+c:copy   shift+c:clear cache",
             "del:delete tail   shift+n:new",
@@ -1200,6 +1201,13 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
                 handle_mouse_up(ev, ui)
             elif ev.type == pygame.MOUSEMOTION:
                 handle_mouse_motion(ev, ui)
+            elif ev.type == pygame.MOUSEWHEEL:
+                if ev.y > 0:
+                    for _ in range(ev.y):
+                        core.step_back()
+                elif ev.y < 0:
+                    for _ in range(-ev.y):
+                        core.step_forward()
             elif ev.type == pygame.VIDEORESIZE:
                 apply_window_size(ev.w, ev.h)
 

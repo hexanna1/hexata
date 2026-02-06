@@ -18,18 +18,19 @@ A lightweight, keyboard-first GUI for analyzing Hex with the [KataHex](https://w
 - Install deps: `pip install -r requirements.txt` (pygame only).
 - Install KataHex separately (engine binary, config, and model weights): [KataHex 20240812](https://github.com/hzyhhzy/KataGomo_fork/releases/tag/Hex_20240812)
 - Edit `config.ini` and set `[engine].cmd` to point at your KataHex binary, config, and model.
-- Example format: `cmd = path/to/katahex gtp -config path/to/engine.cfg -model path/to/weights.bin.gz`
+  - Example format: `cmd = path/to/katahex gtp -config path/to/engine.cfg -model path/to/weights.bin.gz`
 - Run: `python3 main.py`
 
 ## Quick controls
 - `?` help
 - `space` toggle analysis
-- `p/n` prev/next, `f/l` first/last
+- `p/n` (or scroll) prev/next, `f/l` first/last
 - `m` move numbers, `c` coords, `t` priors, `e` Elo view
 - Right-click or drag to toggle candidates
 
 ## Files at a glance
 - `main.py`: App entry point; creates the board, engine, and GUI.
+- `config.ini`: Local engine launch configuration.
 - `gui.py`: Pygame UI, rendering, layout, and input handling.
 - `gui_core.py`: Game state, move history, analysis caching, engine coordination.
 - `engine.py`: Engine process wrapper, GTP-ish parsing, and analysis I/O.
@@ -41,7 +42,8 @@ A few implementation details were tricky to get right and are useful background 
 - Three coordinate systems are in play: GUI board coordinates, engine play coordinates, and KataHex analyze tokens.
 - KataHex uses a nonstandard GTP-ish dialect. The GUI uses a minimal handshake (mute until the first "=" after `kata-analyze`) to keep latency low while avoiding analysis leakage.
 - Candidate search isn’t a native KataHex mode. The GUI simulates it by cycling candidates as temporary roots and collecting per-candidate results, but because each position is evaluated from scratch (with only partial internal caching), the switching policy needs to reduce wasted rebuild time and make steady progress per candidate.
-- Candidate search runs with analysisWideRootNoise set to 0, matching non-root analysis behavior for cleaner comparisons.
+  - Regular analysis applies `analysisWideRootNoise` at the root, but candidate mode is comparing what are effectively child positions, so candidate runs force `analysisWideRootNoise` to `0`.
+- Swap support ended up being more than just adding a new move token. The hardest part was redo/drag conflict pruning around moves 1 and 2: editing either one can make the other collide with a later move, and that conflict has to invalidate the tail from that point onward. The inverse problem also appears after transposition: a coordinate that looks duplicated can still be legal because swap moved the opening stone away.
 
 ## Limitations
 - No branching move history, buttons, or clickable move list.
