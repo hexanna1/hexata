@@ -79,6 +79,13 @@ class GuiCoreTests(unittest.TestCase):
     def _assert_no_undo(self, calls):
         self.assertFalse(any(call[0] == "undo" for call in calls))
 
+    def _history_coords(self, core: GuiCore):
+        return [core.move_coords(mv) for mv in core.board.history]
+
+    def _future_coords(self, core: GuiCore):
+        # future_moves is stored as a stack (next redo at the end).
+        return [core.move_coords(mv) for mv in reversed(core.app.future_moves)]
+
     def test_history_future_roundtrip(self):
         core, _engine = self._mk_core()
         board = core.board
@@ -101,20 +108,13 @@ class GuiCoreTests(unittest.TestCase):
         self.assertEqual(core.app.future_moves, [])
         self.assertEqual(core.move_coords(board.history[-1]), core.move_coords(last))
 
-    def test_step_back_n_steps_as_much_as_possible(self):
+    def test_step_back_and_forward_n_steps_as_much_as_possible(self):
         core, _engine = self._mk_core()
 
         self._play_two_moves(core)
-
         self.assertTrue(core.step_back_n(10))
         self.assertEqual(len(core.board.history), 0)
         self.assertEqual(len(core.app.future_moves), 2)
-
-    def test_step_forward_n_steps_as_much_as_possible(self):
-        core, _engine = self._mk_core()
-
-        self._play_two_moves(core)
-        core.step_back_n(10)
 
         self.assertTrue(core.step_forward_n(10))
         self.assertEqual(len(core.board.history), 2)
@@ -199,22 +199,6 @@ class GuiCoreTests(unittest.TestCase):
         # Analysis should resume (candidates exist), which plays the candidate move.
         self.assertTrue(any(call[0] == "play" for call in engine.calls))
 
-    def test_toggle_analysis_switches_between_live_and_candidate(self):
-        core, engine = self._mk_core()
-
-        core.toggle_analysis()
-        self.assertTrue(core.app.analysis_running)
-        self.assertIn(("start_analysis", Side.RED, core.analyze_interval_cs), engine.calls)
-
-        core.add_candidate(1, 1)
-        core.toggle_analysis()  # stop
-        core.toggle_analysis()  # start with candidates
-
-        self.assertTrue(core.app.analysis_running)
-        core.step_candidate_search(now=0.0)
-        self.assertTrue(any(call[0] == "play" for call in engine.calls))
-        self.assertTrue(any(call[0] == "start_analysis" for call in engine.calls))
-
     def test_cache_prune_delete_tail_preserves_current_ply(self):
         core, _engine = self._mk_core()
 
@@ -252,6 +236,98 @@ class GuiCoreTests(unittest.TestCase):
         self.assertIn(key0, core.app.analysis_cache)
         self.assertIn(key1, core.app.analysis_cache)
         self.assertNotIn(key2, core.app.analysis_cache)
+
+    def test_try_play_moves_replays_redo_prefix_then_branches_and_prunes_cache(self):
+        core, _engine = self._mk_core()
+
+        core.try_play_move(1, 1)
+        core.try_play_move(2, 1)
+        core.try_play_move(1, 2)
+        core.step_back_n(2)
+
+        key0 = (0, int(Side.RED))
+        key1 = (1, int(Side.BLUE))
+        key2 = (2, int(Side.RED))
+        key3 = (3, int(Side.BLUE))
+        core.app.analysis_cache[key0] = ["a"]
+        core.app.analysis_cache[key1] = ["b"]
+        core.app.analysis_cache[key2] = ["c"]
+        core.app.analysis_cache[key3] = ["d"]
+
+        did = core.try_play_moves([(2, 1), (3, 1)])
+
+        self.assertTrue(did)
+        self.assertEqual(self._history_coords(core), [(1, 1), (2, 1), (3, 1)])
+        self.assertEqual(core.app.future_moves, [])
+        self.assertIn(key0, core.app.analysis_cache)
+        self.assertIn(key1, core.app.analysis_cache)
+        self.assertIn(key2, core.app.analysis_cache)
+        self.assertNotIn(key3, core.app.analysis_cache)
+
+    def test_try_pass_move_prefers_redo_pass_over_new_pass(self):
+        core, _engine = self._mk_core()
+
+        core.try_play_move(1, 1)
+        core.try_play_move(2, 1)
+        core.try_pass_move()
+        core.try_play_move(3, 1)
+
+        core.step_back_n(2)
+        self.assertEqual(self._future_coords(core), [None, (3, 1)])
+
+        did = core.try_pass_move()
+
+        self.assertTrue(did)
+        self.assertEqual(self._history_coords(core), [(1, 1), (2, 1), None])
+        self.assertEqual(self._future_coords(core), [(3, 1)])
+
+    def test_clear_analysis_caches_while_candidate_mode_resets_results_but_keeps_candidates(self):
+        core, _engine = self._mk_core()
+
+        core.add_candidate(1, 1)
+        core.add_candidate(2, 2)
+        core._set_analysis_enabled(True)
+        core.step_candidate_search(now=0.0)
+        self.assertIsNotNone(core.app.candidate_run)
+
+        core.app.candidate_results[(1, 1)] = (0.4, 10)
+        core.app.analysis_cache[(0, int(Side.RED))] = ["x"]
+
+        core.clear_analysis_caches()
+
+        self.assertTrue(core.app.analysis_running)
+        self.assertEqual(core.app.candidates, {(1, 1), (2, 2)})
+        self.assertEqual(core.app.candidate_results, {})
+        self.assertEqual(core.app.analysis_cache, {})
+        self.assertIsNone(core.app.candidate_run)
+
+    def test_load_hexworld_text_duplicate_rejected_without_mutating_state(self):
+        core, engine = self._mk_core()
+
+        core.try_play_move(1, 1)
+        core.try_play_move(2, 1)
+        core.step_back()
+        core.app.pending_size = 7
+        core.app.analysis_cache[(0, int(Side.RED))] = ["cached"]
+
+        before_history = list(core.board.history)
+        before_future = list(core.app.future_moves)
+        before_pending = core.app.pending_size
+        before_cache = dict(core.app.analysis_cache)
+        before_n = core.board.n
+        before_rev = core.board.rev
+        before_calls = list(engine.calls)
+
+        ok = core.load_hexworld_text("https://hexworld.org/board/#5c1,a1a1")
+
+        self.assertFalse(ok)
+        self.assertEqual(core.board.n, before_n)
+        self.assertEqual(core.board.rev, before_rev)
+        self.assertEqual(core.board.history, before_history)
+        self.assertEqual(core.app.future_moves, before_future)
+        self.assertEqual(core.app.pending_size, before_pending)
+        self.assertEqual(core.app.analysis_cache, before_cache)
+        self.assertEqual(engine.calls, before_calls)
 
     def test_get_active_analysis_preference(self):
         core, engine = self._mk_core()

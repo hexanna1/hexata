@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from typing import List, NoReturn, Optional, Sequence, Tuple
 
 from board import HexBoard, Move, MoveKind, Side, coord_to_human
 from engine import KataHexEngine, AnalysisMove
 from hexworld import parse_hexworld_position
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -483,11 +486,11 @@ class GuiCore:
         try:
             size, past_moves, future_moves_parsed, _next_side = parse_hexworld_position(text)
         except Exception as exc:
-            print(f"HexWorld parse failed: {exc}")
+            logger.info("HexWorld parse failed: %s", exc)
             return False
 
         if size < 4 or size > 42:
-            print(f"HexWorld size {size} out of range (4-42).")
+            logger.info("HexWorld size %s out of range (4-42).", size)
             return False
 
         seen = set()
@@ -497,7 +500,7 @@ class GuiCore:
                 continue
             key = coords
             if key in seen:
-                print(f"HexWorld duplicate move: {coord_to_human(*coords)}")
+                logger.info("HexWorld duplicate move: %s", coord_to_human(*coords))
                 return False
             seen.add(key)
 

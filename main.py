@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import configparser
+import logging
 import os
 import shlex
 import sys
@@ -38,6 +39,8 @@ def _load_engine_cmd() -> list[str]:
 
 
 def main() -> int:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
+
     ap = argparse.ArgumentParser(description="Minimal Hex GUI + KataHex analysis")
     ap.add_argument("--size", type=int, default=14, help="initial board size (default 14)")
     ap.add_argument("--interval", type=int, default=15, help="kata-analyze interval (centiseconds)")
