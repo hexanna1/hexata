@@ -368,7 +368,6 @@ class GuiCore(GuiCoreAnalysisMixin):
     def delete_tail(self) -> bool:
         if self.app.future_moves:
             self.app.future_moves.clear()
-            self.clear_cached_analysis_from_ply(len(self.board.history) + 1)
             return True
         if not self.board.history:
             return False
@@ -382,8 +381,6 @@ class GuiCore(GuiCoreAnalysisMixin):
         self.with_analysis_paused(
             mutate, clear_analysis=self.app.analysis_running, stop_engine=False
         )
-        if did:
-            self.clear_cached_analysis_from_ply(len(self.board.history) + 1)
         return did
 
     def try_play_moves(self, moves: Sequence[Tuple[int, int]]) -> bool:
@@ -409,9 +406,6 @@ class GuiCore(GuiCoreAnalysisMixin):
                 return
 
             if self.app.future_moves:
-                self.clear_cached_analysis_from_ply(
-                    len(self.board.history) + 1
-                )
                 self.app.future_moves.clear()
 
             for col, row in remaining:
@@ -448,9 +442,6 @@ class GuiCore(GuiCoreAnalysisMixin):
             if not self.apply_pass_to_state():
                 return
             if self.app.future_moves:
-                self.clear_cached_analysis_from_ply(
-                    len(self.board.history) + 1
-                )
                 self.app.future_moves.clear()
             did = True
 
@@ -467,13 +458,9 @@ class GuiCore(GuiCoreAnalysisMixin):
 
         def mutate() -> None:
             nonlocal did
-            branch_ply = len(self.board.history) + 1
             if not self.apply_swap_to_state():
                 return
             if self.app.future_moves:
-                self.clear_cached_analysis_from_ply(
-                    branch_ply
-                )
                 self.app.future_moves.clear()
             did = True
 

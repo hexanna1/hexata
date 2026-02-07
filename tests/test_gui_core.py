@@ -199,14 +199,14 @@ class GuiCoreTests(unittest.TestCase):
         # Analysis should resume (candidates exist), which plays the candidate move.
         self.assertTrue(any(call[0] == "play" for call in engine.calls))
 
-    def test_cache_prune_delete_tail_preserves_current_ply(self):
+    def test_delete_tail_keeps_existing_cache_entries(self):
         core, _engine = self._mk_core()
 
         self._play_two_moves(core)
 
-        key0 = (0, int(Side.RED))
-        key1 = (1, int(Side.BLUE))
-        key2 = (2, int(Side.RED))
+        key0 = core.cache_key_for_moves([])
+        key1 = core.cache_key_for_moves(core.board.history[:1])
+        key2 = core.cache_key_for_moves(core.board.history[:2])
         core.app.analysis_cache[key0] = ["a"]
         core.app.analysis_cache[key1] = ["b"]
         core.app.analysis_cache[key2] = ["c"]
@@ -215,29 +215,29 @@ class GuiCoreTests(unittest.TestCase):
 
         self.assertIn(key0, core.app.analysis_cache)
         self.assertIn(key1, core.app.analysis_cache)
-        self.assertNotIn(key2, core.app.analysis_cache)
+        self.assertIn(key2, core.app.analysis_cache)
 
-    def test_cache_prune_on_branching_clears_future_entries(self):
+    def test_branching_clears_future_entries_but_keeps_cache(self):
         core, _engine = self._mk_core()
 
         self._play_two_moves(core)
         core.step_back()  # future_moves has one
 
-        key0 = (0, int(Side.RED))
-        key1 = (1, int(Side.BLUE))
-        key2 = (2, int(Side.RED))
+        key0 = core.cache_key_for_moves([])
+        key1 = core.cache_key_for_moves(core.board.history[:1])
+        key2 = core.cache_key_for_moves(core.board.history[:2])
         core.app.analysis_cache[key0] = ["a"]
         core.app.analysis_cache[key1] = ["b"]
         core.app.analysis_cache[key2] = ["c"]
 
-        core.try_play_move(3, 1)  # diverge, should clear future + prune caches >= new ply
+        core.try_play_move(3, 1)  # diverge, should clear future
 
         self.assertEqual(core.app.future_moves, [])
         self.assertIn(key0, core.app.analysis_cache)
         self.assertIn(key1, core.app.analysis_cache)
-        self.assertNotIn(key2, core.app.analysis_cache)
+        self.assertIn(key2, core.app.analysis_cache)
 
-    def test_try_play_moves_replays_redo_prefix_then_branches_and_prunes_cache(self):
+    def test_try_play_moves_replays_redo_prefix_then_branches_and_keeps_cache(self):
         core, _engine = self._mk_core()
 
         core.try_play_move(1, 1)
@@ -245,10 +245,10 @@ class GuiCoreTests(unittest.TestCase):
         core.try_play_move(1, 2)
         core.step_back_n(2)
 
-        key0 = (0, int(Side.RED))
-        key1 = (1, int(Side.BLUE))
-        key2 = (2, int(Side.RED))
-        key3 = (3, int(Side.BLUE))
+        key0 = core.cache_key_for_moves([])
+        key1 = core.cache_key_for_moves(core.board.history[:1])
+        key2 = core.cache_key_for_moves(core.board.history[:2])
+        key3 = core.cache_key_for_moves(core.board.history[:3])
         core.app.analysis_cache[key0] = ["a"]
         core.app.analysis_cache[key1] = ["b"]
         core.app.analysis_cache[key2] = ["c"]
@@ -262,7 +262,7 @@ class GuiCoreTests(unittest.TestCase):
         self.assertIn(key0, core.app.analysis_cache)
         self.assertIn(key1, core.app.analysis_cache)
         self.assertIn(key2, core.app.analysis_cache)
-        self.assertNotIn(key3, core.app.analysis_cache)
+        self.assertIn(key3, core.app.analysis_cache)
 
     def test_try_pass_move_prefers_redo_pass_over_new_pass(self):
         core, _engine = self._mk_core()
@@ -426,7 +426,7 @@ class GuiCoreTests(unittest.TestCase):
         self.assertEqual(core.board.get(2, 3), int(Side.BLUE))  # swapped opening stone
         self.assertEqual(core.board.get(3, 2), int(Side.RED))  # legal reuse of c2 after swap
 
-    def test_swap_branch_clears_stale_same_ply_analysis_cache(self):
+    def test_swap_branch_uses_distinct_cache_key(self):
         core, _engine = self._mk_core()
 
         core.try_play_move(3, 2)  # c2
@@ -440,8 +440,8 @@ class GuiCoreTests(unittest.TestCase):
         did = core.try_swap_move()  # branch to swap at ply 2
 
         self.assertTrue(did)
-        self.assertEqual(core.cache_key(), stale_key)
-        self.assertNotIn(stale_key, core.app.analysis_cache)
+        self.assertNotEqual(core.cache_key(), stale_key)
+        self.assertIn(stale_key, core.app.analysis_cache)
         self.assertEqual(core.get_active_analysis(), [])
 
     def test_clear_analysis_caches_while_candidate_mode_resets_results_but_keeps_candidates(self):
@@ -454,7 +454,7 @@ class GuiCoreTests(unittest.TestCase):
         self.assertIsNotNone(core.app.candidate_run)
 
         core.app.candidate_results[(1, 1)] = (0.4, 10)
-        core.app.analysis_cache[(0, int(Side.RED))] = ["x"]
+        core.app.analysis_cache[core.cache_key_for_moves([])] = ["x"]
 
         core.clear_analysis_caches()
 
@@ -471,7 +471,7 @@ class GuiCoreTests(unittest.TestCase):
         core.try_play_move(2, 1)
         core.step_back()
         core.app.pending_size = 7
-        core.app.analysis_cache[(0, int(Side.RED))] = ["cached"]
+        core.app.analysis_cache[core.cache_key_for_moves([])] = ["cached"]
 
         before_history = list(core.board.history)
         before_future = list(core.app.future_moves)
@@ -590,13 +590,16 @@ class GuiCoreTests(unittest.TestCase):
                     self._assert_no_undo(new_calls)
                 self.assertEqual(core.app.future_moves, [])
 
-    def test_delete_tail_prunes_future_cache_when_truncating(self):
+    def test_delete_tail_keeps_future_cache_when_truncating(self):
         core, _engine = self._mk_core()
 
         self._play_two_moves(core)
-        core.app.analysis_cache[(0, int(Side.RED))] = ["a"]
-        core.app.analysis_cache[(1, int(Side.BLUE))] = ["b"]
-        core.app.analysis_cache[(2, int(Side.RED))] = ["c"]
+        key0 = core.cache_key_for_moves([])
+        key1 = core.cache_key_for_moves(core.board.history[:1])
+        key2 = core.cache_key_for_moves(core.board.history[:2])
+        core.app.analysis_cache[key0] = ["a"]
+        core.app.analysis_cache[key1] = ["b"]
+        core.app.analysis_cache[key2] = ["c"]
 
         core.go_first()
         self.assertTrue(core.app.future_moves)
@@ -604,9 +607,9 @@ class GuiCoreTests(unittest.TestCase):
         core.delete_tail()
 
         self.assertEqual(core.app.future_moves, [])
-        self.assertIn((0, int(Side.RED)), core.app.analysis_cache)
-        self.assertNotIn((1, int(Side.BLUE)), core.app.analysis_cache)
-        self.assertNotIn((2, int(Side.RED)), core.app.analysis_cache)
+        self.assertIn(key0, core.app.analysis_cache)
+        self.assertIn(key1, core.app.analysis_cache)
+        self.assertIn(key2, core.app.analysis_cache)
 
 
 if __name__ == "__main__":

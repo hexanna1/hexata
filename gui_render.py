@@ -7,7 +7,7 @@ from typing import List, Optional, Protocol, Tuple
 import pygame
 import pygame.freetype
 
-from board import HexBoard, MoveKind, Side, col_to_human_letters, coord_to_human
+from board import HexBoard, Move, MoveKind, Side, col_to_human_letters, coord_to_human
 from engine import AnalysisMove
 from gui_core import GuiCore
 
@@ -223,7 +223,20 @@ class GuiRenderer:
             io_font=pygame.freetype.SysFont(["Menlo", "Consolas", "monospace"], 12),
         )
         self.text = TextRenderer.from_fonts(self.fonts)
+        self._eval_graph_sig: Optional[tuple[int, tuple[Move, ...]]] = None
+        self._eval_graph_prefix_keys: list[bytes] = []
         self.apply_window_size(DEFAULT_WIN_W, DEFAULT_WIN_H)
+
+    def _get_eval_graph_prefix_keys(self, moves: List[Move]) -> list[bytes]:
+        sig = (self.board.n, tuple(moves))
+        if self._eval_graph_sig == sig:
+            return self._eval_graph_prefix_keys
+        self._eval_graph_sig = sig
+        move_sig = sig[1]
+        self._eval_graph_prefix_keys = [
+            self.core.cache_key_for_moves(move_sig[:m]) for m in range(1, len(move_sig) + 1)
+        ]
+        return self._eval_graph_prefix_keys
 
     def make_board_small(self, r: int) -> pygame.freetype.Font:
         t = clamp01((BASE_R - r) / (BASE_R - 8))
@@ -613,19 +626,19 @@ class GuiRenderer:
     def draw_eval_graph(
         self,
         rect: pygame.Rect,
+        moves: List[Move],
         cursor_ply: int,
-        total_moves: int,
         show_elo: bool,
     ) -> None:
         pygame.draw.rect(self.screen, PANEL_BG, rect)
         pygame.draw.rect(self.screen, PANEL_EDGE, rect, 1)
 
-        n_moves = total_moves
+        n_moves = len(moves)
         if rect.width <= 1 or rect.height <= 1:
             return
 
-        def best_reply_winrate(ply_len: int, side_to_play: Side) -> Optional[float]:
-            recs = self.app.analysis_cache.get((ply_len, int(side_to_play)))
+        def best_reply_winrate(key: bytes) -> Optional[float]:
+            recs = self.app.analysis_cache.get(key)
             if not recs:
                 return None
             # Only use ordered (live) analysis; candidate cache entries have no order.
@@ -668,11 +681,12 @@ class GuiRenderer:
         if n_moves <= 0:
             return
 
+        prefix_keys = self._get_eval_graph_prefix_keys(moves)
         values: dict[int, float] = {}
         max_analyzed = 0
-        for m in range(1, n_moves + 1):
-            side_to_play = Side.BLUE if m % 2 == 1 else Side.RED
-            best_wr = best_reply_winrate(m, side_to_play)
+        for m, key in enumerate(prefix_keys, start=1):
+            side_to_play = self.core.flip_side(moves[m - 1].side)
+            best_wr = best_reply_winrate(key)
             if best_wr is None:
                 continue
             # Red-perspective winrate for the current position.
@@ -815,7 +829,7 @@ class GuiRenderer:
                 PANEL_W,
                 self.screen.get_height() - graph_top,
             )
-            self.draw_eval_graph(graph_rect, cursor_ply, total_moves, ui.show_elo)
+            self.draw_eval_graph(graph_rect, moves, cursor_ply, ui.show_elo)
 
         pygame.draw.line(self.screen, PANEL_EDGE, (x0, 0), (x0, self.screen.get_height()), 1)
 

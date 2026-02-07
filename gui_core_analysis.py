@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import struct
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 from board import Move, MoveKind, Side, coord_to_human
 from engine import AnalysisMove
@@ -24,7 +26,7 @@ class AppState:
     candidate_run: Optional[CandidateRun]
     candidate_ratio: float
     candidate_root_rev: Optional[int]
-    analysis_cache: dict[tuple[int, int], list[AnalysisMove]]
+    analysis_cache: dict[bytes, list[AnalysisMove]]
     last_cache_sig: Optional[tuple]
     analysis_wide_root_noise: float
 
@@ -41,23 +43,32 @@ class GuiCoreAnalysisMixin:
         last = self.board.history[-1]
         return self.flip_side(last.side)
 
-    def cache_key(self) -> tuple[int, int]:
-        return (len(self.board.history), int(self.current_side()))
+    @staticmethod
+    def _cache_move_token(mv: Move) -> tuple[int, int, int, int]:
+        kind = 0
+        if mv.kind == MoveKind.PASS:
+            kind = 1
+        elif mv.kind == MoveKind.SWAP:
+            kind = 2
+        return (kind, int(mv.side), 0 if mv.col is None else mv.col, 0 if mv.row is None else mv.row)
+
+    def cache_key_for_moves(self, moves: Sequence[Move]) -> bytes:
+        side = Side.RED if not moves else self.flip_side(moves[-1].side)
+        h = hashlib.blake2b(digest_size=16)
+        h.update(struct.pack("<IB", self.board.n, int(side)))
+        for mv in moves:
+            kind, mv_side, col, row = self._cache_move_token(mv)
+            h.update(struct.pack("<BBHH", kind, mv_side, col, row))
+        return h.digest()
+
+    def cache_key(self) -> bytes:
+        return self.cache_key_for_moves(self.board.history)
 
     def cache_reset_sig(self) -> None:
         self.app.last_cache_sig = None
 
     def clear_all_cached_analysis(self) -> None:
         self.app.analysis_cache.clear()
-        self.cache_reset_sig()
-
-    def clear_cached_analysis_from_ply(self, start_ply: int) -> None:
-        pruned = {
-            key: val for key, val in self.app.analysis_cache.items() if key[0] < start_ply
-        }
-        if pruned == self.app.analysis_cache:
-            return
-        self.app.analysis_cache = pruned
         self.cache_reset_sig()
 
     def clear_analysis_caches(self) -> None:
