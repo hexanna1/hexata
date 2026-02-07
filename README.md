@@ -31,8 +31,10 @@ A lightweight, keyboard-first GUI for analyzing Hex with the [KataHex](https://w
 ## Files at a glance
 - `main.py`: App entry point; creates the board, engine, and GUI.
 - `config.ini`: Local engine launch configuration.
-- `gui.py`: Pygame UI, rendering, layout, and input handling.
-- `gui_core.py`: Game state, move history, analysis caching, engine coordination.
+- `gui.py`: Pygame app loop, input handling, and UI flow.
+- `gui_render.py`: Pygame rendering, layout, HUD, and panels.
+- `gui_core.py`: Game state, move history, import/export, and engine coordination.
+- `gui_core_analysis.py`: Analysis/candidate-search state and cache management.
 - `engine.py`: Engine process wrapper, GTP-ish parsing, and analysis I/O.
 - `board.py`: Hex board model, history, and move rules.
 - `hexworld.py`: HexWorld import/export parsing utilities.
