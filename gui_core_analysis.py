@@ -298,17 +298,11 @@ class GuiCoreAnalysisMixin:
         self.engine.start_analysis(self._map_side_to_engine(side_to_analyze), self.analyze_interval_cs)
 
     def aggregate_child_analysis(self, recs: List[AnalysisMove]) -> Tuple[Optional[float], int]:
-        total_visits = 0
-        total_wr = 0.0
-        for r in recs:
-            if r.visits is None or r.winrate is None:
-                continue
-            total_visits += r.visits
-            total_wr += r.winrate * r.visits
-        if total_visits <= 0:
-            return None, 0
-        avg = total_wr / total_visits
-        return 1.0 - avg, total_visits
+        total_visits = sum(self._visits(r.visits) for r in recs)
+        best_winrate = recs[0].winrate if recs else None
+        if best_winrate is None:
+            return None, total_visits
+        return 1.0 - best_winrate, total_visits
 
     @staticmethod
     def _visits(v: Optional[int]) -> int:
@@ -399,8 +393,8 @@ class GuiCoreAnalysisMixin:
         ) -> Tuple[int, float, int]:
             _key, wr, visits = row
             if wr is None:
-                return (1, 0.0, -(visits or 0))
-            return (0, -wr, -(visits or 0))
+                return (1, 0.0, -self._visits(visits))
+            return (0, -wr, -self._visits(visits))
 
         rows.sort(key=sort_key)
 
@@ -425,7 +419,7 @@ class GuiCoreAnalysisMixin:
 
         def visit_key(key: Tuple[int, int]) -> Tuple[int, int, int]:
             _wr, visits = state.results.get(key, (None, None))
-            return (visits or 0, key[0], key[1])
+            return (self._visits(visits), key[0], key[1])
 
         return sorted(state.candidates, key=visit_key)
 
@@ -437,7 +431,7 @@ class GuiCoreAnalysisMixin:
         # Candidate search is a pseudo-root search; suppress root noise.
         self._start_analysis(self.flip_side(self.current_side()), is_candidate=True)
         prev_visits = state.results.get(key, (None, None))[1]
-        base_visits = prev_visits or 0
+        base_visits = self._visits(prev_visits)
         state.run = CandidateRun(
             key=key,
             target_visits=base_visits * state.ratio,
@@ -469,7 +463,7 @@ class GuiCoreAnalysisMixin:
             winrate, visits = self.aggregate_child_analysis(child)
             run = state.run
             key = run.key
-            prev_best = state.results.get(key, (None, None))[1] or 0
+            prev_best = self._visits(state.results.get(key, (None, None))[1])
             if visits > prev_best:
                 state.results[key] = (winrate, visits)
                 if winrate is not None and visits > 0:
@@ -593,7 +587,7 @@ class GuiCoreAnalysisMixin:
                 best = r
         if best is None:
             return None, 0
-        return (best.col, best.row), (best.visits or 0)
+        return (best.col, best.row), self._visits(best.visits)
 
     def tick(self, now: float) -> None:
         if isinstance(self.app.analysis_mode, BatchRun):
