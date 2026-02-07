@@ -173,8 +173,7 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
 
         @classmethod
         def for_font(cls, font: pygame.freetype.Font) -> "BaselineText":
-            # Align glyphs to a consistent baseline using a single reference string.
-            _surf, rect = font.render("Ag01", fgcolor=BLACK)
+            _surf, rect = font.render("0", fgcolor=BLACK)
             return cls(
                 font=font,
                 baseline_offset=rect.y - rect.height / 2,
