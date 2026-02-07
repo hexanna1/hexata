@@ -21,6 +21,7 @@ import pygame
 from board import HexBoard, MoveKind, Side, coord_to_human, col_to_human_letters
 from engine import KataHexEngine, AnalysisMove
 from gui_core import GuiCore
+from gui_core_analysis import AppState
 
 
 def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int = 15) -> None:
@@ -64,8 +65,6 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
     CORNER_DEG = [90, 30, -30, -90, -150, 150]
 
     core = GuiCore(board, engine, analyze_interval_cs=analyze_interval_cs)
-    app = core.app
-
     @dataclass
     class LayoutState:
         r: int
@@ -224,6 +223,17 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
         def update_board_small(self, board_small: pygame.freetype.Font) -> None:
             self.board = BaselineText.for_font(board_small)
 
+    @dataclass
+    class GuiRuntime:
+        board: HexBoard
+        core: GuiCore
+        app: AppState
+        layout: LayoutState
+        fonts: FontState
+        text: TextRenderer
+        scrap_ok: bool
+        running: bool
+
     fonts = FontState(
         board_small=make_board_small(layout.r),
         hud_font=hud_font,
@@ -233,8 +243,19 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
     )
     text = TextRenderer.from_fonts(fonts)
 
-    def get_clipboard_text() -> Optional[str]:
-        if not scrap_ok:
+    ctx = GuiRuntime(
+        board=board,
+        core=core,
+        app=core.app,
+        layout=layout,
+        fonts=fonts,
+        text=text,
+        scrap_ok=scrap_ok,
+        running=False,
+    )
+
+    def get_clipboard_text(ctx: GuiRuntime) -> Optional[str]:
+        if not ctx.scrap_ok:
             return _get_clipboard_fallback()
         try:
             raw = pygame.scrap.get(pygame.SCRAP_TEXT)
@@ -249,8 +270,8 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
         text = text.split("\x00", 1)[0]
         return text.strip()
 
-    def set_clipboard_text(text: str) -> bool:
-        if scrap_ok:
+    def set_clipboard_text(ctx: GuiRuntime, text: str) -> bool:
+        if ctx.scrap_ok:
             try:
                 pygame.scrap.put(pygame.SCRAP_TEXT, text.encode("utf-8"))
                 return True
@@ -298,46 +319,46 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
         win_h = int(board_h + label_pad + HUD_H + 2 * BOARD_PAD)
         return win_w, win_h
 
-    def apply_window_size(win_w: int, win_h: int) -> Tuple[int, int]:
+    def apply_window_size(ctx: GuiRuntime, win_w: int, win_h: int) -> Tuple[int, int]:
         nonlocal screen
-        min_w, min_h = min_window_size(board.n)
+        min_w, min_h = min_window_size(ctx.board.n)
         win_w = max(win_w, min_w)
         win_h = max(win_h, min_h)
         if (win_w, win_h) != pygame.display.get_window_size():
             screen = pygame.display.set_mode((win_w, win_h), FLAGS)
-        layout.board_px_w = max(0, win_w - PANEL_W)
-        layout.board_px_h = win_h
+        ctx.layout.board_px_w = max(0, win_w - PANEL_W)
+        ctx.layout.board_px_h = win_h
 
-        usable_w0 = max(0.0, layout.board_px_w - 2 * BOARD_PAD)
-        usable_h0 = max(0.0, layout.board_px_h - HUD_H - 2 * BOARD_PAD)
+        usable_w0 = max(0.0, ctx.layout.board_px_w - 2 * BOARD_PAD)
+        usable_h0 = max(0.0, ctx.layout.board_px_h - HUD_H - 2 * BOARD_PAD)
 
-        span = 1.5 * (board.n - 1)
+        span = 1.5 * (ctx.board.n - 1)
         denom_w = SQ3 * (span + 1)
         denom_h = span + 2
         pad_k = LABEL_PAD_K
         r_w = usable_w0 / (denom_w + pad_k) if denom_w > 0 else MIN_R
         r_h = usable_h0 / (denom_h + pad_k) if denom_h > 0 else MIN_R
-        layout.r = int(max(MIN_R, min(r_w, r_h, MAX_R)))
+        ctx.layout.r = int(max(MIN_R, min(r_w, r_h, MAX_R)))
 
-        layout.wstep = SQ3 * layout.r
-        layout.hstep = 1.5 * layout.r
-        label_pad = pad_k * layout.r
+        ctx.layout.wstep = SQ3 * ctx.layout.r
+        ctx.layout.hstep = 1.5 * ctx.layout.r
+        label_pad = pad_k * ctx.layout.r
         usable_w = max(0.0, usable_w0 - label_pad)
         usable_h = max(0.0, usable_h0 - label_pad)
 
-        board_w = SQ3 * layout.r * (span + 1)
-        board_h = layout.r * (span + 2)
+        board_w = SQ3 * ctx.layout.r * (span + 1)
+        board_h = ctx.layout.r * (span + 2)
         extra_w = max(0.0, usable_w - board_w)
         extra_h = max(0.0, usable_h - board_h)
-        layout.origin_x = BOARD_PAD + label_pad + extra_w / 2 + (SQ3 * layout.r) / 2
-        layout.origin_y = HUD_H + BOARD_PAD + label_pad + extra_h / 2 + layout.r
+        ctx.layout.origin_x = BOARD_PAD + label_pad + extra_w / 2 + (SQ3 * ctx.layout.r) / 2
+        ctx.layout.origin_y = HUD_H + BOARD_PAD + label_pad + extra_h / 2 + ctx.layout.r
 
-        fonts.board_small = make_board_small(layout.r)
-        text.update_board_small(fonts.board_small)
-        pygame.display.set_caption(f"Hex {board.n}x{board.n}")
+        ctx.fonts.board_small = make_board_small(ctx.layout.r)
+        ctx.text.update_board_small(ctx.fonts.board_small)
+        pygame.display.set_caption(f"Hex {ctx.board.n}x{ctx.board.n}")
         return win_w, win_h
 
-    apply_window_size(DEFAULT_WIN_W, DEFAULT_WIN_H)
+    apply_window_size(ctx, DEFAULT_WIN_W, DEFAULT_WIN_H)
 
     def window_to_surface_pos(pos: Tuple[int, int]) -> Tuple[int, int]:
         wx, wy = pygame.display.get_window_size()
@@ -386,24 +407,25 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
             return best
         return None
 
-    def load_hexworld_text(text: str) -> bool:
-        if not core.load_hexworld_text(text):
+    def load_hexworld_text(ctx: GuiRuntime, text: str) -> bool:
+        if not ctx.core.load_hexworld_text(text):
             return False
         win_w, win_h = pygame.display.get_window_size()
-        apply_window_size(win_w, win_h)
+        apply_window_size(ctx, win_w, win_h)
         return True
 
-    def load_from_clipboard() -> None:
-        text = get_clipboard_text()
+    def load_from_clipboard(ctx: GuiRuntime) -> None:
+        text = get_clipboard_text(ctx)
         if not text:
             return
-        load_hexworld_text(text)
+        load_hexworld_text(ctx, text)
 
-    def copy_hexworld_url() -> None:
-        url = core.build_hexworld_url()
-        set_clipboard_text(url)
+    def copy_hexworld_url(ctx: GuiRuntime) -> None:
+        url = ctx.core.build_hexworld_url()
+        set_clipboard_text(ctx, url)
 
     def draw_grid_and_stones(
+        ctx: GuiRuntime,
         top_cell: Optional[Tuple[int, int]],
         top_visits: int,
         show_prior: bool,
@@ -414,10 +436,10 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
         winrate_map: dict[Tuple[int, int], float] = {}
         prior_map: dict[Tuple[int, int], float] = {}
         candidate_wr_map: dict[Tuple[int, int], Optional[float]] = {}
-        for r in core.get_active_analysis():
+        for r in ctx.core.get_active_analysis():
             if r.col is None or r.row is None:
                 continue
-            if not board.is_empty(r.col, r.row):
+            if not ctx.board.is_empty(r.col, r.row):
                 continue
             if r.visits is not None:
                 visits_map[(r.col, r.row)] = r.visits
@@ -425,23 +447,23 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
                 winrate_map[(r.col, r.row)] = r.winrate
             if r.prior is not None:
                 prior_map[(r.col, r.row)] = r.prior
-        if app.candidates:
-            for key in app.candidates:
-                candidate_wr_map[key] = app.candidate_results.get(key, (None, None))[0]
-        cand_count = len(app.candidates) if app.candidates else 0
+        if ctx.app.candidates:
+            for key in ctx.app.candidates:
+                candidate_wr_map[key] = ctx.app.candidate_results.get(key, (None, None))[0]
+        cand_count = len(ctx.app.candidates) if ctx.app.candidates else 0
 
         denom = math.log(max(2, top_visits))
         max_prior = max(prior_map.values()) if prior_map else None
 
-        for row in range(1, board.n + 1):
-            for col in range(1, board.n + 1):
+        for row in range(1, ctx.board.n + 1):
+            for col in range(1, ctx.board.n + 1):
                 ax, ay = col - 1, row - 1
-                occ = board.get(col, row)
+                occ = ctx.board.get(col, row)
                 if skip_cell is not None and skip_cell == (col, row):
                     occ = -1
 
                 if occ < 0:
-                    if (col, row) in app.candidates:
+                    if (col, row) in ctx.app.candidates:
                         cand_wr = candidate_wr_map.get((col, row))
                         if cand_wr is None:
                             fill = CANDIDATE_UNKNOWN
@@ -450,8 +472,8 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
                             fill = lerp_rgb(CANDIDATE_LOW, CANDIDATE_HIGH, t)
                         if (
                             cand_count > 1
-                            and app.candidate_run is not None
-                            and app.candidate_run.key == (col, row)
+                            and ctx.app.candidate_run is not None
+                            and ctx.app.candidate_run.key == (col, row)
                         ):
                             fill = CANDIDATE_ACTIVE
                     elif show_prior:
@@ -486,91 +508,91 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
                 pygame.draw.polygon(screen, fill, pts, 0)
                 pygame.draw.polygon(screen, GRID_EDGE, pts, 1)
 
-    def draw_next_future_outline() -> None:
-        if not app.future_moves:
+    def draw_next_future_outline(ctx: GuiRuntime) -> None:
+        if not ctx.app.future_moves:
             return
-        mv = app.future_moves[-1]
-        coords = core.move_coords(mv)
+        mv = ctx.app.future_moves[-1]
+        coords = ctx.core.move_coords(mv)
         if coords is None:
             return
         col, row = coords
-        if not board.is_empty(col, row):
+        if not ctx.board.is_empty(col, row):
             return
 
         ax, ay = col - 1, row - 1
         pts = poly(ax, ay)
-        colr = RED if core.current_side() == Side.RED else BLUE
-        thickness = max(3, int(layout.r * 0.12))
+        colr = RED if ctx.core.current_side() == Side.RED else BLUE
+        thickness = max(3, int(ctx.layout.r * 0.12))
         pygame.draw.polygon(screen, colr, pts, thickness)
 
-    def draw_move_numbers(show_all: bool) -> None:
-        if not board.history:
+    def draw_move_numbers(ctx: GuiRuntime, show_all: bool) -> None:
+        if not ctx.board.history:
             return
-        last_idx = len(board.history) - 1
+        last_idx = len(ctx.board.history) - 1
         if show_all:
             number_tint = 0.45
-            for idx in range(len(board.history)):
-                mv = board.history[idx]
-                coords = core.move_coords(mv)
+            for idx in range(len(ctx.board.history)):
+                mv = ctx.board.history[idx]
+                coords = ctx.core.move_coords(mv)
                 if coords is None:
                     continue
                 ax, ay = coords[0] - 1, coords[1] - 1
                 cx, cy = center(ax, ay)
-                txt = "S" if core.is_swapped_stone_index(idx) else str(idx + 1)
+                txt = "S" if ctx.core.is_swapped_stone_index(idx) else str(idx + 1)
                 swap_active_here = (
-                    core.is_swapped_stone_index(idx)
-                    and board.history[last_idx].kind == MoveKind.SWAP
+                    ctx.core.is_swapped_stone_index(idx)
+                    and ctx.board.history[last_idx].kind == MoveKind.SWAP
                 )
                 if idx == last_idx or swap_active_here:
                     colr = OFF_WHITE
                 else:
                     base = RED if mv.side == Side.RED else BLUE
                     colr = lerp_rgb(base, OFF_WHITE, number_tint)
-                text.board.blit_center(txt, colr, cx, cy)
+                ctx.text.board.blit_center(txt, colr, cx, cy)
             return
 
-        mv = board.history[-1]
-        coords = core.move_coords(mv)
-        if coords is None and mv.kind == MoveKind.SWAP and board.history:
-            coords = core.move_coords(board.history[0])
+        mv = ctx.board.history[-1]
+        coords = ctx.core.move_coords(mv)
+        if coords is None and mv.kind == MoveKind.SWAP and ctx.board.history:
+            coords = ctx.core.move_coords(ctx.board.history[0])
         if coords is None:
             return
         ax, ay = coords[0] - 1, coords[1] - 1
         cx, cy = center(ax, ay)
-        dot_r = max(2, int(layout.r * 0.18))
+        dot_r = max(2, int(ctx.layout.r * 0.18))
         pygame.draw.circle(screen, OFF_WHITE, (int(cx), int(cy)), dot_r, 0)
 
-    def draw_borders() -> None:
+    def draw_borders(ctx: GuiRuntime) -> None:
         thickness = 4
         sides = [
             {"color": RED, "segs": [(2, 3), (3, 4)], "coord": lambda i: (i, 0)},
-            {"color": RED, "segs": [(5, 0), (0, 1)], "coord": lambda i: (i, board.n - 1)},
+            {"color": RED, "segs": [(5, 0), (0, 1)], "coord": lambda i: (i, ctx.board.n - 1)},
             {"color": BLUE, "segs": [(4, 5), (5, 0)], "coord": lambda i: (0, i)},
-            {"color": BLUE, "segs": [(1, 2), (2, 3)], "coord": lambda i: (board.n - 1, i)},
+            {"color": BLUE, "segs": [(1, 2), (2, 3)], "coord": lambda i: (ctx.board.n - 1, i)},
         ]
         for side in sides:
-            for i in range(board.n):
+            for i in range(ctx.board.n):
                 ax, ay = side["coord"](i)
                 for c1, c2 in side["segs"]:
                     pygame.draw.line(
                         screen, side["color"], corner(ax, ay, c1), corner(ax, ay, c2), thickness
                     )
 
-    def draw_side_coords() -> None:
+    def draw_side_coords(ctx: GuiRuntime) -> None:
         col_color = GRAY
         row_color = GRAY
-        for col in range(1, board.n + 1):
+        for col in range(1, ctx.board.n + 1):
             ax, ay = col - 1, -1
             cx, cy = center(ax, ay)
             txt = col_to_human_letters(col)
-            text.board.blit_center(txt, col_color, cx, cy)
-        for row in range(1, board.n + 1):
+            ctx.text.board.blit_center(txt, col_color, cx, cy)
+        for row in range(1, ctx.board.n + 1):
             ax, ay = -1, row - 1
             cx, cy = center(ax, ay)
             txt = str(row)
-            text.board.blit_center(txt, row_color, cx, cy)
+            ctx.text.board.blit_center(txt, row_color, cx, cy)
 
-    def draw_ghost_cell(cell: Tuple[int, int], side: Side) -> None:
+    def draw_ghost_cell(ctx: GuiRuntime, cell: Tuple[int, int], side: Side) -> None:
         ax, ay = cell[0] - 1, cell[1] - 1
         pts = poly(ax, ay)
         base = RED if side == Side.RED else BLUE
@@ -579,16 +601,17 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
         pygame.draw.polygon(screen, GRID_EDGE, pts, 1)
 
     def get_hover_pv(
+        ctx: GuiRuntime,
         hover_cell: Optional[Tuple[int, int]],
     ) -> Optional[Tuple[Tuple[int, int], ...]]:
         if hover_cell is None:
             return None
-        if app.candidates:
+        if ctx.app.candidates:
             return None
         col, row = hover_cell
-        if not board.is_empty(col, row):
+        if not ctx.board.is_empty(col, row):
             return None
-        for r in core.get_active_analysis():
+        for r in ctx.core.get_active_analysis():
             if r.col == col and r.row == row and r.pv:
                 return r.pv
         return None
@@ -596,53 +619,55 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
     def should_show_pv(pv: Optional[Tuple[Tuple[int, int], ...]]) -> bool:
         return bool(pv) and len(pv) > 1
 
-    def draw_pv_ghosts(pv: Tuple[Tuple[int, int], ...], start_side: Side) -> None:
+    def draw_pv_ghosts(ctx: GuiRuntime, pv: Tuple[Tuple[int, int], ...], start_side: Side) -> None:
         side = start_side
         for cell in pv:
-            if board.is_empty(*cell):
-                draw_ghost_cell(cell, side)
-            side = core.flip_side(side)
+            if ctx.board.is_empty(*cell):
+                draw_ghost_cell(ctx, cell, side)
+            side = ctx.core.flip_side(side)
 
-    def draw_pv_numbers(pv: Tuple[Tuple[int, int], ...], start_side: Side) -> None:
+    def draw_pv_numbers(ctx: GuiRuntime, pv: Tuple[Tuple[int, int], ...], start_side: Side) -> None:
         side = start_side
         for idx, cell in enumerate(pv):
             if idx == 0:
-                side = core.flip_side(side)
+                side = ctx.core.flip_side(side)
                 continue
-            if not board.is_empty(*cell):
-                side = core.flip_side(side)
+            if not ctx.board.is_empty(*cell):
+                side = ctx.core.flip_side(side)
                 continue
             ax, ay = cell[0] - 1, cell[1] - 1
             cx, cy = center(ax, ay)
-            text.board.blit_center(str(idx + 1), OFF_WHITE, cx, cy)
-            side = core.flip_side(side)
+            ctx.text.board.blit_center(str(idx + 1), OFF_WHITE, cx, cy)
+            side = ctx.core.flip_side(side)
 
     def draw_analysis_text(
+        ctx: GuiRuntime,
+        ui: UiState,
         show_prior: bool,
         show_coords: bool,
         *,
         suppress_cells: Optional[set[Tuple[int, int]]] = None,
     ) -> None:
         if show_coords:
-            for row in range(1, board.n + 1):
-                for col in range(1, board.n + 1):
+            for row in range(1, ctx.board.n + 1):
+                for col in range(1, ctx.board.n + 1):
                     ax, ay = col - 1, row - 1
                     cx, cy = center(ax, ay)
 
-                    occ = board.get(col, row)
+                    occ = ctx.board.get(col, row)
                     colr = WHITE if occ >= 0 else BLACK
 
                     txt = coord_to_human(col, row)
-                    text.board.blit_center(txt, colr, cx, cy)
+                    ctx.text.board.blit_center(txt, colr, cx, cy)
             return
 
-        for r in core.get_active_analysis():
+        for r in ctx.core.get_active_analysis():
             if r.col is None or r.row is None:
                 continue
             col, row = r.col, r.row
             if suppress_cells and (col, row) in suppress_cells:
                 continue
-            if not board.is_empty(col, row):
+            if not ctx.board.is_empty(col, row):
                 continue
             ax, ay = col - 1, row - 1
             cx, cy = center(ax, ay)
@@ -651,7 +676,7 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
                 pr = fmt_prior(r.prior)
                 if not pr:
                     continue
-                text.board.blit_center(pr, BLACK, cx, cy)
+                ctx.text.board.blit_center(pr, BLACK, cx, cy)
                 continue
 
             wr = fmt_wr_or_elo(r.winrate, ui.show_elo)
@@ -660,20 +685,22 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
                 continue
 
             gap = 1
-            rect1 = text.board.font.get_rect(wr)
-            rect2 = text.board.font.get_rect(vv)
+            rect1 = ctx.text.board.font.get_rect(wr)
+            rect2 = ctx.text.board.font.get_rect(vv)
             total_h = rect1.height + gap + rect2.height
             top = cy - total_h / 2
             x1 = cx - rect1.width / 2
-            y1 = top - text.board.line_ref_y + rect1.y
-            text.board.blit_line(wr, BLACK, x1, y1)
+            y1 = top - ctx.text.board.line_ref_y + rect1.y
+            ctx.text.board.blit_line(wr, BLACK, x1, y1)
             top2 = top + rect1.height + gap
             x2 = cx - rect2.width / 2
-            y2 = top2 - text.board.line_ref_y + rect2.y
-            text.board.blit_line(vv, BLACK, x2, y2)
+            y2 = top2 - ctx.text.board.line_ref_y + rect2.y
+            ctx.text.board.blit_line(vv, BLACK, x2, y2)
 
-    def blit_segments(x: int, y: int, parts: List[Tuple[str, Tuple[int, int, int]]], use_small: bool) -> None:
-        blit_line = text.hud_small.blit_line if use_small else text.hud.blit_line
+    def blit_segments(
+        ctx: GuiRuntime, x: int, y: int, parts: List[Tuple[str, Tuple[int, int, int]]], use_small: bool
+    ) -> None:
+        blit_line = ctx.text.hud_small.blit_line if use_small else ctx.text.hud.blit_line
         cx = x
         for txt, col in parts:
             cx += blit_line(txt, col, cx, y)
@@ -688,9 +715,9 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
     GRAPH_ELO_CLAMP = 1000.0
 
     def draw_eval_graph(
+        ctx: GuiRuntime,
         rect: pygame.Rect, cursor_ply: int, total_moves: int, show_elo: bool
     ) -> None:
-
         pygame.draw.rect(screen, PANEL_BG, rect)
         pygame.draw.rect(screen, PANEL_EDGE, rect, 1)
 
@@ -699,7 +726,7 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
             return
 
         def best_reply_winrate(ply_len: int, side_to_play: Side) -> Optional[float]:
-            recs = app.analysis_cache.get((ply_len, int(side_to_play)))
+            recs = ctx.app.analysis_cache.get((ply_len, int(side_to_play)))
             if not recs:
                 return None
             # Only use ordered (live) analysis; candidate cache entries have no order.
@@ -787,8 +814,8 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
                 pygame.draw.circle(screen, RED, (cx, cy), GRAPH_DOT_RADIUS, 0)
 
                 label = fmt_wr_or_elo(val, show_elo)
-                label_rect = text.hud_small.font.get_rect(label)
-                line_h = text.hud_small.font.get_sized_height()
+                label_rect = ctx.text.hud_small.font.get_rect(label)
+                line_h = ctx.text.hud_small.font.get_sized_height()
                 lx = cx + GRAPH_LABEL_PAD
                 ly = cy - line_h / 2
                 if lx + label_rect.width > rect.right - GRAPH_EDGE_PAD:
@@ -797,27 +824,27 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
                     ly = rect.top + GRAPH_EDGE_PAD
                 if ly + line_h > rect.bottom - GRAPH_EDGE_PAD:
                     ly = rect.bottom - line_h - GRAPH_EDGE_PAD
-                text.hud_small.blit_line(label, RED, lx, ly)
+                ctx.text.hud_small.blit_line(label, RED, lx, ly)
 
-    def draw_movelist_panel() -> None:
-        x0 = layout.board_px_w
+    def draw_movelist_panel(ctx: GuiRuntime, ui: UiState) -> None:
+        x0 = ctx.layout.board_px_w
         pygame.draw.rect(screen, PANEL_BG, pygame.Rect(x0, 0, PANEL_W, screen.get_height()))
 
         pad = 12
         y = 10
-        blit_segments(x0 + pad, y, [("Moves", BLACK)], use_small=False)
+        blit_segments(ctx, x0 + pad, y, [("Moves", BLACK)], use_small=False)
         y += 26
 
-        moves = list(board.history)
-        if app.future_moves:
-            moves.extend(reversed(app.future_moves))
+        moves = list(ctx.board.history)
+        if ctx.app.future_moves:
+            moves.extend(reversed(ctx.app.future_moves))
 
         total_moves = len(moves)
-        cursor_ply = len(board.history)
+        cursor_ply = len(ctx.board.history)
         nrows = (total_moves + 1) // 2
 
         line_h = movelist_font.get_sized_height() + 4
-        io_line_h = text.line_io + 2
+        io_line_h = ctx.text.line_io + 2
         io_max_lines = 30
         io_panel_h = (io_line_h * io_max_lines) + 10
         graph_h = 0
@@ -843,9 +870,9 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
             red_i = 2 * row_idx
             blue_i = red_i + 1
 
-            red_mv = core.move_to_label_in_sequence(moves, red_i)
+            red_mv = ctx.core.move_to_label_in_sequence(moves, red_i)
             blue_mv = (
-                core.move_to_label_in_sequence(moves, blue_i) if blue_i < total_moves else None
+                ctx.core.move_to_label_in_sequence(moves, blue_i) if blue_i < total_moves else None
             )
 
             odd = 2 * row_idx + 1
@@ -863,7 +890,7 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
 
             cx = x0 + pad
             for txt, col in parts:
-                cx += text.movelist.blit_line(txt, col, cx, y)
+                cx += ctx.text.movelist.blit_line(txt, col, cx, y)
             y += line_h
 
         if ui.show_engine_debug:
@@ -872,7 +899,7 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
             pygame.draw.rect(screen, PANEL_EDGE, io_rect, 1)
 
             io_y = io_top + 4
-            logs = core.engine.get_io_log(io_max_lines)
+            logs = ctx.core.engine.get_io_log(io_max_lines)
             start_idx = max(0, len(logs) - io_max_lines)
             for direction, msg, count in logs[start_idx:]:
                 prefix = ">>" if direction == "out" else "<<"
@@ -880,7 +907,7 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
                     line = f"{prefix} {msg} ({count})"
                 else:
                     line = f"{prefix} {msg}"
-                text.io.blit_line(line, BLACK, x0 + pad, io_y)
+                ctx.text.io.blit_line(line, BLACK, x0 + pad, io_y)
                 io_y += io_line_h
         elif graph_h >= GRAPH_MIN_HEIGHT:
             graph_rect = pygame.Rect(
@@ -889,26 +916,26 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
                 PANEL_W,
                 screen.get_height() - graph_top,
             )
-            draw_eval_graph(graph_rect, cursor_ply, total_moves, ui.show_elo)
+            draw_eval_graph(ctx, graph_rect, cursor_ply, total_moves, ui.show_elo)
 
         pygame.draw.line(screen, PANEL_EDGE, (x0, 0), (x0, screen.get_height()), 1)
-    def draw_hud() -> None:
+    def draw_hud(ctx: GuiRuntime, ui: UiState) -> None:
         pygame.draw.rect(screen, BG, pygame.Rect(0, 0, screen.get_width(), HUD_H))
 
-        turn_side = core.current_side()
+        turn_side = ctx.core.current_side()
         turn_color = RED if turn_side == Side.RED else BLUE
         turn_name = "Red" if turn_side == Side.RED else "Blue"
-        analysis_txt = "ON" if app.analysis_running else "OFF"
-        analysis_color = BLACK if app.analysis_running else GRAY
+        analysis_txt = "ON" if ctx.app.analysis_running else "OFF"
+        analysis_color = BLACK if ctx.app.analysis_running else GRAY
 
         parts: List[Tuple[str, Tuple[int, int, int]]] = [
             ("Size: ", BLACK),
-            (f"{board.n}", BLACK),
+            (f"{ctx.board.n}", BLACK),
         ]
-        if app.pending_size != board.n:
+        if ctx.app.pending_size != ctx.board.n:
             parts += [
                 ("  (pending ", BLACK),
-                (f"{app.pending_size}", BLACK),
+                (f"{ctx.app.pending_size}", BLACK),
                 (")", BLACK),
             ]
         parts += [
@@ -918,22 +945,22 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
             ("Analysis: ", analysis_color),
             (analysis_txt, analysis_color),
         ]
-        if app.candidates:
+        if ctx.app.candidates:
             cand_key = (
-                app.candidate_run.key if app.candidate_run is not None else ui.last_cand_display
+                ctx.app.candidate_run.key if ctx.app.candidate_run is not None else ui.last_cand_display
             )
             if cand_key is None:
-                next_keys = core.sorted_candidates_by_visits()
+                next_keys = ctx.core.sorted_candidates_by_visits()
                 cand_key = next_keys[0] if next_keys else None
             parts += [("   |   ", BLACK), ("Cand: ", BLACK)]
             if cand_key is not None:
                 parts += [(coord_to_human(*cand_key), turn_color)]
         else:
             display: Optional[AnalysisMove] = None
-            for r in core.get_active_analysis():
+            for r in ctx.core.get_active_analysis():
                 if r.col is None or r.row is None:
                     continue
-                if not board.is_empty(r.col, r.row):
+                if not ctx.board.is_empty(r.col, r.row):
                     continue
                 display = r
                 break
@@ -950,27 +977,27 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
                 vv = fmt_visits(display.visits)
                 if vv:
                     parts += [(" ", BLACK), (f"({vv})", BLACK)]
-        blit_segments(12, 10, parts, use_small=False)
+        blit_segments(ctx, 12, 10, parts, use_small=False)
 
         help_line = "space:analysis • ,:play best • s:swap • +/-/enter:size • ?:help"
-        text.hud_small.blit_line(help_line, BLACK, 12, 32)
+        ctx.text.hud_small.blit_line(help_line, BLACK, 12, 32)
 
-        awrn = f"{app.analysis_wide_root_noise:.2f}".rstrip("0").rstrip(".")
-        awrn_text = "AWRN –" if app.candidates else f"AWRN {awrn}"
-        awrn_w = fonts.hud_small.get_rect(awrn_text).width
-        awrn_x = max(12, layout.board_px_w - awrn_w - 12)
-        text.hud_small.blit_line(awrn_text, GRAY, awrn_x, 10)
+        awrn = f"{ctx.app.analysis_wide_root_noise:.2f}".rstrip("0").rstrip(".")
+        awrn_text = "AWRN –" if ctx.app.candidates else f"AWRN {awrn}"
+        awrn_w = ctx.fonts.hud_small.get_rect(awrn_text).width
+        awrn_x = max(12, ctx.layout.board_px_w - awrn_w - 12)
+        ctx.text.hud_small.blit_line(awrn_text, GRAY, awrn_x, 10)
         vps_suffix = " visits/s"
         if ui.speed_vps is not None and ui.speed_vps > 0:
             vps_text = f"{fmt_visits(int(ui.speed_vps))}{vps_suffix}"
         else:
             vps_text = f"–{vps_suffix}"
-        vps_w = fonts.hud_small.get_rect(vps_text).width
-        vps_x = max(12, layout.board_px_w - vps_w - 12)
-        vps_y = 10 + text.line_hud_small + 2
-        text.hud_small.blit_line(vps_text, GRAY, vps_x, vps_y)
+        vps_w = ctx.fonts.hud_small.get_rect(vps_text).width
+        vps_x = max(12, ctx.layout.board_px_w - vps_w - 12)
+        vps_y = 10 + ctx.text.line_hud_small + 2
+        ctx.text.hud_small.blit_line(vps_text, GRAY, vps_x, vps_y)
 
-    def draw_help_overlay() -> None:
+    def draw_help_overlay(ctx: GuiRuntime) -> None:
         lines = [
             "Help (? to hide)",
             "space:analysis   ,:play best/PV   esc:quit",
@@ -989,9 +1016,9 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
         ]
         pad = 8
         gap = 2
-        surfs = [fonts.hud_small.render(line, fgcolor=BLACK)[0] for line in lines]
+        surfs = [ctx.fonts.hud_small.render(line, fgcolor=BLACK)[0] for line in lines]
         w = max(s.get_width() for s in surfs)
-        line_h = text.line_hud_small
+        line_h = ctx.text.line_hud_small
         h = line_h * len(lines) + gap * (len(surfs) - 1)
         x = 12
         y = HUD_H + 12
@@ -999,7 +1026,7 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
         pygame.draw.rect(screen, PANEL_BG, rect)
         pygame.draw.rect(screen, PANEL_EDGE, rect, 1)
         for line in lines:
-            text.hud_small.blit_line(line, BLACK, x, y)
+            ctx.text.hud_small.blit_line(line, BLACK, x, y)
             y += line_h + gap
 
     @dataclass
@@ -1022,20 +1049,19 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
         speed_vps: Optional[float] = None
         swap_click_candidate: bool = False
 
-    def handle_keydown(ev: pygame.event.Event, ui: UiState) -> None:
-        nonlocal running
+    def handle_keydown(ctx: GuiRuntime, ev: pygame.event.Event, ui: UiState) -> None:
         awrn_steps = [0.00, 0.01, 0.02, 0.04, 0.10, 0.20, 0.50, 1.00, 2.00]
         mods = ev.mod
         has_ctrl = bool(mods & (pygame.KMOD_META | pygame.KMOD_GUI | pygame.KMOD_CTRL))
 
         def step_awrn(direction: int) -> None:
-            current = app.analysis_wide_root_noise
+            current = ctx.app.analysis_wide_root_noise
             idx = min(range(len(awrn_steps)), key=lambda i: abs(awrn_steps[i] - current))
             if direction < 0:
                 idx = max(0, idx - 1)
             elif direction > 0:
                 idx = min(len(awrn_steps) - 1, idx + 1)
-            core.set_analysis_wide_root_noise(awrn_steps[idx])
+            ctx.core.set_analysis_wide_root_noise(awrn_steps[idx])
 
         if ev.unicode == "?":
             ui.show_help = not ui.show_help
@@ -1046,66 +1072,66 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
         elif ev.key == pygame.K_ESCAPE or (
             ev.key == pygame.K_d and (ev.mod & pygame.KMOD_CTRL)
         ):
-            running = False
+            ctx.running = False
         elif ev.key == pygame.K_SPACE:
-            core.toggle_analysis()
+            ctx.core.toggle_analysis()
         elif ev.key == pygame.K_e:
             ui.show_elo = not ui.show_elo
         elif ev.key == pygame.K_n and (mods & pygame.KMOD_SHIFT) and not has_ctrl:
-            core.new_game()
+            ctx.core.new_game()
         elif ev.key == pygame.K_v and has_ctrl:
-            load_from_clipboard()
+            load_from_clipboard(ctx)
         elif ev.key == pygame.K_c and has_ctrl:
-            copy_hexworld_url()
+            copy_hexworld_url(ctx)
         elif ev.key == pygame.K_s and has_ctrl:
             save_screenshot()
         elif ev.key == pygame.K_c and (mods & pygame.KMOD_SHIFT):
-            core.clear_analysis_caches()
+            ctx.core.clear_analysis_caches()
         elif ev.key == pygame.K_p and (mods & pygame.KMOD_SHIFT) and not has_ctrl:
-            core.try_pass_move()
+            ctx.core.try_pass_move()
         elif ev.key == pygame.K_s and not has_ctrl:
-            core.try_swap_move()
+            ctx.core.try_swap_move()
         elif has_ctrl and ev.key in (pygame.K_p, pygame.K_LEFT, pygame.K_UP):
-            core.step_back_n(10)
+            ctx.core.step_back_n(10)
         elif has_ctrl and ev.key in (pygame.K_n, pygame.K_RIGHT, pygame.K_DOWN):
-            core.step_forward_n(10)
+            ctx.core.step_forward_n(10)
         elif ev.key in (pygame.K_p, pygame.K_LEFT, pygame.K_UP):
-            core.step_back()
+            ctx.core.step_back()
         elif ev.key in (pygame.K_n, pygame.K_RIGHT, pygame.K_DOWN):
-            core.step_forward()
+            ctx.core.step_forward()
         elif ev.key == pygame.K_f:
-            core.go_first()
+            ctx.core.go_first()
         elif ev.key == pygame.K_l:
-            core.go_last()
+            ctx.core.go_last()
         elif ev.key in (pygame.K_DELETE, pygame.K_BACKSPACE):
-            core.delete_tail()
+            ctx.core.delete_tail()
         elif ev.key == pygame.K_x and (ev.mod & pygame.KMOD_SHIFT):
-            had = bool(app.candidates)
-            core.clear_candidates()
-            if had and app.analysis_running:
-                core.resume_analysis()
+            had = bool(ctx.app.candidates)
+            ctx.core.clear_candidates()
+            if had and ctx.app.analysis_running:
+                ctx.core.resume_analysis()
         elif ev.key == pygame.K_COMMA:
-            pv = get_hover_pv(ui.hover_cell)
+            pv = get_hover_pv(ctx, ui.hover_cell)
             if should_show_pv(pv):
-                core.try_play_moves(list(pv))
+                ctx.core.try_play_moves(list(pv))
             else:
-                top, _top_visits = core.get_top_move()
+                top, _top_visits = ctx.core.get_top_move()
                 if top is not None:
                     col, row = top
-                    core.try_play_move(col, row)
+                    ctx.core.try_play_move(col, row)
         elif ev.key in (pygame.K_PLUS, pygame.K_EQUALS):
-            app.pending_size = min(42, app.pending_size + 1)
+            ctx.app.pending_size = min(42, ctx.app.pending_size + 1)
         elif ev.key in (pygame.K_MINUS, pygame.K_UNDERSCORE):
-            app.pending_size = max(4, app.pending_size - 1)
+            ctx.app.pending_size = max(4, ctx.app.pending_size - 1)
         elif ev.key == pygame.K_LEFTBRACKET:
             step_awrn(-1)
         elif ev.key == pygame.K_RIGHTBRACKET:
             step_awrn(1)
         elif ev.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
-            if core.apply_pending_size():
-                apply_window_size(*pygame.display.get_window_size())
+            if ctx.core.apply_pending_size():
+                apply_window_size(ctx, *pygame.display.get_window_size())
 
-    def handle_mouse_down(ev: pygame.event.Event, ui: UiState) -> None:
+    def handle_mouse_down(ctx: GuiRuntime, ev: pygame.event.Event, ui: UiState) -> None:
         if ev.button == 1:
             mx, my = window_to_surface_pos(ev.pos)
             cell = pixel_to_cell(mx, my)
@@ -1113,15 +1139,15 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
             if cell is None:
                 return
             col, row = cell
-            if board.is_empty(col, row):
-                core.try_play_move(col, row)
+            if ctx.board.is_empty(col, row):
+                ctx.core.try_play_move(col, row)
                 return
-            idx = core.find_history_index(col, row)
+            idx = ctx.core.find_history_index(col, row)
             if idx is None:
                 return
-            if core.can_swap_move():
-                first = board.history[0] if board.history else None
-                first_coords = core.move_coords(first) if first is not None else None
+            if ctx.core.can_swap_move():
+                first = ctx.board.history[0] if ctx.board.history else None
+                first_coords = ctx.core.move_coords(first) if first is not None else None
                 ui.swap_click_candidate = first_coords == (col, row)
             ui.drag_move = True
             ui.drag_move_from = cell
@@ -1130,9 +1156,9 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
             ui.drag_select = True
             ui.drag_added = False
             ui.drag_last_cell = None
-            ui.drag_start_candidates = set(app.candidates)
+            ui.drag_start_candidates = set(ctx.app.candidates)
 
-    def handle_mouse_up(ev: pygame.event.Event, ui: UiState) -> None:
+    def handle_mouse_up(ctx: GuiRuntime, ev: pygame.event.Event, ui: UiState) -> None:
         if ev.button == 1:
             if ui.drag_move:
                 mx, my = window_to_surface_pos(ev.pos)
@@ -1144,14 +1170,14 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
                     and ui.drag_move_idx is not None
                 ):
                     col, row = cell
-                    core.try_drag_move(ui.drag_move_idx, ui.drag_move_from, col, row)
+                    ctx.core.try_drag_move(ui.drag_move_idx, ui.drag_move_from, col, row)
                 elif (
                     cell is not None
                     and ui.drag_move_from is not None
                     and cell == ui.drag_move_from
                     and ui.swap_click_candidate
                 ):
-                    core.try_swap_move()
+                    ctx.core.try_swap_move()
             ui.drag_move = False
             ui.drag_move_from = None
             ui.drag_move_idx = None
@@ -1163,15 +1189,15 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
                 col, row = cell
                 start = ui.drag_start_candidates or set()
                 if (col, row) in start:
-                    core.remove_candidate(col, row)
+                    ctx.core.remove_candidate(col, row)
                 else:
-                    core.add_candidate(col, row)
+                    ctx.core.add_candidate(col, row)
             ui.drag_select = False
             ui.drag_added = False
             ui.drag_last_cell = None
             ui.drag_start_candidates = None
 
-    def handle_mouse_motion(ev: pygame.event.Event, ui: UiState) -> None:
+    def handle_mouse_motion(ctx: GuiRuntime, ev: pygame.event.Event, ui: UiState) -> None:
         mx, my = window_to_surface_pos(ev.pos)
         ui.hover_cell = pixel_to_cell(mx, my)
         if not ui.drag_select or not ev.buttons[2]:
@@ -1181,42 +1207,41 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
         col, row = ui.hover_cell
         start = ui.drag_start_candidates or set()
         if (col, row) in start:
-            core.remove_candidate(col, row)
+            ctx.core.remove_candidate(col, row)
         else:
-            core.add_candidate(col, row)
+            ctx.core.add_candidate(col, row)
         ui.drag_added = True
         ui.drag_last_cell = ui.hover_cell
 
-    def handle_events(ui: UiState) -> None:
-        nonlocal running
+    def handle_events(ctx: GuiRuntime, ui: UiState) -> None:
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
-                running = False
+                ctx.running = False
             elif ev.type == pygame.KEYDOWN:
-                handle_keydown(ev, ui)
+                handle_keydown(ctx, ev, ui)
             elif ev.type == pygame.MOUSEBUTTONDOWN:
-                handle_mouse_down(ev, ui)
+                handle_mouse_down(ctx, ev, ui)
             elif ev.type == pygame.MOUSEBUTTONUP:
-                handle_mouse_up(ev, ui)
+                handle_mouse_up(ctx, ev, ui)
             elif ev.type == pygame.MOUSEMOTION:
-                handle_mouse_motion(ev, ui)
+                handle_mouse_motion(ctx, ev, ui)
             elif ev.type == pygame.MOUSEWHEEL:
                 if ev.y > 0:
                     for _ in range(ev.y):
-                        core.step_back()
+                        ctx.core.step_back()
                 elif ev.y < 0:
                     for _ in range(-ev.y):
-                        core.step_forward()
+                        ctx.core.step_forward()
             elif ev.type == pygame.VIDEORESIZE:
-                apply_window_size(ev.w, ev.h)
+                apply_window_size(ctx, ev.w, ev.h)
 
     def update_frame_state(
-        now: float, ui: UiState
+        ctx: GuiRuntime, now: float, ui: UiState
     ) -> Tuple[bool, bool, Optional[Tuple[int, int]], int]:
         # Snapshot live analysis for this position so undo/redo can instantly display cached overlays.
-        core.tick(now)
-        if app.candidate_run is not None:
-            ui.last_cand_display = app.candidate_run.key
+        ctx.core.tick(now)
+        if ctx.app.candidate_run is not None:
+            ui.last_cand_display = ctx.app.candidate_run.key
 
         pressed = pygame.key.get_pressed()
         show_prior = bool(pressed[pygame.K_t])
@@ -1224,11 +1249,11 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
         show_coords = bool(pressed[pygame.K_c]) and not (
             mods & (pygame.KMOD_CTRL | pygame.KMOD_META | pygame.KMOD_GUI | pygame.KMOD_SHIFT)
         )
-        top_cell, top_visits = core.get_top_move()
+        top_cell, top_visits = ctx.core.get_top_move()
 
-        if app.analysis_running:
+        if ctx.app.analysis_running:
             total_visits = 0
-            for r in core.get_engine_analysis():
+            for r in ctx.core.get_engine_analysis():
                 if r.visits:
                     total_visits += r.visits
             if total_visits > 0:
@@ -1252,6 +1277,7 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
         return show_prior, show_coords, top_cell, top_visits
 
     def draw_frame(
+        ctx: GuiRuntime,
         show_prior: bool,
         show_coords: bool,
         top_cell: Optional[Tuple[int, int]],
@@ -1259,55 +1285,55 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
         ui: UiState,
     ) -> None:
         screen.fill(BG)
-        draw_hud()
-        pv = get_hover_pv(ui.hover_cell)
+        draw_hud(ctx, ui)
+        pv = get_hover_pv(ctx, ui.hover_cell)
         show_pv = should_show_pv(pv)
         pv_cells = set(pv[1:]) if show_pv else None
         drag_target = None
         drag_side = None
         drag_source = None
         if ui.drag_move and ui.drag_move_from is not None and ui.drag_move_idx is not None:
-            if 0 <= ui.drag_move_idx < len(board.history):
-                drag_side = board.history[ui.drag_move_idx].side
+            if 0 <= ui.drag_move_idx < len(ctx.board.history):
+                drag_side = ctx.board.history[ui.drag_move_idx].side
                 drag_source = ui.drag_move_from
                 if (
                     ui.hover_cell is not None
                     and ui.hover_cell != ui.drag_move_from
-                    and board.is_empty(*ui.hover_cell)
+                    and ctx.board.is_empty(*ui.hover_cell)
                 ):
                     drag_target = ui.hover_cell
-        draw_grid_and_stones(top_cell, top_visits, show_prior, skip_cell=None)
+        draw_grid_and_stones(ctx, top_cell, top_visits, show_prior, skip_cell=None)
         if show_pv:
-            draw_pv_ghosts(pv, core.current_side())
+            draw_pv_ghosts(ctx, pv, ctx.core.current_side())
         if drag_side is not None:
             if drag_source is not None:
-                draw_ghost_cell(drag_source, drag_side)
+                draw_ghost_cell(ctx, drag_source, drag_side)
             if drag_target is not None:
-                draw_ghost_cell(drag_target, drag_side)
-        draw_next_future_outline()
-        if drag_target is None and ui.hover_cell is not None and board.is_empty(*ui.hover_cell) and not show_pv:
+                draw_ghost_cell(ctx, drag_target, drag_side)
+        draw_next_future_outline(ctx)
+        if drag_target is None and ui.hover_cell is not None and ctx.board.is_empty(*ui.hover_cell) and not show_pv:
             ax, ay = ui.hover_cell[0] - 1, ui.hover_cell[1] - 1
             cx, cy = center(ax, ay)
-            dot_r = max(2, int(layout.r * 0.12))
+            dot_r = max(2, int(ctx.layout.r * 0.12))
             pygame.draw.circle(screen, HOVER_DOT, (int(cx), int(cy)), dot_r, 0)
-        draw_borders()
-        draw_side_coords()
-        draw_analysis_text(show_prior, show_coords, suppress_cells=pv_cells)
+        draw_borders(ctx)
+        draw_side_coords(ctx)
+        draw_analysis_text(ctx, ui, show_prior, show_coords, suppress_cells=pv_cells)
         if not show_coords and show_pv:
-            draw_pv_numbers(pv, core.current_side())
+            draw_pv_numbers(ctx, pv, ctx.core.current_side())
         if not show_coords:
-            draw_move_numbers(ui.show_move_numbers)
-        draw_movelist_panel()
+            draw_move_numbers(ctx, ui.show_move_numbers)
+        draw_movelist_panel(ctx, ui)
         if ui.show_help:
-            draw_help_overlay()
+            draw_help_overlay(ctx)
 
     ui = UiState()
-    running = True
-    while running:
-        handle_events(ui)
+    ctx.running = True
+    while ctx.running:
+        handle_events(ctx, ui)
         now = time.monotonic()
-        show_prior, show_coords, top_cell, top_visits = update_frame_state(now, ui)
-        draw_frame(show_prior, show_coords, top_cell, top_visits, ui)
+        show_prior, show_coords, top_cell, top_visits = update_frame_state(ctx, now, ui)
+        draw_frame(ctx, show_prior, show_coords, top_cell, top_visits, ui)
         pygame.display.flip()
         clock.tick(60)
 
