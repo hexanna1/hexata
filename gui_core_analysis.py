@@ -17,6 +17,13 @@ class CandidateRun:
 
 
 @dataclass
+class BatchRun:
+    first_update_at: Optional[float]
+    expected_rev: int
+    seconds_per_pos: float
+
+
+@dataclass
 class AppState:
     pending_size: int
     analysis_enabled: bool
@@ -26,6 +33,7 @@ class AppState:
     candidate_run: Optional[CandidateRun]
     candidate_ratio: float
     candidate_root_rev: Optional[int]
+    batch_run: Optional[BatchRun]
     analysis_cache: dict[bytes, list[AnalysisMove]]
     last_cache_sig: Optional[tuple]
     analysis_wide_root_noise: float
@@ -150,6 +158,56 @@ class GuiCoreAnalysisMixin:
 
     def stop_candidate_search(self) -> None:
         self._end_candidate_run()
+
+    def start_batch_analysis(self) -> None:
+        self.clear_candidates()
+        self.app.batch_run = BatchRun(
+            first_update_at=None,
+            expected_rev=self.board.rev,
+            seconds_per_pos=3.0,
+        )
+        self.stop_candidate_search()
+        self._set_analysis_enabled(True)
+
+    def finish_batch_analysis(self) -> None:
+        self.app.batch_run = None
+        self._set_analysis_enabled(False)
+
+    def cancel_batch_analysis(self) -> None:
+        self.app.batch_run = None
+
+    def step_batch_analysis(self, now: float) -> None:
+        run = self.app.batch_run
+        if run is None:
+            return
+        if not self.app.analysis_running:
+            self.cancel_batch_analysis()
+            return
+        if self.app.candidates:
+            self.cancel_batch_analysis()
+            return
+        if self.board.rev != run.expected_rev:
+            self.cancel_batch_analysis()
+            return
+        live = self.get_engine_analysis()
+        if not live:
+            return
+        if run.first_update_at is None:
+            run.first_update_at = now
+            return
+        if now - run.first_update_at < run.seconds_per_pos:
+            return
+        if not self.app.future_moves:
+            self.finish_batch_analysis()
+            return
+        if not self.step_forward():
+            self.cancel_batch_analysis()
+            return
+        run = self.app.batch_run
+        if run is None:
+            return
+        run.first_update_at = now if self.get_engine_analysis() else None
+        run.expected_rev = self.board.rev
 
     def _set_analysis_enabled(
         self, enabled: bool, *, reset_candidate_results: bool = False
@@ -480,6 +538,10 @@ class GuiCoreAnalysisMixin:
         return None, 1
 
     def tick(self, now: float) -> None:
+        if self.app.batch_run is not None:
+            self.step_batch_analysis(now)
+            self.maybe_update_analysis_cache()
+            return
         if self.check_candidate_root():
             self.resume_analysis()
         self.step_candidate_search(now)

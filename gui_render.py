@@ -879,7 +879,8 @@ class GuiRenderer:
                 display = r
                 break
             if display is not None:
-                parts += [("   |   ", BLACK), ("Best: ", BLACK)]
+                best_label = "Batch: " if self.app.batch_run is not None else "Best: "
+                parts += [("   |   ", BLACK), (best_label, BLACK)]
                 coord = coord_to_human(display.col, display.row)
                 parts += [(coord, turn_color)]
                 wr = fmt_wr_or_elo(display.winrate, ui.show_elo)
@@ -893,7 +894,7 @@ class GuiRenderer:
                     parts += [(" ", BLACK), (f"({vv})", BLACK)]
         self.blit_segments(12, 10, parts, use_small=False)
 
-        help_line = "space:analysis • ,:play best • s:swap • +/-/enter:size • ?:help"
+        help_line = "space:analysis • ,:play best • +/-/enter:size • ?:help"
         self.text.hud_small.blit_line(help_line, BLACK, 12, 32)
 
         awrn = f"{self.app.analysis_wide_root_noise:.2f}".rstrip("0").rstrip(".")
@@ -926,7 +927,7 @@ class GuiRenderer:
             "d:engine debug   ctrl+s:screenshot",
             "left-drag:move stone",
             "right-click:toggle cand   right-drag:toggle cands",
-            "shift+x:clear cands",
+            "shift+x:clear cands   shift+b:batch analysis",
         ]
         pad = 8
         gap = 2

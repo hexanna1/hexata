@@ -26,6 +26,7 @@ class GuiCore(GuiCoreAnalysisMixin):
             candidate_run=None,
             candidate_ratio=1.6,
             candidate_root_rev=None,
+            batch_run=None,
             analysis_cache={},
             last_cache_sig=None,
             analysis_wide_root_noise=0.04,

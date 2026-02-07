@@ -517,6 +517,73 @@ class GuiCoreTests(unittest.TestCase):
         core._set_analysis_enabled(False)
         self.assertEqual(core.get_active_analysis(), [])
 
+    def test_start_batch_analysis_clears_candidates_and_starts_live(self):
+        core, engine = self._mk_core()
+
+        core.try_play_move(1, 1)
+        core.step_back()
+        core.add_candidate(2, 2)
+        core._set_analysis_enabled(True)
+        core.step_candidate_search(now=0.0)
+        self.assertIsNotNone(core.app.candidate_run)
+
+        before = len(engine.calls)
+        core.start_batch_analysis()
+        new_calls = self._new_calls(engine, before)
+
+        self.assertTrue(core.app.analysis_running)
+        self.assertEqual(core.app.candidates, set())
+        self.assertIsNone(core.app.candidate_run)
+        self.assertIsNotNone(core.app.batch_run)
+        self.assertTrue(any(call[0] == "start_analysis" for call in new_calls))
+
+    def test_batch_analysis_steps_forward_to_end(self):
+        core, engine = self._mk_core()
+
+        core.try_play_move(1, 1)
+        core.try_play_move(2, 1)
+        core.try_play_move(1, 2)
+        core.go_first()
+        engine.analysis = [
+            AnalysisMove("a1", order=1, col=1, row=1, winrate=0.5, visits=1, prior=None, pv=None)
+        ]
+
+        core.start_batch_analysis()
+        self.assertIsNotNone(core.app.batch_run)
+        self.assertEqual(len(core.board.history), 0)
+
+        checkpoints = [
+            (2.9, 0, True),
+            (3.0, 0, True),
+            (6.0, 1, True),
+            (9.0, 2, True),
+            (12.0, 3, True),
+        ]
+        for now, expected_history, expect_running in checkpoints:
+            core.tick(now)
+            self.assertEqual(len(core.board.history), expected_history)
+            self.assertIs(expect_running, core.app.batch_run is not None)
+
+        core.tick(15.0)
+        self.assertEqual(len(core.board.history), 3)
+        self.assertEqual(core.app.future_moves, [])
+        self.assertIsNone(core.app.batch_run)
+        self.assertFalse(core.app.analysis_running)
+
+    def test_batch_analysis_cancels_on_board_rev_change(self):
+        core, _engine = self._mk_core()
+
+        core.try_play_move(1, 1)
+        core.try_play_move(2, 1)
+        core.go_first()
+        core.start_batch_analysis()
+        self.assertIsNotNone(core.app.batch_run)
+
+        core.board.place(Side.RED, 5, 5)
+        core.tick(0.1)
+
+        self.assertIsNone(core.app.batch_run)
+
     def test_single_candidate_does_not_rotate_or_undo(self):
         core, engine = self._mk_core()
 

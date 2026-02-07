@@ -170,6 +170,9 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
             running = False
         elif ev.key == pygame.K_SPACE:
             core.toggle_analysis()
+        elif ev.key == pygame.K_b and (mods & pygame.KMOD_SHIFT) and not has_ctrl:
+            if app.batch_run is None:
+                core.start_batch_analysis()
         elif ev.key == pygame.K_e:
             ui.show_elo = not ui.show_elo
         elif ev.key == pygame.K_n and (mods & pygame.KMOD_SHIFT) and not has_ctrl:
