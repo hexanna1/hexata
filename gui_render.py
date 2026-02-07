@@ -233,6 +233,13 @@ class GuiRenderer:
             return self._eval_graph_prefix_keys
         self._eval_graph_sig = sig
         move_sig = sig[1]
+        # Swap quirk (feature, not a bug):
+        # Prefix keys come from internal history. After swap, internal move 1
+        # is rewritten, so the eval graph no longer queries the original
+        # opening move 1 key. This is true even when the coordinate is
+        # unchanged (for example b2), because side to play also changes. We
+        # keep this behavior to avoid a misleading move 1 to move 2 jump,
+        # since the engine eval here is not swap-rule aware.
         self._eval_graph_prefix_keys = [
             self.core.cache_key_for_moves(move_sig[:m]) for m in range(1, len(move_sig) + 1)
         ]
@@ -425,12 +432,10 @@ class GuiRenderer:
                     else:
                         v = visits_map.get((col, row))
                         wr = winrate_map.get((col, row))
-                        if v is None and wr is None:
+                        if v is None or wr is None:
                             fill = OFF_WHITE
                         else:
-                            if wr is None:
-                                wr = 0.5
-                            t = 0.0 if denom <= 0 else (math.log(max(1, v or 1)) / denom)
+                            t = 0.0 if denom <= 0 else (math.log(max(1, v)) / denom)
                             t = clamp01(t) ** 1.1
                             wr_bias = (wr - 0.5) * 2.0
                             t = clamp01(t + 0.35 * wr_bias)

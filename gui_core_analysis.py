@@ -14,7 +14,7 @@ from engine import AnalysisMove
 class CandidateRun:
     key: Tuple[int, int]
     target_visits: float
-    started_at: float
+    first_update_at: Optional[float]
 
 
 @dataclass
@@ -429,7 +429,7 @@ class GuiCoreAnalysisMixin:
 
         return sorted(state.candidates, key=visit_key)
 
-    def _begin_candidate_run(self, key: Tuple[int, int], now: float) -> None:
+    def _begin_candidate_run(self, key: Tuple[int, int]) -> None:
         state = self.app.candidate_state
         col, row = key
         self.engine.clear_analysis()
@@ -441,7 +441,7 @@ class GuiCoreAnalysisMixin:
         state.run = CandidateRun(
             key=key,
             target_visits=base_visits * state.ratio,
-            started_at=now,
+            first_update_at=None,
         )
 
     def _end_candidate_run(self) -> None:
@@ -462,7 +462,7 @@ class GuiCoreAnalysisMixin:
                 col, row = next_keys[0]
                 if not self.board.is_empty(col, row):
                     return
-                self._begin_candidate_run((col, row), now)
+                self._begin_candidate_run((col, row))
                 return
 
             child = self.get_engine_analysis()
@@ -475,7 +475,13 @@ class GuiCoreAnalysisMixin:
                 if winrate is not None and visits > 0:
                     self._promote_candidate_to_cache(key, winrate, visits)
 
-            if now - run.started_at < 1.0:
+            if run.first_update_at is None:
+                if not child:
+                    return
+                run.first_update_at = now
+                return
+
+            if now - run.first_update_at < 1.0:
                 return
 
             target = run.target_visits
@@ -577,13 +583,17 @@ class GuiCoreAnalysisMixin:
             self.toggle_candidate(col, row)
 
     def get_top_move(self) -> Tuple[Optional[Tuple[int, int]], int]:
+        best: Optional[AnalysisMove] = None
         for r in self.get_active_analysis():
-            if r.col is None or r.row is None:
+            if r.col is None or r.row is None or r.order is None:
                 continue
-            if self.board.is_empty(r.col, r.row):
-                v = 0 if r.visits is None else r.visits
-                return (r.col, r.row), max(1, v)
-        return None, 1
+            if not self.board.is_empty(r.col, r.row):
+                continue
+            if best is None or r.order < best.order:
+                best = r
+        if best is None:
+            return None, 0
+        return (best.col, best.row), (best.visits or 0)
 
     def tick(self, now: float) -> None:
         if isinstance(self.app.analysis_mode, BatchRun):

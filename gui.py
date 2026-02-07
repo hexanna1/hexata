@@ -213,7 +213,7 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
             if renderer.should_show_pv(pv):
                 core.try_play_moves(list(pv))
             else:
-                top, _top_visits = core.get_top_move()
+                top, _ = core.get_top_move()
                 if top is not None:
                     col, row = top
                     core.try_play_move(col, row)

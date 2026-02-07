@@ -484,7 +484,6 @@ class GuiCore(GuiCoreAnalysisMixin):
             if idx == 0 and self.app.future_moves and self.app.future_moves[-1].kind == MoveKind.SWAP:
                 swap_mv = self.app.future_moves[-1]
                 self.app.future_moves[-1] = Move.swap(side=swap_mv.side, col=col, row=row)
-            self.clear_all_cached_analysis()
             self.truncate_future_moves_on_conflict()
             self.rebuild_engine_from_history()
             did = True
