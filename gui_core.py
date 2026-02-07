@@ -5,7 +5,7 @@ from typing import List, NoReturn, Optional, Sequence, Tuple
 
 from board import HexBoard, Move, MoveKind, Side, coord_to_human
 from engine import KataHexEngine
-from gui_core_analysis import AppState, GuiCoreAnalysisMixin
+from gui_core_analysis import AppState, CandidateState, GuiCoreAnalysisMixin
 from hexworld import parse_hexworld_position
 
 logger = logging.getLogger(__name__)
@@ -19,14 +19,14 @@ class GuiCore(GuiCoreAnalysisMixin):
 
         self.app = AppState(
             pending_size=board.n,
-            analysis_enabled=False,
             future_moves=[],
-            candidates=set(),
-            candidate_results={},
-            candidate_run=None,
-            candidate_ratio=1.6,
-            candidate_root_rev=None,
-            batch_run=None,
+            candidate_state=CandidateState(
+                candidates=set(),
+                results={},
+                run=None,
+                ratio=1.6,
+                root_rev=None,
+            ),
             analysis_cache={},
             last_cache_sig=None,
             analysis_wide_root_noise=0.04,

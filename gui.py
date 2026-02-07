@@ -171,7 +171,7 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
         elif ev.key == pygame.K_SPACE:
             core.toggle_analysis()
         elif ev.key == pygame.K_b and (mods & pygame.KMOD_SHIFT) and not has_ctrl:
-            if app.batch_run is None:
+            if not core.is_batch_analysis_active():
                 core.start_batch_analysis()
         elif ev.key == pygame.K_e:
             ui.show_elo = not ui.show_elo
@@ -204,7 +204,7 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
         elif ev.key in (pygame.K_DELETE, pygame.K_BACKSPACE):
             core.delete_tail()
         elif ev.key == pygame.K_x and (ev.mod & pygame.KMOD_SHIFT):
-            had = bool(app.candidates)
+            had = bool(app.candidate_state.candidates)
             core.clear_candidates()
             if had and app.analysis_running:
                 core.resume_analysis()
@@ -254,7 +254,7 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
             ui.drag_select = True
             ui.drag_added = False
             ui.drag_last_cell = None
-            ui.drag_start_candidates = set(app.candidates)
+            ui.drag_start_candidates = set(app.candidate_state.candidates)
 
     def handle_mouse_up(ev: pygame.event.Event, ui: UiState) -> None:
         if ev.button == 1:
@@ -339,8 +339,8 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
     ) -> Tuple[bool, bool, Optional[Tuple[int, int]], int]:
         # Snapshot live analysis for this position so undo/redo can instantly display cached overlays.
         core.tick(now)
-        if app.candidate_run is not None:
-            ui.last_cand_display = app.candidate_run.key
+        if app.candidate_state.run is not None:
+            ui.last_cand_display = app.candidate_state.run.key
 
         pressed = pygame.key.get_pressed()
         show_prior = bool(pressed[pygame.K_t])

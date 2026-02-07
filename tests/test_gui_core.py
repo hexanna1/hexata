@@ -55,7 +55,7 @@ class GuiCoreTests(unittest.TestCase):
 
     def _start_candidate_run(self, core: GuiCore, col: int, row: int, *, now: float = 0.0):
         core.add_candidate(col, row)
-        core._set_analysis_enabled(True)
+        core._apply_analysis_enabled_transition(True)
         core.step_candidate_search(now=now)
 
     def _play_two_moves(self, core: GuiCore) -> None:
@@ -158,8 +158,8 @@ class GuiCoreTests(unittest.TestCase):
         board = core.board
 
         core.add_candidate(1, 1)
-        self.assertTrue(core.app.candidates)
-        root_rev = core.app.candidate_root_rev
+        self.assertTrue(core.app.candidate_state.candidates)
+        root_rev = core.app.candidate_state.root_rev
         self.assertIsNotNone(root_rev)
 
         board.place(Side.RED, 2, 2)
@@ -167,8 +167,8 @@ class GuiCoreTests(unittest.TestCase):
 
         cleared = core.check_candidate_root()
         self.assertTrue(cleared)
-        self.assertEqual(core.app.candidates, set())
-        self.assertIsNone(core.app.candidate_root_rev)
+        self.assertEqual(core.app.candidate_state.candidates, set())
+        self.assertIsNone(core.app.candidate_state.root_rev)
 
     def test_merge_analysis_lists_prefers_primary_order_prior(self):
         core, _engine = self._mk_core()
@@ -194,7 +194,7 @@ class GuiCoreTests(unittest.TestCase):
 
         core.with_analysis_paused(lambda: None, stop_engine=False)
 
-        self.assertIsNone(core.app.candidate_run)
+        self.assertIsNone(core.app.candidate_state.run)
         self.assertIn(("undo",), engine.calls)
         # Analysis should resume (candidates exist), which plays the candidate move.
         self.assertTrue(any(call[0] == "play" for call in engine.calls))
@@ -449,20 +449,20 @@ class GuiCoreTests(unittest.TestCase):
 
         core.add_candidate(1, 1)
         core.add_candidate(2, 2)
-        core._set_analysis_enabled(True)
+        core._apply_analysis_enabled_transition(True)
         core.step_candidate_search(now=0.0)
-        self.assertIsNotNone(core.app.candidate_run)
+        self.assertIsNotNone(core.app.candidate_state.run)
 
-        core.app.candidate_results[(1, 1)] = (0.4, 10)
+        core.app.candidate_state.results[(1, 1)] = (0.4, 10)
         core.app.analysis_cache[core.cache_key_for_moves([])] = ["x"]
 
         core.clear_analysis_caches()
 
         self.assertTrue(core.app.analysis_running)
-        self.assertEqual(core.app.candidates, {(1, 1), (2, 2)})
-        self.assertEqual(core.app.candidate_results, {})
+        self.assertEqual(core.app.candidate_state.candidates, {(1, 1), (2, 2)})
+        self.assertEqual(core.app.candidate_state.results, {})
         self.assertEqual(core.app.analysis_cache, {})
-        self.assertIsNone(core.app.candidate_run)
+        self.assertIsNone(core.app.candidate_state.run)
 
     def test_load_hexworld_text_duplicate_rejected_without_mutating_state(self):
         core, engine = self._mk_core()
@@ -502,19 +502,19 @@ class GuiCoreTests(unittest.TestCase):
 
         core.clear_all_cached_analysis()
         core.add_candidate(1, 1)
-        core.app.candidate_results[(1, 1)] = (0.4, 5)
+        core.app.candidate_state.results[(1, 1)] = (0.4, 5)
         active = core.get_active_analysis()
         self.assertEqual(len(active), 1)
         self.assertEqual((active[0].col, active[0].row), (1, 1))
 
         core.clear_candidates()
-        core._set_analysis_enabled(True)
+        core._apply_analysis_enabled_transition(True)
         engine.analysis = [
             AnalysisMove("b2", order=1, col=2, row=2, winrate=0.6, visits=8, prior=None, pv=None)
         ]
         self.assertEqual(core.get_active_analysis(), engine.analysis)
 
-        core._set_analysis_enabled(False)
+        core._apply_analysis_enabled_transition(False)
         self.assertEqual(core.get_active_analysis(), [])
 
     def test_start_batch_analysis_clears_candidates_and_starts_live(self):
@@ -523,18 +523,18 @@ class GuiCoreTests(unittest.TestCase):
         core.try_play_move(1, 1)
         core.step_back()
         core.add_candidate(2, 2)
-        core._set_analysis_enabled(True)
+        core._apply_analysis_enabled_transition(True)
         core.step_candidate_search(now=0.0)
-        self.assertIsNotNone(core.app.candidate_run)
+        self.assertIsNotNone(core.app.candidate_state.run)
 
         before = len(engine.calls)
         core.start_batch_analysis()
         new_calls = self._new_calls(engine, before)
 
         self.assertTrue(core.app.analysis_running)
-        self.assertEqual(core.app.candidates, set())
-        self.assertIsNone(core.app.candidate_run)
-        self.assertIsNotNone(core.app.batch_run)
+        self.assertEqual(core.app.candidate_state.candidates, set())
+        self.assertIsNone(core.app.candidate_state.run)
+        self.assertTrue(core.is_batch_analysis_active())
         self.assertTrue(any(call[0] == "start_analysis" for call in new_calls))
 
     def test_batch_analysis_steps_forward_to_end(self):
@@ -549,26 +549,48 @@ class GuiCoreTests(unittest.TestCase):
         ]
 
         core.start_batch_analysis()
-        self.assertIsNotNone(core.app.batch_run)
+        self.assertTrue(core.is_batch_analysis_active())
         self.assertEqual(len(core.board.history), 0)
 
         checkpoints = [
             (2.9, 0, True),
             (3.0, 0, True),
             (6.0, 1, True),
-            (9.0, 2, True),
-            (12.0, 3, True),
+            (9.0, 1, True),
+            (12.0, 2, True),
+            (15.0, 2, True),
+            (18.0, 3, True),
+            (21.0, 3, True),
         ]
         for now, expected_history, expect_running in checkpoints:
             core.tick(now)
             self.assertEqual(len(core.board.history), expected_history)
-            self.assertIs(expect_running, core.app.batch_run is not None)
+            self.assertIs(expect_running, core.is_batch_analysis_active())
 
-        core.tick(15.0)
+        core.tick(24.0)
         self.assertEqual(len(core.board.history), 3)
         self.assertEqual(core.app.future_moves, [])
-        self.assertIsNone(core.app.batch_run)
+        self.assertFalse(core.is_batch_analysis_active())
         self.assertFalse(core.app.analysis_running)
+
+    def test_batch_analysis_restarts_live_analysis_after_step_forward(self):
+        core, engine = self._mk_core()
+
+        core.try_play_move(1, 1)
+        core.try_play_move(2, 1)
+        core.go_first()
+        engine.analysis = [
+            AnalysisMove("a1", order=1, col=1, row=1, winrate=0.5, visits=1, prior=None, pv=None)
+        ]
+
+        core.start_batch_analysis()
+        core.tick(0.0)  # set first_update_at
+        before = len(engine.calls)
+        core.tick(3.0)  # step forward
+        new_calls = self._new_calls(engine, before)
+
+        self.assertEqual(len(core.board.history), 1)
+        self.assertTrue(any(call[0] == "start_analysis" for call in new_calls))
 
     def test_batch_analysis_cancels_on_board_rev_change(self):
         core, _engine = self._mk_core()
@@ -577,12 +599,94 @@ class GuiCoreTests(unittest.TestCase):
         core.try_play_move(2, 1)
         core.go_first()
         core.start_batch_analysis()
-        self.assertIsNotNone(core.app.batch_run)
+        self.assertTrue(core.is_batch_analysis_active())
 
         core.board.place(Side.RED, 5, 5)
         core.tick(0.1)
 
-        self.assertIsNone(core.app.batch_run)
+        self.assertFalse(core.is_batch_analysis_active())
+
+    def test_batch_cancel_restores_live_analysis_after_stop_engine_pause(self):
+        core, engine = self._mk_core()
+
+        core.try_play_move(1, 1)
+        core.try_play_move(2, 1)
+        core.go_first()
+        core.start_batch_analysis()
+        self.assertTrue(core.is_batch_analysis_active())
+
+        core.app.pending_size = 6
+        core.apply_pending_size()
+        self.assertTrue(core.is_batch_analysis_active())
+
+        before = len(engine.calls)
+        core.tick(0.1)
+        new_calls = self._new_calls(engine, before)
+
+        self.assertFalse(core.is_batch_analysis_active())
+        self.assertTrue(core.app.analysis_running)
+        self.assertTrue(any(call[0] == "start_analysis" for call in new_calls))
+
+    def test_enable_analysis_mode_transitions(self):
+        for with_candidates in (False, True):
+            with self.subTest(with_candidates=with_candidates):
+                core, engine = self._mk_core()
+                if with_candidates:
+                    core.add_candidate(1, 1)
+
+                before = len(engine.calls)
+                core._apply_analysis_enabled_transition(True)
+                new_calls = self._new_calls(engine, before)
+
+                self.assertTrue(core.app.analysis_running)
+                self.assertFalse(core.is_batch_analysis_active())
+
+                if with_candidates:
+                    self.assertEqual(core.app.candidate_state.candidates, {(1, 1)})
+                    self.assertIsNone(core.app.candidate_state.run)
+                    core.step_candidate_search(now=0.0)
+                    self.assertIsNotNone(core.app.candidate_state.run)
+                else:
+                    self.assertEqual(core.app.candidate_state.candidates, set())
+                    self.assertIsNone(core.app.candidate_state.run)
+                    self.assertTrue(any(call[0] == "start_analysis" for call in new_calls))
+
+    def test_toggle_analysis_off_exits_batch_mode(self):
+        core, engine = self._mk_core()
+
+        core.try_play_move(1, 1)
+        core.try_play_move(2, 1)
+        core.go_first()
+        engine.analysis = [
+            AnalysisMove("a1", order=1, col=1, row=1, winrate=0.5, visits=1, prior=None, pv=None)
+        ]
+        core.start_batch_analysis()
+        self.assertTrue(core.is_batch_analysis_active())
+        self.assertTrue(core.app.analysis_running)
+
+        core.toggle_analysis()
+        core.tick(0.1)
+
+        self.assertFalse(core.app.analysis_running)
+        self.assertFalse(core.is_batch_analysis_active())
+
+    def test_candidate_root_change_clears_candidates_and_resumes_live(self):
+        core, engine = self._mk_core()
+
+        core.add_candidate(1, 1)
+        core._apply_analysis_enabled_transition(True)
+        core.step_candidate_search(now=0.0)
+        self.assertIsNotNone(core.app.candidate_state.run)
+
+        before = len(engine.calls)
+        core.try_play_move(2, 2)
+        new_calls = self._new_calls(engine, before)
+
+        self.assertTrue(core.app.analysis_running)
+        self.assertEqual(core.app.candidate_state.candidates, set())
+        self.assertIsNone(core.app.candidate_state.run)
+        self.assertFalse(core.is_batch_analysis_active())
+        self.assertTrue(any(call[0] == "start_analysis" for call in new_calls))
 
     def test_single_candidate_does_not_rotate_or_undo(self):
         core, engine = self._mk_core()
@@ -594,7 +698,7 @@ class GuiCoreTests(unittest.TestCase):
         undo_after = sum(1 for call in engine.calls if call[0] == "undo")
 
         self.assertEqual(undo_before, undo_after)
-        self.assertIsNotNone(core.app.candidate_run)
+        self.assertIsNotNone(core.app.candidate_state.run)
 
     def test_play_move_undoes_candidate_run_first(self):
         core, engine = self._mk_core()
@@ -632,7 +736,7 @@ class GuiCoreTests(unittest.TestCase):
 
         new_calls = self._new_calls(engine, before)
         self._assert_undo_before(new_calls, lambda call: call[0] == "start_analysis")
-        self.assertFalse(core.app.candidates)
+        self.assertFalse(core.app.candidate_state.candidates)
 
     def test_delete_tail_behavior(self):
         for at_end in (False, True):

@@ -347,7 +347,7 @@ class GuiRenderer:
     ) -> Optional[Tuple[Tuple[int, int], ...]]:
         if hover_cell is None:
             return None
-        if self.app.candidates:
+        if self.app.candidate_state.candidates:
             return None
         col, row = hover_cell
         if not self.board.is_empty(col, row):
@@ -384,10 +384,10 @@ class GuiRenderer:
                 winrate_map[(r.col, r.row)] = r.winrate
             if r.prior is not None:
                 prior_map[(r.col, r.row)] = r.prior
-        if self.app.candidates:
-            for key in self.app.candidates:
-                candidate_wr_map[key] = self.app.candidate_results.get(key, (None, None))[0]
-        cand_count = len(self.app.candidates) if self.app.candidates else 0
+        if self.app.candidate_state.candidates:
+            for key in self.app.candidate_state.candidates:
+                candidate_wr_map[key] = self.app.candidate_state.results.get(key, (None, None))[0]
+        cand_count = len(self.app.candidate_state.candidates) if self.app.candidate_state.candidates else 0
 
         denom = math.log(max(2, top_visits))
         max_prior = max(prior_map.values()) if prior_map else None
@@ -400,7 +400,7 @@ class GuiRenderer:
                     occ = -1
 
                 if occ < 0:
-                    if (col, row) in self.app.candidates:
+                    if (col, row) in self.app.candidate_state.candidates:
                         cand_wr = candidate_wr_map.get((col, row))
                         if cand_wr is None:
                             fill = CANDIDATE_UNKNOWN
@@ -409,8 +409,8 @@ class GuiRenderer:
                             fill = lerp_rgb(CANDIDATE_LOW, CANDIDATE_HIGH, t)
                         if (
                             cand_count > 1
-                            and self.app.candidate_run is not None
-                            and self.app.candidate_run.key == (col, row)
+                            and self.app.candidate_state.run is not None
+                            and self.app.candidate_state.run.key == (col, row)
                         ):
                             fill = CANDIDATE_ACTIVE
                     elif show_prior:
@@ -859,9 +859,9 @@ class GuiRenderer:
             ("Analysis: ", analysis_color),
             (analysis_txt, analysis_color),
         ]
-        if self.app.candidates:
+        if self.app.candidate_state.candidates:
             cand_key = (
-                self.app.candidate_run.key if self.app.candidate_run is not None else ui.last_cand_display
+                self.app.candidate_state.run.key if self.app.candidate_state.run is not None else ui.last_cand_display
             )
             if cand_key is None:
                 next_keys = self.core.sorted_candidates_by_visits()
@@ -879,7 +879,7 @@ class GuiRenderer:
                 display = r
                 break
             if display is not None:
-                best_label = "Batch: " if self.app.batch_run is not None else "Best: "
+                best_label = "Batch: " if self.core.is_batch_analysis_active() else "Best: "
                 parts += [("   |   ", BLACK), (best_label, BLACK)]
                 coord = coord_to_human(display.col, display.row)
                 parts += [(coord, turn_color)]
@@ -898,7 +898,7 @@ class GuiRenderer:
         self.text.hud_small.blit_line(help_line, BLACK, 12, 32)
 
         awrn = f"{self.app.analysis_wide_root_noise:.2f}".rstrip("0").rstrip(".")
-        awrn_text = "AWRN –" if self.app.candidates else f"AWRN {awrn}"
+        awrn_text = "AWRN –" if self.app.candidate_state.candidates else f"AWRN {awrn}"
         awrn_w = self.fonts.hud_small.get_rect(awrn_text).width
         awrn_x = max(12, self.layout.board_px_w - awrn_w - 12)
         self.text.hud_small.blit_line(awrn_text, GRAY, awrn_x, 10)
