@@ -214,3 +214,6 @@ screenshots/
 
 # Local config overrides
 config.local.ini
+
+# Agent local instructions
+AGENTS.md

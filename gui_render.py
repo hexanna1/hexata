@@ -54,14 +54,18 @@ GRAPH_PAD = 0
 GRAPH_ELO_CLAMP = 1000.0
 
 
+class UiPrefsLike(Protocol):
+    show_move_numbers: bool
+    show_elo: bool
+
+
 class UiStateLike(Protocol):
     drag_move: bool
     drag_move_from: Optional[Tuple[int, int]]
     drag_move_idx: Optional[int]
     hover_cell: Optional[Tuple[int, int]]
     show_help: bool
-    show_move_numbers: bool
-    show_elo: bool
+    prefs: UiPrefsLike
     show_engine_debug: bool
     last_cand_display: Optional[Tuple[int, int]]
     speed_vps: Optional[float]
@@ -618,7 +622,7 @@ class GuiRenderer:
                 self.text.board.blit_center(pr, BLACK, cx, cy)
                 continue
 
-            wr = fmt_wr_or_elo(r.winrate, ui.show_elo)
+            wr = fmt_wr_or_elo(r.winrate, ui.prefs.show_elo)
             vv = fmt_visits(r.visits)
             if not wr and not vv:
                 continue
@@ -850,7 +854,7 @@ class GuiRenderer:
                 PANEL_W,
                 self.screen.get_height() - graph_top,
             )
-            self.draw_eval_graph(graph_rect, moves, cursor_ply, ui.show_elo)
+            self.draw_eval_graph(graph_rect, moves, cursor_ply, ui.prefs.show_elo)
 
         pygame.draw.line(self.screen, PANEL_EDGE, (x0, 0), (x0, self.screen.get_height()), 1)
 
@@ -904,9 +908,9 @@ class GuiRenderer:
                 parts += [("   |   ", BLACK), (best_label, BLACK)]
                 coord = coord_to_human(display.col, display.row)
                 parts += [(coord, turn_color)]
-                wr = fmt_wr_or_elo(display.winrate, ui.show_elo)
+                wr = fmt_wr_or_elo(display.winrate, ui.prefs.show_elo)
                 if wr:
-                    if ui.show_elo:
+                    if ui.prefs.show_elo:
                         parts += [(" ", BLACK), (wr, BLACK)]
                     else:
                         parts += [(" ", BLACK), (f"{wr}%", BLACK)]
@@ -1011,7 +1015,7 @@ class GuiRenderer:
         if not show_coords and show_pv and pv is not None:
             self.draw_pv_numbers(pv, self.core.current_side())
         if not show_coords:
-            self.draw_move_numbers(ui.show_move_numbers)
+            self.draw_move_numbers(ui.prefs.show_move_numbers)
         self.draw_movelist_panel(ui)
         if ui.show_help:
             self.draw_help_overlay()

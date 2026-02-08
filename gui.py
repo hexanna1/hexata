@@ -26,6 +26,7 @@ from gui_render import GuiRenderer
 
 @dataclass
 class UiState:
+    prefs: UiPrefs
     drag_select: bool = False
     drag_added: bool = False
     drag_last_cell: Optional[Tuple[int, int]] = None
@@ -35,8 +36,6 @@ class UiState:
     drag_move_idx: Optional[int] = None
     hover_cell: Optional[Tuple[int, int]] = None
     show_help: bool = False
-    show_move_numbers: bool = False
-    show_elo: bool = False
     show_engine_debug: bool = False
     last_cand_display: Optional[Tuple[int, int]] = None
     speed_last_t: Optional[float] = None
@@ -45,7 +44,19 @@ class UiState:
     swap_click_candidate: bool = False
 
 
-def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int = 15) -> None:
+@dataclass
+class UiPrefs:
+    show_move_numbers: bool = False
+    show_elo: bool = False
+
+
+def run_gui(
+    board: HexBoard,
+    engine: KataHexEngine,
+    *,
+    analyze_interval_cs: int = 15,
+    ui_prefs: UiPrefs,
+) -> None:
     os.environ.setdefault("SDL_VIDEO_ALLOW_HIGHDPI", "1")
     os.environ.setdefault("SDL_VIDEO_CENTERED", "1")
 
@@ -163,7 +174,7 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
         elif ev.key == pygame.K_d and not (ev.mod & pygame.KMOD_CTRL):
             ui.show_engine_debug = not ui.show_engine_debug
         elif ev.key == pygame.K_m:
-            ui.show_move_numbers = not ui.show_move_numbers
+            ui.prefs.show_move_numbers = not ui.prefs.show_move_numbers
         elif ev.key == pygame.K_ESCAPE or (
             ev.key == pygame.K_d and (ev.mod & pygame.KMOD_CTRL)
         ):
@@ -174,7 +185,7 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
             if not core.is_batch_analysis_active():
                 core.start_batch_analysis()
         elif ev.key == pygame.K_e:
-            ui.show_elo = not ui.show_elo
+            ui.prefs.show_elo = not ui.prefs.show_elo
         elif ev.key == pygame.K_n and (mods & pygame.KMOD_SHIFT) and not has_ctrl:
             core.new_game()
         elif ev.key == pygame.K_v and has_ctrl:
@@ -375,7 +386,7 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
 
         return show_prior, show_coords, top_cell, top_visits
 
-    ui = UiState()
+    ui = UiState(prefs=ui_prefs)
     while running:
         handle_events(ui)
         now = time.monotonic()

@@ -6,11 +6,10 @@ import configparser
 import logging
 import os
 import shlex
-import sys
 
 from board import HexBoard
 from engine import KataHexEngine
-from gui import run_gui
+from gui import UiPrefs, run_gui
 
 
 def _expand_cmd(cmd_str: str) -> list[str]:
@@ -27,22 +26,47 @@ def _require_config_value(
     return value
 
 
-def _load_engine_cmd() -> list[str]:
-    config_path = os.path.join(os.path.dirname(__file__), "config.ini")
-    config_local_path = os.path.join(os.path.dirname(__file__), "config.local.ini")
+def _save_ui_prefs(config_local_path: str, prefs: UiPrefs, *, board_size: int) -> None:
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.read([config_local_path])
+
+    if not parser.has_section("ui"):
+        parser.add_section("ui")
+    parser.set("ui", "show_move_numbers", "true" if prefs.show_move_numbers else "false")
+    parser.set("ui", "show_elo", "true" if prefs.show_elo else "false")
+    if not parser.has_section("game"):
+        parser.add_section("game")
+    parser.set("game", "size", str(max(4, min(42, board_size))))
+    with open(config_local_path, "w", encoding="utf-8") as f:
+        parser.write(f)
+
+
+def _load_runtime_config(base_dir: str) -> tuple[list[str], int, UiPrefs, str]:
+    config_path = os.path.join(base_dir, "config.ini")
+    config_local_path = os.path.join(base_dir, "config.local.ini")
     if not os.path.exists(config_path):
         raise FileNotFoundError("Missing config.ini")
+
     parser = configparser.ConfigParser(interpolation=None)
     parser.read([config_path, config_local_path])
-    cmd = _require_config_value(parser, "engine", "cmd")
-    return _expand_cmd(cmd)
+    default_prefs = UiPrefs()
+    size = parser.getint("game", "size", fallback=14)
+    show_move_numbers = parser.getboolean(
+        "ui", "show_move_numbers", fallback=default_prefs.show_move_numbers
+    )
+    show_elo = parser.getboolean("ui", "show_elo", fallback=default_prefs.show_elo)
+    return (
+        _expand_cmd(_require_config_value(parser, "engine", "cmd")),
+        max(4, min(42, size)),
+        UiPrefs(show_move_numbers=show_move_numbers, show_elo=show_elo),
+        config_local_path,
+    )
 
 
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
 
     ap = argparse.ArgumentParser(description="Minimal Hex GUI + KataHex analysis")
-    ap.add_argument("--size", type=int, default=14, help="initial board size (default 14)")
     ap.add_argument("--interval", type=int, default=15, help="kata-analyze interval (centiseconds)")
     ap.add_argument(
         "--engine-echo",
@@ -51,15 +75,15 @@ def main() -> int:
     )
     args = ap.parse_args()
 
-    size = max(4, min(42, int(args.size)))
-
-    board = HexBoard(size)
     try:
-        engine_cmd = _load_engine_cmd()
-    except (FileNotFoundError, ValueError) as exc:
+        engine_cmd, size, ui_prefs, config_local_path = _load_runtime_config(os.path.dirname(__file__))
+    except (FileNotFoundError, ValueError, configparser.Error) as exc:
         print(f"Engine config error: {exc}")
         print("Edit config.ini and set [engine].cmd to your KataHex command.")
         return 1
+
+    board = HexBoard(size)
+    exit_code = 0
 
     try:
         engine = KataHexEngine(
@@ -73,11 +97,19 @@ def main() -> int:
         return 1
 
     try:
-        run_gui(board, engine, analyze_interval_cs=int(args.interval))
+        run_gui(
+            board,
+            engine,
+            analyze_interval_cs=int(args.interval),
+            ui_prefs=ui_prefs,
+        )
+    except KeyboardInterrupt:
+        exit_code = 130
     finally:
+        _save_ui_prefs(config_local_path, ui_prefs, board_size=board.n)
         engine.close()
 
-    return 0
+    return exit_code
 
 
 if __name__ == "__main__":
