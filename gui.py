@@ -209,7 +209,7 @@ def run_gui(board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int 
             if had and app.analysis_running:
                 core.resume_analysis()
         elif ev.key == pygame.K_COMMA:
-            pv = renderer.get_hover_pv(ui.hover_cell)
+            pv = renderer.get_display_pv(ui.hover_cell)
             if renderer.should_show_pv(pv):
                 core.try_play_moves(list(pv))
             else:

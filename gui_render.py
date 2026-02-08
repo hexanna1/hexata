@@ -225,6 +225,8 @@ class GuiRenderer:
         self.text = TextRenderer.from_fonts(self.fonts)
         self._eval_graph_sig: Optional[tuple[int, tuple[Move, ...]]] = None
         self._eval_graph_prefix_keys: list[bytes] = []
+        self._frozen_pv_sig: Optional[Tuple[Optional[Tuple[int, int]], int]] = None
+        self._frozen_pv: Optional[Tuple[Tuple[int, int], ...]] = None
         self.apply_window_size(DEFAULT_WIN_W, DEFAULT_WIN_H)
 
     def _get_eval_graph_prefix_keys(self, moves: List[Move]) -> list[bytes]:
@@ -348,21 +350,35 @@ class GuiRenderer:
             return best
         return None
 
-    def get_hover_pv(
+    def get_display_pv(
         self,
         hover_cell: Optional[Tuple[int, int]],
     ) -> Optional[Tuple[Tuple[int, int], ...]]:
-        if hover_cell is None:
+        cell = hover_cell
+        if (
+            cell is None
+            or self.app.candidate_state.candidates
+            or (not self.board.is_empty(cell[0], cell[1]))
+        ):
+            cell = None
+
+        sig = (cell, self.board.rev)
+        if self._frozen_pv_sig == sig:
+            return self._frozen_pv
+        self._frozen_pv_sig = sig
+
+        if cell is None:
+            self._frozen_pv = None
             return None
-        if self.app.candidate_state.candidates:
-            return None
-        col, row = hover_cell
-        if not self.board.is_empty(col, row):
-            return None
+
+        col, row = cell
+        pv = None
         for r in self.core.get_active_analysis():
             if r.col == col and r.row == row and r.pv:
-                return r.pv
-        return None
+                pv = r.pv
+                break
+        self._frozen_pv = pv
+        return pv
 
     @staticmethod
     def should_show_pv(pv: Optional[Tuple[Tuple[int, int], ...]]) -> bool:
@@ -959,7 +975,7 @@ class GuiRenderer:
     ) -> None:
         self.screen.fill(BG)
         self.draw_hud(ui)
-        pv = self.get_hover_pv(ui.hover_cell)
+        pv = self.get_display_pv(ui.hover_cell)
         show_pv = self.should_show_pv(pv)
         pv_cells = set(pv[1:]) if show_pv else None
         drag_target = None
