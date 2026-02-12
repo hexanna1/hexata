@@ -179,6 +179,8 @@ class GuiCoreAnalysisMixin:
 
     def start_batch_analysis(self) -> None:
         self.clear_candidates()
+        if self.board.history and not self.app.future_moves:
+            self.go_first()
         self.app.analysis_mode = BatchRun(
             first_update_at=None,
             expected_rev=self.board.rev,

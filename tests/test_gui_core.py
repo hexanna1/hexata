@@ -543,7 +543,8 @@ class GuiCoreTests(unittest.TestCase):
         core.try_play_move(1, 1)
         core.try_play_move(2, 1)
         core.try_play_move(1, 2)
-        core.go_first()
+        self.assertEqual(len(core.board.history), 3)
+        self.assertEqual(core.app.future_moves, [])
         engine.analysis = [
             AnalysisMove("a1", order=1, col=1, row=1, winrate=0.5, visits=1, prior=None, pv=None)
         ]
