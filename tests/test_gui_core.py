@@ -18,7 +18,7 @@ class FakeEngine:
     def clear_cache(self):
         self.calls.append(("clear_cache",))
 
-    def start_analysis(self, side, interval_cs=15):
+    def start_analysis(self, side, interval_cs):
         self.calls.append(("start_analysis", side, interval_cs))
 
     def stop_analysis(self):

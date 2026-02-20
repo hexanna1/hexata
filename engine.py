@@ -278,7 +278,7 @@ class KataHexEngine:
         self._param_cache[name] = value
         self._send(f"kata-set-param {name} {value}")
 
-    def start_analysis(self, side_to_analyze: Side, interval_cs: int = 15) -> None:
+    def start_analysis(self, side_to_analyze: Side, interval_cs: int) -> None:
         eng = "B" if side_to_analyze == Side.RED else "W"
         self._send(f"kata-analyze {eng} {interval_cs}")
         # Activate analysis and mute until we see the response header.

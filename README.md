@@ -19,7 +19,7 @@ A lightweight, keyboard-first GUI for analyzing Hex with the [KataHex](https://w
 - Install KataHex separately (engine binary, config, and model weights): [KataHex 20240812](https://github.com/hzyhhzy/KataGomo_fork/releases/tag/Hex_20240812)
 - Edit `config.ini` and set `[engine].cmd` to point at your KataHex binary, config, and model.
   - Example format: `cmd = path/to/katahex gtp -config path/to/engine.cfg -model path/to/weights.bin.gz`
-- Run: `python3 main.py`
+- Run: `python3 main.py gui`
 
 ## Quick controls
 - `?` help

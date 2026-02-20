@@ -4,6 +4,10 @@ from dataclasses import dataclass
 from enum import Enum, IntEnum
 from typing import List, Optional, Tuple
 
+MIN_BOARD_SIZE = 4
+MAX_BOARD_SIZE = 42
+DEFAULT_BOARD_SIZE = 14
+
 
 class Side(IntEnum):
     RED = 0

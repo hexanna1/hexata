@@ -18,9 +18,9 @@ warnings.filterwarnings(
 
 import pygame
 
-from board import HexBoard
+from board import MAX_BOARD_SIZE, MIN_BOARD_SIZE, HexBoard
 from engine import KataHexEngine
-from gui_core import GuiCore
+from gui_core import DEFAULT_ANALYZE_INTERVAL_CS, GuiCore
 from gui_render import GuiRenderer
 
 
@@ -54,7 +54,7 @@ def run_gui(
     board: HexBoard,
     engine: KataHexEngine,
     *,
-    analyze_interval_cs: int = 15,
+    analyze_interval_cs: int = DEFAULT_ANALYZE_INTERVAL_CS,
     ui_prefs: UiPrefs,
 ) -> None:
     os.environ.setdefault("SDL_VIDEO_ALLOW_HIGHDPI", "1")
@@ -229,9 +229,9 @@ def run_gui(
                     col, row = top
                     core.try_play_move(col, row)
         elif ev.key in (pygame.K_PLUS, pygame.K_EQUALS):
-            app.pending_size = min(42, app.pending_size + 1)
+            app.pending_size = min(MAX_BOARD_SIZE, app.pending_size + 1)
         elif ev.key in (pygame.K_MINUS, pygame.K_UNDERSCORE):
-            app.pending_size = max(4, app.pending_size - 1)
+            app.pending_size = max(MIN_BOARD_SIZE, app.pending_size - 1)
         elif ev.key == pygame.K_LEFTBRACKET:
             step_awrn(-1)
         elif ev.key == pygame.K_RIGHTBRACKET:

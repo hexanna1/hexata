@@ -3,16 +3,23 @@ from __future__ import annotations
 import logging
 from typing import List, NoReturn, Optional, Sequence, Tuple
 
-from board import HexBoard, Move, MoveKind, Side, coord_to_human
+from board import MAX_BOARD_SIZE, MIN_BOARD_SIZE, HexBoard, Move, MoveKind, Side, coord_to_human
 from engine import KataHexEngine
 from gui_core_analysis import AppState, CandidateState, GuiCoreAnalysisMixin
 from hexworld import parse_hexworld_position
 
 logger = logging.getLogger(__name__)
+DEFAULT_ANALYZE_INTERVAL_CS = 15
 
 
 class GuiCore(GuiCoreAnalysisMixin):
-    def __init__(self, board: HexBoard, engine: KataHexEngine, *, analyze_interval_cs: int = 15) -> None:
+    def __init__(
+        self,
+        board: HexBoard,
+        engine: KataHexEngine,
+        *,
+        analyze_interval_cs: int = DEFAULT_ANALYZE_INTERVAL_CS,
+    ) -> None:
         self.board = board
         self.engine = engine
         self.analyze_interval_cs = analyze_interval_cs
@@ -174,8 +181,13 @@ class GuiCore(GuiCoreAnalysisMixin):
             logger.info("HexWorld parse failed: %s", exc)
             return False
 
-        if size < 4 or size > 42:
-            logger.info("HexWorld size %s out of range (4-42).", size)
+        if size < MIN_BOARD_SIZE or size > MAX_BOARD_SIZE:
+            logger.info(
+                "HexWorld size %s out of range (%s-%s).",
+                size,
+                MIN_BOARD_SIZE,
+                MAX_BOARD_SIZE,
+            )
             return False
 
         all_moves = past_moves + future_moves_parsed
