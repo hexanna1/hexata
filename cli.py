@@ -11,7 +11,7 @@ from engine import AnalysisMove, KataHexEngine
 from gui_core import GuiCore
 from hexworld import cell_to_col_row
 
-STARTUP_TIMEOUT_SECONDS = 10.0
+STARTUP_TIMEOUT_SECONDS = 30.0
 POLL_SECONDS = 0.02
 
 
@@ -54,6 +54,23 @@ def _to_output_row(r: AnalysisMove) -> dict:
         "visits": r.visits,
         "prior": r.prior,
     }
+
+
+def _run_for_seconds_from_first_update(core: GuiCore, seconds: float) -> bool:
+    first_update_at: Optional[float] = None
+    wait_started_at = time.monotonic()
+    while True:
+        now = time.monotonic()
+        core.tick(now)
+
+        if first_update_at is None and core.get_engine_analysis():
+            first_update_at = now
+
+        if first_update_at is not None and now - first_update_at >= seconds:
+            return True
+        if first_update_at is None and now - wait_started_at >= STARTUP_TIMEOUT_SECONDS:
+            return False
+        time.sleep(POLL_SECONDS)
 
 
 def add_cli_arguments(ap: argparse.ArgumentParser) -> None:
@@ -122,32 +139,24 @@ def run_cli(
                     return _fail(f"Candidate out of bounds: {coord_to_human(col, row)}")
                 if not board.is_empty(col, row):
                     return _fail(f"Candidate not empty: {coord_to_human(col, row)}")
-                core.add_candidate(col, row)
             mode = "candidates"
 
         if args.analysis_wide_root_noise is not None:
             core.set_analysis_wide_root_noise(args.analysis_wide_root_noise)
-        core.toggle_analysis()
-
-        first_update_at: Optional[float] = None
-        wait_started_at = time.monotonic()
-        while True:
-            now = time.monotonic()
-            core.tick(now)
-
-            if first_update_at is None and core.get_engine_analysis():
-                first_update_at = now
-
-            if first_update_at is not None and now - first_update_at >= args.search_seconds:
-                break
-            if first_update_at is None and now - wait_started_at >= STARTUP_TIMEOUT_SECONDS:
-                return _fail("No analysis update received from engine")
-            time.sleep(POLL_SECONDS)
 
         best = None
         if mode == "candidates":
+            per_candidate_seconds = args.search_seconds / len(requested_candidates)
             moves = []
-            for col, row in requested_candidates:
+            for i, (col, row) in enumerate(requested_candidates):
+                if i > 0:
+                    core.clear_candidates()
+                core.add_candidate(col, row)
+                if not core.app.analysis_running:
+                    core.toggle_analysis()
+                if not _run_for_seconds_from_first_update(core, per_candidate_seconds):
+                    core.clear_candidates()
+                    return _fail(f"No analysis update received from engine for {coord_to_human(col, row)}")
                 winrate, visits = core.app.candidate_state.results.get((col, row), (None, None))
                 moves.append(
                     {
@@ -156,7 +165,11 @@ def run_cli(
                         "visits": visits,
                     }
                 )
+            core.clear_candidates()
         else:
+            core.toggle_analysis()
+            if not _run_for_seconds_from_first_update(core, args.search_seconds):
+                return _fail("No analysis update received from engine")
             recs = core.get_active_analysis()
             moves = [_to_output_row(r) for r in recs]
             if moves:
