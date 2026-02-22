@@ -181,9 +181,12 @@ def run_gui(
             running = False
         elif ev.key == pygame.K_SPACE:
             core.toggle_analysis()
+        elif ev.key == pygame.K_b and (mods & pygame.KMOD_SHIFT) and has_ctrl:
+            if not core.is_batch_analysis_active():
+                core.start_batch_analysis(fast=False)
         elif ev.key == pygame.K_b and (mods & pygame.KMOD_SHIFT) and not has_ctrl:
             if not core.is_batch_analysis_active():
-                core.start_batch_analysis()
+                core.start_batch_analysis(fast=True)
         elif ev.key == pygame.K_e:
             ui.prefs.show_elo = not ui.prefs.show_elo
         elif ev.key == pygame.K_n and (mods & pygame.KMOD_SHIFT) and not has_ctrl:
@@ -379,6 +382,10 @@ def run_gui(
                         ui.speed_vps = dv / dt if dt > 0 else 0.0
                         ui.speed_last_t = now
                         ui.speed_last_total = total_visits
+            else:
+                ui.speed_last_t = None
+                ui.speed_last_total = None
+                ui.speed_vps = None
         else:
             ui.speed_last_t = None
             ui.speed_last_total = None

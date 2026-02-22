@@ -746,6 +746,12 @@ class GuiRenderer:
         if 1 <= cursor_ply <= n_moves:
             m = cursor_ply
             val = values.get(m)
+            if val is None and self.core.is_batch_analysis_active():
+                for probe in range(min(cursor_ply - 1, n_moves), 0, -1):
+                    val = values.get(probe)
+                    if val is not None:
+                        m = probe
+                        break
             if val is not None:
                 cx = x_for_move(m)
                 cy = y_for_plot(val)
@@ -952,7 +958,7 @@ class GuiRenderer:
             "d:engine debug   ctrl+s:screenshot",
             "left-drag:move stone",
             "right-click:toggle cand   right-drag:toggle cands",
-            "shift+x:clear cands   shift+b:batch analysis",
+            "shift+x:clear cands   shift+b:fast batch   ctrl+shift+b:batch",
         ]
         pad = 8
         gap = 2

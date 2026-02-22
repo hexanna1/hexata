@@ -4,6 +4,7 @@ import re
 import sys
 import threading
 import subprocess
+import math
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
@@ -97,6 +98,13 @@ class AnalysisMove:
     pv: Optional[Tuple[Tuple[int, int], ...]]
 
 
+@dataclass(frozen=True, slots=True)
+class RawNNResult:
+    white_win: Optional[float]
+    policy_rows: Tuple[Tuple[Optional[float], ...], ...]
+    policy_pass: Optional[float]
+
+
 def parse_kata_analyze_line(line: str, board_n: int) -> List[AnalysisMove]:
     if "info move " not in line:
         return []
@@ -149,6 +157,37 @@ def parse_kata_analyze_line(line: str, board_n: int) -> List[AnalysisMove]:
     return out
 
 
+def _parse_float_maybe_nan(tok: str) -> Optional[float]:
+    if tok == "NAN":
+        return None
+    v = float(tok)
+    return None if math.isnan(v) else v
+
+
+def parse_kata_raw_nn_block(text: str) -> RawNNResult:
+    white_win: Optional[float] = None
+    policy_pass: Optional[float] = None
+    rows: List[Tuple[Optional[float], ...]] = []
+    in_policy = False
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("="):
+            continue
+        if line.startswith("whiteWin "):
+            white_win = float(line.split()[1])
+            continue
+        if line == "policy":
+            in_policy = True
+            continue
+        if not in_policy:
+            continue
+        if line.startswith("policyPass"):
+            policy_pass = _parse_float_maybe_nan(line.split()[-1])
+            break
+        rows.append(tuple(_parse_float_maybe_nan(tok) for tok in line.split()))
+    return RawNNResult(white_win=white_win, policy_rows=tuple(rows), policy_pass=policy_pass)
+
+
 # -------------------- engine plumbing --------------------
 def _pump(stream, cb: Optional[Callable[[str], None]] = None) -> None:
     for line in iter(stream.readline, ""):
@@ -166,6 +205,13 @@ def send_line(p: subprocess.Popen, s: str, hook: Optional[Callable[[str], None]]
             hook(s)
     except Exception:
         pass
+
+
+@dataclass(slots=True)
+class _RawNNCapture:
+    lines: List[str]
+    started: bool = False
+    done: bool = False
 
 
 class KataHexEngine:
@@ -187,6 +233,8 @@ class KataHexEngine:
         self._io_log: List[Tuple[str, str, int]] = []
         self._io_max = 200
         self._engine_echo = engine_echo
+        self._reply_lock = threading.Lock()
+        self._raw_nn_capture: Optional[_RawNNCapture] = None
 
         # KataHex uses a nonstandard GTP-ish dialect. The simplest sync that
         # works reliably is to mute analysis until the first "=" response after
@@ -220,6 +268,8 @@ class KataHexEngine:
         def on_stdout_line(line: str) -> None:
             self._echo_debug(line)
             self._log_io("in", line)
+            if self._capture_raw_nn_line(line):
+                return
             on_line(line)
 
         threading.Thread(
@@ -257,6 +307,7 @@ class KataHexEngine:
     def stop_analysis(self) -> None:
         # Mark analysis inactive first so late lines get ignored.
         self._analysis_active = False
+        self.cancel_reply_capture()
         self._send("stop")
 
     def play(self, side: Side, col: Optional[int], row: Optional[int]) -> None:
@@ -291,10 +342,56 @@ class KataHexEngine:
         items.sort(key=lambda r: r.order if r.order is not None else 10**9)
         return items
 
+    def start_kata_raw_nn(self, symmetry: int = 0) -> bool:
+        self._reset_analysis_sync()
+        self.clear_analysis()
+        with self._reply_lock:
+            cap = self._raw_nn_capture
+            if cap is not None and not cap.done:
+                return False
+            self._raw_nn_capture = _RawNNCapture(lines=[])
+        self._send(f"kata-raw-nn {symmetry}")
+        return True
+
+    def poll_kata_raw_nn(self) -> Tuple[bool, Optional[RawNNResult]]:
+        with self._reply_lock:
+            cap = self._raw_nn_capture
+            if cap is None:
+                return (True, None)
+            if not cap.done:
+                return (False, None)
+            self._raw_nn_capture = None
+            block = "".join(cap.lines) if cap.lines else None
+        if block is None:
+            return (True, None)
+        return (True, parse_kata_raw_nn_block(block))
+
     def _reset_analysis_sync(self) -> None:
         with self._lock:
             self._analysis_mute_until_sync = False
         self._analysis_active = False
+
+    def cancel_reply_capture(self) -> None:
+        with self._reply_lock:
+            cap = self._raw_nn_capture
+            self._raw_nn_capture = None
+            if cap is not None:
+                cap.done = True
+
+    def _capture_raw_nn_line(self, line: str) -> bool:
+        with self._reply_lock:
+            cap = self._raw_nn_capture
+            if cap is None or cap.done:
+                return False
+            if not cap.started:
+                if line.lstrip().startswith("= symmetry"):
+                    cap.started = True
+                    cap.lines.append(line)
+                return True
+            cap.lines.append(line)
+            if line.startswith("policyPass") or (not line.strip()):
+                cap.done = True
+            return True
 
     def _send(self, s: str) -> None:
         send_line(self.proc, s, self._log_out)

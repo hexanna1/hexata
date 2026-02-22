@@ -24,6 +24,9 @@ class FakeEngine:
     def stop_analysis(self):
         self.calls.append(("stop_analysis",))
 
+    def cancel_reply_capture(self):
+        return None
+
     def kata_set_param(self, name, value):
         self.params[name] = value
         self.calls.append(("kata_set_param", name, value))
