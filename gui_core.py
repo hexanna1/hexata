@@ -35,6 +35,7 @@ class GuiCore(GuiCoreAnalysisMixin):
                 root_rev=None,
             ),
             analysis_cache={},
+            root_eval_cache={},
             last_cache_sig=None,
             analysis_wide_root_noise=0.04,
         )

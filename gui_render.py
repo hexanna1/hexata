@@ -664,18 +664,17 @@ class GuiRenderer:
 
         def best_reply_winrate(key: bytes) -> Optional[float]:
             recs = self.app.analysis_cache.get(key)
-            if not recs:
-                return None
-            # Only use ordered (live) analysis; candidate cache entries have no order.
+            # Prefer ordered move analysis; candidate cache entries have no order.
             best = None
-            for r in recs:
-                if r.order is None or r.winrate is None:
-                    continue
-                if best is None or r.order < best.order:
-                    best = r
-            if best is None or best.winrate is None:
-                return None
-            return best.winrate
+            if recs:
+                for r in recs:
+                    if r.order is None or r.winrate is None:
+                        continue
+                    if best is None or r.order < best.order:
+                        best = r
+            if best is not None and best.winrate is not None:
+                return best.winrate
+            return self.app.root_eval_cache.get(key)
 
         def x_for_move(m: int) -> int:
             return int(rect.left + (m - 1) * rect.width / denom)

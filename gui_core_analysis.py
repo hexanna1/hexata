@@ -9,6 +9,8 @@ from typing import List, Optional, Sequence, Tuple
 from board import Move, MoveKind, Side, coord_to_human
 from engine import AnalysisMove
 
+SLOW_BATCH_SECONDS_PER_POS = 3.0
+
 
 @dataclass
 class CandidateRun:
@@ -19,10 +21,9 @@ class CandidateRun:
 
 @dataclass
 class BatchRun:
+    kind: "BatchKind"
     first_update_at: Optional[float]
     expected_rev: int
-    seconds_per_pos: float
-    fast: bool = False
     raw_pending: bool = False
 
 
@@ -41,6 +42,11 @@ class AnalysisModeTag(Enum):
     CANDIDATE = "candidate"
 
 
+class BatchKind(Enum):
+    RAW_NN = "raw_nn"
+    TIMED = "timed"
+
+
 AnalysisMode = AnalysisModeTag | BatchRun
 
 
@@ -50,6 +56,7 @@ class AppState:
     future_moves: list[Move]
     candidate_state: CandidateState
     analysis_cache: dict[bytes, list[AnalysisMove]]
+    root_eval_cache: dict[bytes, float]
     last_cache_sig: Optional[tuple]
     analysis_wide_root_noise: float
     analysis_mode: AnalysisMode = AnalysisModeTag.OFF
@@ -96,6 +103,7 @@ class GuiCoreAnalysisMixin:
 
     def clear_all_cached_analysis(self) -> None:
         self.app.analysis_cache.clear()
+        self.app.root_eval_cache.clear()
         self.cache_reset_sig()
 
     def clear_analysis_caches(self) -> None:
@@ -184,10 +192,9 @@ class GuiCoreAnalysisMixin:
         if self.board.history and not self.app.future_moves:
             self.go_first()
         self.app.analysis_mode = BatchRun(
+            kind=BatchKind.RAW_NN if fast else BatchKind.TIMED,
             first_update_at=None,
             expected_rev=self.board.rev,
-            seconds_per_pos=0.0 if fast else 3.0,
-            fast=fast,
         )
         self._apply_analysis_enabled_transition(True)
 
@@ -198,51 +205,55 @@ class GuiCoreAnalysisMixin:
         if not isinstance(self.app.analysis_mode, BatchRun):
             return
         self.engine.cancel_reply_capture()
-        if self.app.candidate_state.candidates:
-            self.app.analysis_mode = AnalysisModeTag.CANDIDATE
-            self.start_candidate_search(reset_results=False)
-            return
-        self.app.analysis_mode = AnalysisModeTag.LIVE
-        self.stop_candidate_search()
-        self._start_analysis(self.current_side(), is_candidate=False)
+        self.app.analysis_mode = AnalysisModeTag.OFF
+        self._apply_analysis_enabled_transition(True)
 
     def step_batch_analysis(self, now: float) -> None:
         run = self.app.analysis_mode
         if not isinstance(run, BatchRun):
             return
-        if (
+        if self._should_cancel_batch(run):
+            self.cancel_batch_analysis()
+            return
+        if run.kind == BatchKind.RAW_NN:
+            self._step_batch_raw_nn(run)
+            return
+        self._step_batch_timed(run, now)
+
+    def _should_cancel_batch(self, run: BatchRun) -> bool:
+        return (
             (not self.app.analysis_running)
             or self.app.candidate_state.candidates
             or (self.board.rev != run.expected_rev)
-        ):
-            self.cancel_batch_analysis()
+        )
+
+    def _step_batch_raw_nn(self, run: BatchRun) -> None:
+        if not run.raw_pending:
+            if not self.engine.start_kata_raw_nn(0):
+                return
+            run.raw_pending = True
             return
-        if run.fast:
-            if not run.raw_pending:
-                if not self.engine.start_kata_raw_nn(0):
-                    return
-                run.raw_pending = True
-                return
-            done, raw = self.engine.poll_kata_raw_nn()
-            if not done:
-                return
-            run.raw_pending = False
-            if raw is None or raw.white_win is None:
-                return
-            if self._map_side_to_engine(Side.BLUE) == Side.BLUE:
-                blue_win = raw.white_win
-            else:
-                blue_win = 1.0 - raw.white_win
-            self._promote_root_eval_to_cache(blue_win)
-            self._advance_batch_position(restart_analysis=False)
+        done, raw = self.engine.poll_kata_raw_nn()
+        if not done:
             return
+        run.raw_pending = False
+        if raw is None or raw.white_win is None:
+            return
+        if self._map_side_to_engine(Side.BLUE) == Side.BLUE:
+            blue_win = raw.white_win
+        else:
+            blue_win = 1.0 - raw.white_win
+        self._cache_root_eval(blue_win)
+        self._advance_batch_position(restart_analysis=False)
+
+    def _step_batch_timed(self, run: BatchRun, now: float) -> None:
         live = self.get_engine_analysis()
         if not live:
             return
         if run.first_update_at is None:
             run.first_update_at = now
             return
-        if now - run.first_update_at < run.seconds_per_pos:
+        if now - run.first_update_at < SLOW_BATCH_SECONDS_PER_POS:
             return
         self._advance_batch_position(restart_analysis=True)
 
@@ -380,27 +391,13 @@ class GuiCoreAnalysisMixin:
         self.app.analysis_cache[cache_key] = merged
         self.cache_reset_sig()
 
-    def _promote_root_eval_to_cache(self, blue_win: float) -> None:
+    def _cache_root_eval(self, blue_win: float) -> None:
         side_to_play = self.current_side()
         synthetic_wr = (1.0 - blue_win) if side_to_play == Side.RED else blue_win
-        incoming = AnalysisMove(
-            move="__rawnn_root__",
-            order=10**9,
-            col=None,
-            row=None,
-            winrate=synthetic_wr,
-            visits=0,
-            prior=None,
-            pv=None,
-        )
         cache_key = self.cache_key()
-        base = self.app.analysis_cache.get(cache_key, [])
-        merged = [r for r in base if not (r.col is None and r.row is None and r.move == "__rawnn_root__")]
-        merged.append(incoming)
-        if merged == base:
+        if self.app.root_eval_cache.get(cache_key) == synthetic_wr:
             return
-        self.app.analysis_cache[cache_key] = merged
-        self.cache_reset_sig()
+        self.app.root_eval_cache[cache_key] = synthetic_wr
 
     def _advance_batch_position(self, *, restart_analysis: bool) -> None:
         if not self.app.future_moves:
@@ -420,7 +417,7 @@ class GuiCoreAnalysisMixin:
 
     def _resume_batch_engine(self, run: BatchRun) -> None:
         self.stop_candidate_search()
-        if run.fast:
+        if run.kind == BatchKind.RAW_NN:
             self.engine.clear_analysis()
             return
         self._start_analysis(self.current_side(), is_candidate=False)

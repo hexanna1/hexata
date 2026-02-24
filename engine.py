@@ -384,6 +384,9 @@ class KataHexEngine:
             if cap is None or cap.done:
                 return False
             if not cap.started:
+                # Start only on raw-NN's "= symmetry" header. We cannot key off
+                # any "=" / "?" line because KataHex has no command IDs and
+                # stale replies from earlier commands may appear first.
                 if line.lstrip().startswith("= symmetry"):
                     cap.started = True
                     cap.lines.append(line)
