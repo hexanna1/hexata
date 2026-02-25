@@ -14,7 +14,6 @@ from hexworld import cell_to_col_row
 
 STARTUP_TIMEOUT_SECONDS = 30.0
 POLL_SECONDS = 0.02
-DEFAULT_SEARCH_SECONDS = 1.0
 LOG_MIX_LAMBDA = 1e-6
 
 
@@ -35,6 +34,12 @@ def _round6(x: Optional[float]) -> Optional[float]:
     return None if x is None else round(x, 6)
 
 
+def _side_winrate_to_red(winrate: Optional[float], side: Side) -> Optional[float]:
+    if winrate is None:
+        return None
+    return _round6(winrate if side == Side.RED else (1.0 - winrate))
+
+
 def _parse_candidates(raw: str) -> list[tuple[int, int]]:
     seen: set[tuple[int, int]] = set()
     out: list[tuple[int, int]] = []
@@ -50,16 +55,16 @@ def _parse_candidates(raw: str) -> list[tuple[int, int]]:
     return out
 
 
-def _to_output_row(r: AnalysisMove) -> dict:
+def _to_output_row(r: AnalysisMove, *, side_to_play: Side) -> dict:
     move = r.move.lower()
     if r.col is not None and r.row is not None:
         move = coord_to_human(r.col, r.row)
     return {
         "move": move,
         "rank": r.order + 1,
-        "winrate": _round6(r.winrate),
+        "red_winrate": _side_winrate_to_red(r.winrate, side_to_play),
         "visits": r.visits,
-        "prior": r.prior,
+        "prior": _round6(r.prior),
     }
 
 
@@ -107,6 +112,35 @@ def _raw_red_winrate(core: GuiCore, raw: RawNNResult) -> Optional[float]:
     else:
         blue_win = 1.0 - raw.white_win
     return _round6(1.0 - blue_win)
+
+
+def _raw_policy_rows_cli(core: GuiCore, raw: RawNNResult) -> list[dict]:
+    board = core.board
+    rows: list[tuple[str, float]] = []
+
+    for row in range(1, board.n + 1):
+        for col in range(1, board.n + 1):
+            if not board.is_empty(col, row):
+                continue
+            eng_col, eng_row = core._map_coords_to_engine(col, row)
+            raw_v = _raw_policy_grid_value(raw, eng_col, eng_row)
+            p = 0.0 if raw_v is None else max(0.0, raw_v)
+            rows.append((coord_to_human(col, row), p))
+
+    pass_p = 0.0 if raw.policy_pass is None else max(0.0, raw.policy_pass)
+    rows.append(("pass", pass_p))
+
+    rows.sort(key=lambda r: (-r[1], r[0]))
+    return [
+        {
+            "move": move,
+            "rank": i + 1,
+            "red_winrate": None,
+            "visits": None,
+            "prior": _round6(p),
+        }
+        for i, (move, p) in enumerate(rows)
+    ]
 
 
 def _move_to_text(mv) -> str:
@@ -196,9 +230,10 @@ def _score_policy_move_fast_batch(core: GuiCore, raw: RawNNResult, mv) -> tuple 
         return None
 
     played_p = probs[played_idx]
+    played_raw_p = legal_weights[played_idx]
     played_rank = 1 + sum(1 for p in probs if p > played_p)
     best_idx = max(range(k), key=lambda i: probs[i])
-    best_p = probs[best_idx]
+    best_raw_p = legal_weights[best_idx]
     u = 1.0 / k
     q_probs = [((1.0 - LOG_MIX_LAMBDA) * p) + (LOG_MIX_LAMBDA * u) for p in probs]
     mean_log_q = sum(math.log(q) for q in q_probs) / k
@@ -210,9 +245,9 @@ def _score_policy_move_fast_batch(core: GuiCore, raw: RawNNResult, mv) -> tuple 
         math.log(q_probs[played_idx]) - mean_log_q,
         log_headroom,
         played_rank,
-        played_p,
+        played_raw_p,
         _policy_tag_to_text(legal_tags[best_idx]),
-        best_p,
+        best_raw_p,
     )
 
 
@@ -244,15 +279,15 @@ def _run_batch_fast_cli(core: GuiCore, *, include_plies: bool) -> tuple[bool, di
         }
         scored = _score_policy_move_fast_batch(core, raw, mv)
         if scored is not None:
-            log_num, log_den, played_rank, played_p, best_move, best_p = scored
+            log_num, log_den, played_rank, played_raw_p, best_move, best_raw_p = scored
             acc_side["moves_policy_scored"] += 1
             acc_side["log_num"] += log_num
             acc_side["log_den"] += log_den
             acc_side["ranks"].append(played_rank)
             row["policy_rank"] = played_rank
-            row["policy_prior"] = played_p
+            row["policy_prior"] = _round6(played_raw_p)
             row["policy_best_move"] = best_move
-            row["policy_best_prior"] = best_p
+            row["policy_best_prior"] = _round6(best_raw_p)
         if plies is not None:
             plies.append(row)
 
@@ -280,12 +315,28 @@ def _position_payload(core: GuiCore) -> dict:
 
 
 def _run_cli_analyze(core: GuiCore, args: argparse.Namespace) -> tuple[bool, dict]:
+    if args.search_seconds is None:
+        raw = _run_kata_raw_nn_once(core.engine)
+        if raw is None:
+            return False, {"error": "No raw-NN reply received from engine"}
+        moves = _raw_policy_rows_cli(core, raw)
+        if args.top_n is not None:
+            moves = moves[: args.top_n]
+        return True, {
+            "mode": "analyze",
+            "method": "raw_nn",
+            "best_reply": None,
+            "root_eval": {"red_winrate": _raw_red_winrate(core, raw)},
+            "moves": moves,
+        }
+
+    side_to_play = core.current_side()
     core.toggle_analysis()
     if not _run_for_seconds_from_first_update(core, args.search_seconds):
         return False, {"error": "No analysis update received from engine"}
 
     recs = core.get_active_analysis()
-    moves = [_to_output_row(r) for r in recs]
+    moves = [_to_output_row(r, side_to_play=side_to_play) for r in recs]
     if args.top_n is not None:
         moves = moves[: args.top_n]
 
@@ -294,10 +345,10 @@ def _run_cli_analyze(core: GuiCore, args: argparse.Namespace) -> tuple[bool, dic
         m0 = moves[0]
         best = {
             "move": m0["move"],
-            "winrate": m0["winrate"],
+            "red_winrate": m0["red_winrate"],
             "visits": m0["visits"],
         }
-    return True, {"mode": "analyze", "best_reply": best, "moves": moves}
+    return True, {"mode": "analyze", "method": "search", "best_reply": best, "moves": moves}
 
 
 def _run_cli_candidate(core: GuiCore, args: argparse.Namespace) -> tuple[bool, dict]:
@@ -316,6 +367,28 @@ def _run_cli_candidate(core: GuiCore, args: argparse.Namespace) -> tuple[bool, d
         if not board.is_empty(col, row):
             return False, {"error": f"Move not empty: {coord_to_human(col, row)}"}
 
+    side_to_move = core.current_side()
+    if args.total_search_seconds is None:
+        moves = []
+        for col, row in requested_moves:
+            core.play_engine_mapped(side_to_move, col, row)
+            try:
+                raw = _run_kata_raw_nn_once(core.engine)
+            finally:
+                core.engine.undo()
+            if raw is None:
+                return False, {
+                    "error": f"No raw-NN reply received from engine for {coord_to_human(col, row)}"
+                }
+            moves.append(
+                {
+                    "move": coord_to_human(col, row),
+                    "red_winrate": _raw_red_winrate(core, raw),
+                    "visits": None,
+                }
+            )
+        return True, {"mode": "candidate", "method": "raw_nn", "best_reply": None, "moves": moves}
+
     per_candidate_seconds = args.total_search_seconds / len(requested_moves)
     moves = []
     for i, (col, row) in enumerate(requested_moves):
@@ -333,12 +406,12 @@ def _run_cli_candidate(core: GuiCore, args: argparse.Namespace) -> tuple[bool, d
         moves.append(
             {
                 "move": coord_to_human(col, row),
-                "winrate": _round6(winrate),
+                "red_winrate": _side_winrate_to_red(winrate, side_to_move),
                 "visits": visits,
             }
         )
     core.clear_candidates()
-    return True, {"mode": "candidate", "best_reply": None, "moves": moves}
+    return True, {"mode": "candidate", "method": "search", "best_reply": None, "moves": moves}
 
 
 def _run_cli_batch(core: GuiCore, args: argparse.Namespace) -> tuple[bool, dict]:
@@ -361,8 +434,8 @@ def add_cli_arguments(ap: argparse.ArgumentParser) -> None:
     analyze_ap.add_argument(
         "--search-seconds",
         type=float,
-        default=DEFAULT_SEARCH_SECONDS,
-        help="Search time starting from first analysis update",
+        default=None,
+        help="Search time starting from first analysis update (omit for raw-NN)",
     )
     analyze_ap.add_argument(
         "--analysis-wide-root-noise",
@@ -383,8 +456,8 @@ def add_cli_arguments(ap: argparse.ArgumentParser) -> None:
     candidate_ap.add_argument(
         "--total-search-seconds",
         type=float,
-        default=DEFAULT_SEARCH_SECONDS,
-        help="Total search time budget split evenly across --moves",
+        default=None,
+        help="Total search time budget split evenly across --moves (omit for raw-NN)",
     )
 
     batch_ap = sub.add_parser("batch", help="Fast raw-NN batch summary over the full line")
@@ -404,10 +477,10 @@ def run_cli(
     if args.cli_cmd == "analyze":
         if args.top_n is not None and args.top_n < 1:
             return _fail("--top-n must be >= 1")
-        if args.search_seconds < 0:
+        if args.search_seconds is not None and args.search_seconds < 0:
             return _fail("--search-seconds must be >= 0")
     elif args.cli_cmd == "candidate":
-        if args.total_search_seconds < 0:
+        if args.total_search_seconds is not None and args.total_search_seconds < 0:
             return _fail("--total-search-seconds must be >= 0")
 
     board = HexBoard(DEFAULT_BOARD_SIZE)
@@ -450,8 +523,8 @@ def run_cli(
                 "ok": True,
                 "error": None,
                 "position": position_payload,
-                "meta": {"elapsed_ms": int(round((time.monotonic() - started_at) * 1000))},
                 **payload,
+                "meta": {"elapsed_ms": int(round((time.monotonic() - started_at) * 1000))},
             }
         )
         return 0
