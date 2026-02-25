@@ -91,7 +91,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="echo engine output to stderr",
     )
 
-    cli_ap = subparsers.add_parser("cli", help="Analyze a HexWorld position")
+    cli_ap = subparsers.add_parser("cli", help="CLI analysis tools for HexWorld positions")
     add_cli_arguments(cli_ap)
     return ap
 
