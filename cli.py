@@ -271,13 +271,27 @@ def _run_batch_fast_cli(core: GuiCore, *, include_plies: bool) -> tuple[bool, di
         if raw is None:
             return False, {"error": "No raw-NN reply received from engine"}
 
+        if plies:
+            # Raw-NN returns a root value (for the current/pre-move position)
+            # plus root policy over moves. For move-labeled batch rows we want
+            # `red_winrate` to read as post-move eval, so we shift the current
+            # root eval onto the previous row. (Regular search move rows don't
+            # have this mismatch because their winrates are per-child/per-reply.)
+            pre_move_red_wr = _raw_red_winrate(core, raw)
+            plies[-1]["red_winrate"] = pre_move_red_wr
+
         row = {
             "ply": ply,
             "side": _side_to_text(mv.side),
             "move": _move_to_text(mv),
-            "red_winrate": _raw_red_winrate(core, raw),
+            "red_winrate": None,
         }
-        scored = _score_policy_move_fast_batch(core, raw, mv)
+        scored = None
+        # KataHex is not swap-rule aware, so move 1 policy scoring is
+        # systematically misleading in swap-rule games (the opening is chosen
+        # under swap considerations, not no-swap policy optimality).
+        if ply != 1:
+            scored = _score_policy_move_fast_batch(core, raw, mv)
         if scored is not None:
             log_num, log_den, played_rank, played_raw_p, best_move, best_raw_p = scored
             acc_side["moves_policy_scored"] += 1
@@ -293,6 +307,12 @@ def _run_batch_fast_cli(core: GuiCore, *, include_plies: bool) -> tuple[bool, di
 
         if not core.step_forward():
             return False, {"error": "Failed to step forward during batch analysis"}
+
+    if plies:
+        raw = _run_kata_raw_nn_once(core.engine)
+        if raw is None:
+            return False, {"error": "No raw-NN reply received from engine"}
+        plies[-1]["red_winrate"] = _raw_red_winrate(core, raw)
 
     out = {
         "plies_total": plies_total,

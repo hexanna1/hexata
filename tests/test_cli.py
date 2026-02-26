@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import cli
-from board import Side
+from board import Move, Side
 from engine import RawNNResult
 
 
@@ -104,6 +104,54 @@ class CliTests(unittest.TestCase):
         self.assertIn("No raw-NN reply received", payload["error"])
         self.assertEqual(engine.undo.call_count, 1)
         self.assertEqual(play_engine_mapped.call_count, 1)
+
+    def test_run_batch_fast_cli_plies_red_winrate_is_post_move_with_final_extra_call(self):
+        class _BatchCore:
+            def __init__(self):
+                self.engine = object()
+                self.board = _AlwaysEmptyBoard(3)
+                self.board.history = []
+                self.app = SimpleNamespace(
+                    future_moves=[
+                        Move.place(Side.BLUE, 2, 1),  # stack top is last; next move at end
+                        Move.place(Side.RED, 1, 1),
+                    ]
+                )
+
+            def go_first(self):
+                return True
+
+            def step_forward(self):
+                if not self.app.future_moves:
+                    return False
+                self.app.future_moves.pop()
+                return True
+
+            def _map_coords_to_engine(self, col, row):
+                return (col, row)
+
+            def _map_side_to_engine(self, side):
+                return side
+
+        core = _BatchCore()
+        raw_seq = [
+            RawNNResult(white_win=0.9, policy_rows=(), policy_pass=0.0),  # pre-ply1
+            RawNNResult(white_win=0.8, policy_rows=(), policy_pass=0.0),  # pre-ply2 = post-ply1
+            RawNNResult(white_win=0.7, policy_rows=(), policy_pass=0.0),  # final = post-ply2
+        ]
+        with patch("cli._run_kata_raw_nn_once", side_effect=raw_seq) as raw_once, patch(
+            "cli._score_policy_move_fast_batch", return_value=None
+        ) as score:
+            ok, payload = cli._run_batch_fast_cli(core, include_plies=True)
+
+        self.assertTrue(ok)
+        plies = payload["plies"]
+        self.assertEqual(len(plies), 2)
+        # red_winrate is post-move, filled by the next position's raw-NN eval.
+        self.assertEqual(plies[0]["red_winrate"], 0.2)  # from white_win=0.8
+        self.assertEqual(plies[1]["red_winrate"], 0.3)  # from final extra call white_win=0.7
+        self.assertEqual(raw_once.call_count, 3)  # 2 plies + 1 final fill
+        self.assertEqual(score.call_count, 1)  # ply 1 skipped; ply 2 attempted
 
 
 if __name__ == "__main__":
