@@ -122,7 +122,7 @@ class GuiCoreAnalysisMixin:
             if had_candidates:
                 self.start_candidate_search(reset_results=True)
             else:
-                self._start_analysis(self.current_side(), is_candidate=False)
+                self.resume_analysis()
 
     def flip_side(self, side: Side) -> Side:
         return Side.BLUE if side == Side.RED else Side.RED
@@ -190,7 +190,7 @@ class GuiCoreAnalysisMixin:
     def start_batch_analysis(self, *, fast: bool = False) -> None:
         self.clear_candidates()
         if self.board.history and not self.app.future_moves:
-            self.go_first()
+            self.go_first(resume_after=False)
         self.app.analysis_mode = BatchRun(
             kind=BatchKind.RAW_NN if fast else BatchKind.TIMED,
             first_update_at=None,
@@ -205,6 +205,7 @@ class GuiCoreAnalysisMixin:
         if not isinstance(self.app.analysis_mode, BatchRun):
             return
         self.engine.cancel_reply_capture()
+        self.engine.clear_analysis()
         self.app.analysis_mode = AnalysisModeTag.OFF
         self._apply_analysis_enabled_transition(True)
 
@@ -313,7 +314,7 @@ class GuiCoreAnalysisMixin:
             return
         self.app.analysis_wide_root_noise = value
         if self.app.analysis_running and not self.app.candidate_state.candidates:
-            self._start_analysis(self.current_side(), is_candidate=False)
+            self.resume_analysis()
 
     def _start_analysis(self, side_to_analyze: Side, *, is_candidate: bool) -> None:
         root_noise = 0.0 if is_candidate else self.app.analysis_wide_root_noise
@@ -403,23 +404,24 @@ class GuiCoreAnalysisMixin:
         if not self.app.future_moves:
             self.finish_batch_analysis()
             return
-        if not self.step_forward():
+        if not self.step_forward_n(1, resume_after=False):
             self.cancel_batch_analysis()
             return
         run = self.app.analysis_mode
         if not isinstance(run, BatchRun):
             return
         if restart_analysis:
-            # Reuse normal step/resume semantics so batch behaves like timed manual stepping.
+            # Batch owns the restart timing after stepping to the next position.
             self.resume_analysis()
-            run.first_update_at = None
         run.expected_rev = self.board.rev
 
     def _resume_batch_engine(self, run: BatchRun) -> None:
         self.stop_candidate_search()
+        self.engine.clear_analysis()
         if run.kind == BatchKind.RAW_NN:
-            self.engine.clear_analysis()
+            run.raw_pending = False
             return
+        run.first_update_at = None
         self._start_analysis(self.current_side(), is_candidate=False)
 
     def _merge_live_into_cache(self, live: List[AnalysisMove]) -> None:
@@ -561,8 +563,13 @@ class GuiCoreAnalysisMixin:
             return
 
         key = self.cache_key()
-        top = live[0]
-        sig = (key, len(live), top.move, top.order, top.visits, top.winrate, top.prior)
+        sig = (
+            key,
+            tuple(
+                (r.move, r.order, r.col, r.row, r.visits, r.winrate, r.prior, r.pv)
+                for r in live
+            ),
+        )
         if sig == self.app.last_cache_sig:
             return
 

@@ -367,6 +367,8 @@ class GuiRenderer:
             cell = None
 
         sig = (cell, self.board.rev)
+        # Intentionally freeze the displayed PV while hovering the same cell on the
+        # same position to avoid distracting PV flicker as analysis updates stream in.
         if self._frozen_pv_sig == sig:
             return self._frozen_pv
         self._frozen_pv_sig = sig
@@ -893,6 +895,8 @@ class GuiRenderer:
             cand_key = (
                 self.app.candidate_state.run.key if self.app.candidate_state.run is not None else ui.last_cand_display
             )
+            if cand_key is not None and cand_key not in self.app.candidate_state.candidates:
+                cand_key = None
             if cand_key is None:
                 next_keys = self.core.sorted_candidates_by_visits()
                 cand_key = next_keys[0] if next_keys else None
@@ -904,10 +908,12 @@ class GuiRenderer:
             for r in self.core.get_active_analysis():
                 if r.col is None or r.row is None:
                     continue
+                if r.order is None:
+                    continue
                 if not self.board.is_empty(r.col, r.row):
                     continue
-                display = r
-                break
+                if display is None or r.order < display.order:
+                    display = r
             if display is not None:
                 best_label = "Batch: " if self.core.is_batch_analysis_active() else "Best: "
                 parts += [("   |   ", BLACK), (best_label, BLACK)]

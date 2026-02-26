@@ -130,6 +130,8 @@ def run_gui(
         base_dir = os.path.dirname(os.path.abspath(__file__))
         shots_dir = os.path.join(base_dir, "screenshots")
         os.makedirs(shots_dir, exist_ok=True)
+        # Filenames use second-level timestamps, so repeated saves in the same
+        # second intentionally overwrite the previous screenshot.
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         path = os.path.join(shots_dir, f"hexata-{stamp}.png")
         pygame.image.save(renderer.screen, path)

@@ -343,6 +343,9 @@ class KataHexEngine:
         return items
 
     def start_kata_raw_nn(self, symmetry: int = 0) -> bool:
+        # KataHex implicitly stops live analysis when running kata-raw-nn, so callers
+        # do not need to send an explicit stop first; reset our local analysis state
+        # and switch to the raw-NN reply capture path here.
         self._reset_analysis_sync()
         self.clear_analysis()
         with self._reply_lock:

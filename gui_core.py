@@ -160,9 +160,15 @@ class GuiCore(GuiCoreAnalysisMixin):
         self.app.future_moves = list(reversed(redo[:cut]))
 
     def with_analysis_paused(
-        self, fn, *, clear_analysis: bool = False, stop_engine: bool = True
+        self,
+        fn,
+        *,
+        clear_analysis: bool = False,
+        stop_engine: bool = True,
+        resume_after: bool = True,
     ) -> None:
         was_running = self.app.analysis_running
+        rev_before = self.board.rev
         if was_running and stop_engine:
             self.stop_analysis()
         if was_running and (not stop_engine):
@@ -172,7 +178,14 @@ class GuiCore(GuiCoreAnalysisMixin):
         fn()
         if clear_analysis:
             self.engine.clear_analysis()
-        if was_running:
+        if (
+            was_running
+            and resume_after
+            and self.is_batch_analysis_active()
+            and self.board.rev != rev_before
+        ):
+            return
+        if was_running and resume_after:
             self.check_candidate_root()
             self.resume_analysis()
 
@@ -328,7 +341,7 @@ class GuiCore(GuiCoreAnalysisMixin):
         )
         return did
 
-    def step_forward_n(self, count: int) -> bool:
+    def step_forward_n(self, count: int, *, resume_after: bool = True) -> bool:
         if count <= 0 or not self.app.future_moves:
             return False
         did = False
@@ -344,10 +357,10 @@ class GuiCore(GuiCoreAnalysisMixin):
                 self.app.future_moves.pop()
                 did = True
 
-        self.with_analysis_paused(mutate, stop_engine=False)
+        self.with_analysis_paused(mutate, stop_engine=False, resume_after=resume_after)
         return did
 
-    def go_first(self) -> bool:
+    def go_first(self, *, resume_after: bool = True) -> bool:
         if not self.board.history:
             return False
         did = False
@@ -362,7 +375,10 @@ class GuiCore(GuiCoreAnalysisMixin):
                 did = True
 
         self.with_analysis_paused(
-            mutate, clear_analysis=self.app.analysis_running, stop_engine=False
+            mutate,
+            clear_analysis=self.app.analysis_running,
+            stop_engine=False,
+            resume_after=resume_after,
         )
         return did
 
@@ -471,6 +487,8 @@ class GuiCore(GuiCoreAnalysisMixin):
             mv = self.app.future_moves[-1]
             if mv.kind == MoveKind.SWAP:
                 return self.step_forward()
+        if not self.can_swap_move():
+            return False
 
         did = False
 
@@ -486,16 +504,18 @@ class GuiCore(GuiCoreAnalysisMixin):
         return did
 
     def try_drag_move(self, idx: int, src: Tuple[int, int], col: int, row: int) -> bool:
+        if idx < 0 or idx >= len(self.board.history):
+            return False
+        mv = self.board.history[idx]
+        if self.move_coords(mv) != src:
+            return False
+        if not self.board.is_empty(col, row):
+            return False
+
         did = False
 
         def mutate() -> None:
             nonlocal did
-            if idx < 0 or idx >= len(self.board.history):
-                return
-            mv = self.board.history[idx]
-            coords = self.move_coords(mv)
-            if coords != src:
-                return
             if not self.board.move_in_history(idx, col, row):
                 return
             if idx == 0 and self.app.future_moves and self.app.future_moves[-1].kind == MoveKind.SWAP:
