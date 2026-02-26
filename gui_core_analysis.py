@@ -496,6 +496,7 @@ class GuiCoreAnalysisMixin:
         state = self.app.candidate_state
         if state.run is not None:
             self.engine.undo()
+            self.engine.clear_analysis()
         state.run = None
 
     def step_candidate_search(self, now: float) -> None:

@@ -293,6 +293,9 @@ class GuiCore(GuiCoreAnalysisMixin):
             return False
         last = self.board.history[-1]
         if self.board.undo():
+            # Undo changes the root position, so any buffered live analysis is stale
+            # even if analysis is currently paused.
+            self.engine.clear_analysis()
             if last.kind != MoveKind.SWAP:
                 self.engine.undo()
             return True

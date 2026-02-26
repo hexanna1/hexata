@@ -202,6 +202,25 @@ class GuiCoreTests(unittest.TestCase):
         # Analysis should resume (candidates exist), which plays the candidate move.
         self.assertTrue(any(call[0] == "play" for call in engine.calls))
 
+    def test_undo_one_clears_buffered_engine_analysis(self):
+        core, engine = self._mk_core()
+        core.try_play_move(1, 1)
+        core.try_play_move(2, 1)
+
+        # FakeEngine.clear_analysis only logs by default; make this instance mimic
+        # the real engine behavior of dropping buffered live analysis.
+        def clear_analysis_realistic():
+            engine.calls.append(("clear_analysis",))
+            engine.analysis.clear()
+
+        engine.clear_analysis = clear_analysis_realistic
+        engine.analysis = [
+            AnalysisMove("c1", order=0, col=3, row=1, winrate=0.6, visits=10, prior=0.4, pv=None)
+        ]
+
+        self.assertTrue(core.undo_one())
+        self.assertEqual(engine.analysis, [])
+
     def test_delete_tail_keeps_existing_cache_entries(self):
         core, _engine = self._mk_core()
 
@@ -734,6 +753,15 @@ class GuiCoreTests(unittest.TestCase):
         core, engine = self._mk_core()
 
         self._start_candidate_run(core, 1, 1)
+        engine.analysis = [
+            AnalysisMove("b2", order=0, col=2, row=2, winrate=0.6, visits=10, prior=0.4, pv=None)
+        ]
+
+        def clear_analysis_realistic():
+            engine.calls.append(("clear_analysis",))
+            engine.analysis.clear()
+
+        engine.clear_analysis = clear_analysis_realistic
 
         before = len(engine.calls)
         core.toggle_candidate(1, 1)
@@ -741,6 +769,7 @@ class GuiCoreTests(unittest.TestCase):
         new_calls = self._new_calls(engine, before)
         self._assert_undo_before(new_calls, lambda call: call[0] == "start_analysis")
         self.assertFalse(core.app.candidate_state.candidates)
+        self.assertEqual(engine.analysis, [])
 
     def test_delete_tail_behavior(self):
         for at_end in (False, True):
