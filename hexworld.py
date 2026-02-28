@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import re
-from typing import List, Tuple
+from typing import List, Sequence, Tuple
 
 from board import Move, MoveKind, Side
 
-_MOVE_TOKEN_RE = re.compile(r":p|:s|:rw|:rb|[A-Za-z]+[0-9]+")
+_MOVE_TOKEN_RE = re.compile(r":p|:s|:S|:rw|:rb|:fw|:fb|[a-z]+[0-9]+")
 _CELL_RE = re.compile(r"^([A-Za-z]+)([0-9]+)$")
+_PREFIX_RE = re.compile(r"^([0-9]+)(?:x([0-9]+))?([a-z0-9]*)$")
 
 
 def extract_hash(s: str) -> str:
@@ -48,7 +49,7 @@ def _tokenize_moves(move_stream: str) -> List[str]:
     move_stream = re.sub(r"\s+", "", move_stream)
     if move_stream == "":
         return []
-    toks: List[str] = [m.group(0).lower() for m in _MOVE_TOKEN_RE.finditer(move_stream)]
+    toks: List[str] = [m.group(0) for m in _MOVE_TOKEN_RE.finditer(move_stream)]
     if "".join(toks) != move_stream:
         raise ValueError(f"Unparsed moves in: {move_stream!r}")
     return toks
@@ -58,73 +59,118 @@ def _other_side(side: Side) -> Side:
     return Side.BLUE if side == Side.RED else Side.RED
 
 
-def parse_hexworld_position(s: str) -> Tuple[int, List[Move], List[Move], Side]:
-    """
-    Parse a HexWorld hash/URL into (size, past_moves, future_moves, to_play_at_cursor).
+def _parse_prefix(prefix: str) -> Tuple[int, int, Tuple[str, ...]]:
+    m = _PREFIX_RE.match(prefix.strip())
+    if not m:
+        raise ValueError(f"Bad prefix: {prefix!r}")
+    cols = int(m.group(1))
+    rows = int(m.group(2)) if m.group(2) is not None else cols
+    if not (1 <= cols <= 53) or not (1 <= rows <= 53):
+        raise ValueError(f"Board size out of range: {cols}x{rows}")
 
-    Supported move tokens:
-      - ':p' pass (toggles side, no placement)
-      - ':s' swap (move 2 only; consumes turn and records explicit swap move)
-      - ':rw' / ':rb' resign markers (ignored)
-      - cell coords like 'h9'
+    tail = m.group(3)
+    configs: List[str] = []
+    i = 0
+    while i < len(tail):
+        if tail.startswith("c1", i):
+            configs.append("c1")
+            i += 2
+            continue
+        if tail.startswith("n", i):
+            configs.append("n")
+            i += 1
+            continue
+        if tail.startswith("r", i):
+            j = i + 1
+            while j < len(tail) and tail[j].isdigit():
+                j += 1
+            if j == i + 1:
+                raise ValueError(f"Bad rotation config in prefix: {prefix!r}")
+            rot = int(tail[i + 1 : j])
+            if not (1 <= rot <= 12):
+                raise ValueError(f"Rotation out of range (1-12): r{rot}")
+            configs.append(f"r{rot}")
+            i = j
+            continue
+        raise ValueError(f"Unsupported config in prefix: {prefix!r}")
+    return cols, rows, tuple(configs)
+
+
+def _apply_stream(
+    stream: str, *, cols: int, rows: int, to_move: Side, all_moves: Sequence[Move]
+) -> Tuple[List[Move], Side]:
+    all_seen: List[Move] = list(all_moves)
+    out: List[Move] = []
+    for tok in _tokenize_moves(stream):
+        if tok == ":p":
+            mv = Move.pass_(side=to_move)
+            out.append(mv)
+            all_seen.append(mv)
+            to_move = _other_side(to_move)
+            continue
+        if tok == ":s":
+            if any(mv.kind == MoveKind.SWAP for mv in all_seen):
+                raise ValueError("Duplicate swap token ':s'")
+            if len(all_seen) != 1:
+                raise ValueError("Swap token ':s' is only legal on move 2")
+            first = all_seen[0]
+            if first.kind != MoveKind.PLACE or first.side != Side.RED:
+                raise ValueError("Swap token ':s' requires a red opening placement")
+            if first.col is None or first.row is None:
+                raise ValueError("Bad opening move before swap")
+            mv = Move.swap(side=to_move, col=first.col, row=first.row)
+            out.append(mv)
+            all_seen.append(mv)
+            to_move = _other_side(to_move)
+            continue
+        if tok in (":S", ":rw", ":rb", ":fw", ":fb"):
+            # These tokens are part of the grammar, but Hexata currently has no
+            # player-identity result model; parse and ignore them. Ignored tokens
+            # do not consume turn/index in Hexata's move sequence view.
+            continue
+
+        col, row = cell_to_col_row(tok)
+        if not (1 <= col <= cols and 1 <= row <= rows):
+            raise ValueError(f"Move {tok!r} out of bounds for size {cols}x{rows}")
+        mv = Move.place(side=to_move, col=col, row=row)
+        out.append(mv)
+        all_seen.append(mv)
+        to_move = _other_side(to_move)
+    return out, to_move
+
+
+def parse_hexworld_state(s: str) -> Tuple[int, int, Tuple[str, ...], List[Move], List[Move], Side]:
+    """
+    Parse a HexWorld hash/URL into:
+      (cols, rows, configs, past_moves, future_moves, to_play_at_cursor)
     """
     h = extract_hash(s)
     parts = h.split(",")
     if not parts or parts[0].strip() == "":
         raise ValueError("Empty hash/prefix")
+    if len(parts) > 3:
+        raise ValueError(f"Too many comma sections in hash: {h!r}")
 
-    m = re.match(r"^\s*([0-9]+)(.*)$", parts[0].strip())
-    if not m:
-        raise ValueError(f"Bad prefix (missing size): {parts[0]!r}")
-    size = int(m.group(1))
-
+    cols, rows, configs = _parse_prefix(parts[0])
     past_stream = parts[1] if len(parts) >= 2 else ""
     future_stream = parts[2] if len(parts) >= 3 else ""
 
-    def apply_stream(stream: str, *, to_move: Side, all_moves: List[Move]) -> Tuple[List[Move], Side]:
-        out: List[Move] = []
-        for tok in _tokenize_moves(stream):
-            if tok == ":p":
-                mv = Move.pass_(side=to_move)
-                out.append(mv)
-                all_moves.append(mv)
-                to_move = _other_side(to_move)
-                continue
-            if tok == ":s":
-                if any(mv.kind == MoveKind.SWAP for mv in all_moves):
-                    raise ValueError("Duplicate swap token ':s'")
-                if len(all_moves) != 1:
-                    raise ValueError("Swap token ':s' is only legal on move 2")
-                first = all_moves[0]
-                if first.kind != MoveKind.PLACE or first.side != Side.RED:
-                    raise ValueError("Swap token ':s' requires a red opening placement")
-                if first.col is None or first.row is None:
-                    raise ValueError("Bad opening move before swap")
-                mv = Move.swap(side=to_move, col=first.col, row=first.row)
-                out.append(mv)
-                all_moves.append(mv)
-                to_move = _other_side(to_move)
-                continue
-            if tok in (":rw", ":rb"):
-                continue
-
-            col, row = cell_to_col_row(tok)
-            if not (1 <= col <= size and 1 <= row <= size):
-                raise ValueError(f"Move {tok!r} out of bounds for size {size}")
-
-            mv = Move.place(side=to_move, col=col, row=row)
-            out.append(mv)
-            all_moves.append(mv)
-            to_move = _other_side(to_move)
-
-        return out, to_move
-
     to_move = Side.RED
-    all_moves: List[Move] = []
-    past_moves, to_move = apply_stream(past_stream, to_move=to_move, all_moves=all_moves)
+    past_moves, to_move = _apply_stream(past_stream, cols=cols, rows=rows, to_move=to_move, all_moves=[])
     to_play = to_move
-    future_moves, _to_move_end = apply_stream(
-        future_stream, to_move=to_move, all_moves=all_moves
+    future_moves, _to_move_end = _apply_stream(
+        future_stream, cols=cols, rows=rows, to_move=to_move, all_moves=past_moves
     )
+    return cols, rows, configs, past_moves, future_moves, to_play
 
-    return size, past_moves, future_moves, to_play
+
+def parse_hexworld_position(s: str) -> Tuple[int, List[Move], List[Move], Side]:
+    """
+    Hexata-specific parser wrapper:
+      - accepts full grammar via parse_hexworld_state()
+      - rejects non-square boards (Hexata board model is square-only)
+    """
+    cols, rows, _configs, past, future, to_play = parse_hexworld_state(s)
+    if cols != rows:
+        raise ValueError(f"Non-square boards are not supported: {cols}x{rows}")
+    return cols, past, future, to_play
