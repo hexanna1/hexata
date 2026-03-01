@@ -173,12 +173,11 @@ def fmt_wr_or_elo(w: Optional[float], show_elo: bool) -> str:
         return fmt_wr(w)
     if w is None:
         return ""
-    p = round(w, 3)
-    if p <= 0.0:
+    if w <= 0.0:
         return "-inf"
-    if p >= 1.0:
+    if w >= 1.0:
         return "+inf"
-    elo = int(round(400.0 * math.log10(p / (1.0 - p))))
+    elo = int(round(400.0 * math.log10(w / (1.0 - w))))
     if elo == 0:
         return "±0"
     return f"{elo:+d}"
@@ -338,8 +337,8 @@ class GuiRenderer:
             return None
         best: Optional[Tuple[int, int]] = None
         best_d2 = 10**18
-        for row in range(1, self.board.n + 1):
-            for col in range(1, self.board.n + 1):
+        for row in range(0, self.board.n + 2):
+            for col in range(0, self.board.n + 2):
                 ax, ay = col - 1, row - 1
                 cx, cy = self.center(ax, ay)
                 dx = mx - cx
@@ -350,7 +349,8 @@ class GuiRenderer:
                     best = (col, row)
         if best is None:
             return None
-        if best_d2 <= (self.layout.r * 0.98) ** 2:
+        col, row = best
+        if 1 <= col <= self.board.n and 1 <= row <= self.board.n:
             return best
         return None
 
@@ -679,7 +679,7 @@ class GuiRenderer:
             return self.app.root_eval_cache.get(key)
 
         def x_for_move(m: int) -> int:
-            return int(rect.left + (m - 1) * rect.width / denom)
+            return rect.left + int(round((m - 1) * (rect.width - 1) / denom))
 
         def winrate_to_elo(v: float) -> float:
             if v <= 0.0:
@@ -699,7 +699,8 @@ class GuiRenderer:
                 t = (v + GRAPH_ELO_CLAMP) / (2.0 * GRAPH_ELO_CLAMP)
             else:
                 t = 0.0 if v < 0.0 else 1.0 if v > 1.0 else v
-            return int(rect.bottom - t * rect.height)
+            t = clamp01(t)
+            return rect.top + int(round((1.0 - t) * (rect.height - 1)))
 
         mid_y = y_for_plot(0.5)
         pygame.draw.line(self.screen, GRID_EDGE, (rect.left, mid_y), (rect.right, mid_y), 1)
@@ -809,7 +810,7 @@ class GuiRenderer:
                 start = focus_row - (max_lines // 2)
                 start = max(0, min(start, nrows - max_lines))
 
-        end = nrows if not max_lines else min(nrows, start + max_lines)
+        end = min(nrows, start + max_lines)
 
         for row_idx in range(start, end):
             red_i = 2 * row_idx
