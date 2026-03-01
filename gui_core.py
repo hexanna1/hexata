@@ -5,11 +5,18 @@ from typing import NoReturn, Optional, Sequence, Tuple
 
 from board import MAX_BOARD_SIZE, MIN_BOARD_SIZE, HexBoard, Move, MoveKind, Side, coord_to_human
 from engine import KataHexEngine
-from gui_core_analysis import AppState, CandidateState, GuiCoreAnalysisMixin
+from gui_core_analysis import AnalysisModeTag, AppState, CandidateState, GuiCoreAnalysisMixin
 import hexworld
 
 logger = logging.getLogger(__name__)
 DEFAULT_ANALYZE_INTERVAL_CS = 15
+EditSnapshot = tuple[
+    int,
+    tuple[int, ...],
+    tuple[Move, ...],
+    tuple[Move, ...],
+    tuple[Tuple[int, int], ...],
+]
 
 
 class GuiCore(GuiCoreAnalysisMixin):
@@ -32,13 +39,82 @@ class GuiCore(GuiCoreAnalysisMixin):
                 results={},
                 run=None,
                 ratio=1.6,
-                root_rev=None,
+                root_key=None,
             ),
             analysis_cache={},
             root_eval_cache={},
             last_cache_sig=None,
             analysis_wide_root_noise=0.04,
         )
+        self.edit_undo: list[EditSnapshot] = []
+        self.edit_redo: list[EditSnapshot] = []
+
+    def _snapshot_edit_state(self) -> EditSnapshot:
+        state = self.app.candidate_state
+        # Keep undo/redo state small: snapshot candidate selection only. Candidate
+        # results are analysis-derived and cached, and excluding them avoids extra
+        # invalidation edge cases; tradeoff: run-progress ordering may restart.
+        return (
+            self.board.n,
+            tuple(self.board.occ),
+            tuple(self.board.history),
+            tuple(self.app.future_moves),
+            tuple(sorted(state.candidates)),
+        )
+
+    def _clear_edit_history(self) -> None:
+        self.edit_undo.clear()
+        self.edit_redo.clear()
+
+    def _record_edit_if_changed(self, before: EditSnapshot, did: bool) -> bool:
+        if did:
+            after = self._snapshot_edit_state()
+            if after != before:
+                self.edit_undo.append(before)
+                self.edit_redo.clear()
+        return did
+
+    def _restore_edit_state(self, snap: EditSnapshot) -> None:
+        size, occ, history, future, candidates = snap
+
+        def mutate() -> None:
+            self.engine.set_board_size(size)
+            self.board.set_size(size)
+            self.board.occ = list(occ)
+            self.board.history = list(history)
+            self.app.future_moves.clear()
+            self.app.future_moves.extend(future)
+            state = self.app.candidate_state
+            state.candidates.clear()
+            state.candidates.update(candidates)
+            state.results.clear()
+            state.run = None
+            state.root_key = self.cache_key() if state.candidates else None
+            if self.app.analysis_mode != AnalysisModeTag.OFF:
+                self.app.analysis_mode = (
+                    AnalysisModeTag.CANDIDATE if state.candidates else AnalysisModeTag.LIVE
+                )
+            self.rebuild_engine_from_history()
+
+        self.with_analysis_paused(mutate, clear_analysis=self.app.analysis_running)
+
+    def undo_edit(self) -> bool:
+        if not self.edit_undo:
+            return False
+        target = self.edit_undo.pop()
+        current = self._snapshot_edit_state()
+        self._restore_edit_state(target)
+        self.edit_redo.append(current)
+        return True
+
+    def redo_edit(self) -> bool:
+        if not self.edit_redo:
+            return False
+        target = self.edit_redo.pop()
+        current = self._snapshot_edit_state()
+        self._restore_edit_state(target)
+        self.edit_undo.append(current)
+        return True
 
     def apply_move_to_state(self, col: int, row: int) -> bool:
         side = self.current_side()
@@ -87,7 +163,6 @@ class GuiCore(GuiCoreAnalysisMixin):
     @staticmethod
     def _copy_board_state(board: HexBoard) -> HexBoard:
         out = HexBoard(board.n)
-        out.rev = board.rev
         out.occ = list(board.occ)
         out.history = list(board.history)
         return out
@@ -221,6 +296,7 @@ class GuiCore(GuiCoreAnalysisMixin):
             self.app.future_moves.extend(reversed(future_moves_parsed))
 
         self.with_analysis_paused(mutate, clear_analysis=self.app.analysis_running)
+        self._clear_edit_history()
         return True
 
     def move_to_label(self, mv: Move) -> str:
@@ -260,6 +336,7 @@ class GuiCore(GuiCoreAnalysisMixin):
             self.clear_all_cached_analysis()
 
         self.with_analysis_paused(mutate, stop_engine=False)
+        self._clear_edit_history()
 
     def undo_one(self) -> bool:
         if not self.board.history:
@@ -360,9 +437,10 @@ class GuiCore(GuiCoreAnalysisMixin):
         return did
 
     def delete_tail(self) -> bool:
+        before = self._snapshot_edit_state()
         if self.app.future_moves:
             self.app.future_moves.clear()
-            return True
+            return self._record_edit_if_changed(before, True)
         if not self.board.history:
             return False
 
@@ -375,11 +453,12 @@ class GuiCore(GuiCoreAnalysisMixin):
         self.with_analysis_paused(
             mutate, clear_analysis=self.app.analysis_running, stop_engine=False
         )
-        return did
+        return self._record_edit_if_changed(before, did)
 
     def try_play_moves(self, moves: Sequence[Tuple[int, int]]) -> bool:
         if not moves:
             return False
+        before = self._snapshot_edit_state()
         did = False
 
         def mutate() -> None:
@@ -408,7 +487,7 @@ class GuiCore(GuiCoreAnalysisMixin):
                 did = True
 
         self.with_analysis_paused(mutate, stop_engine=False)
-        return did
+        return self._record_edit_if_changed(before, did)
 
     def try_play_move(self, col: int, row: int) -> bool:
         return self.try_play_moves([(col, row)])
@@ -424,10 +503,11 @@ class GuiCore(GuiCoreAnalysisMixin):
         return self.current_side() == Side.BLUE
 
     def try_pass_move(self) -> bool:
+        before = self._snapshot_edit_state()
         if self.app.future_moves:
             mv = self.app.future_moves[-1]
             if mv.kind == MoveKind.PASS:
-                return self.step_forward()
+                return self._record_edit_if_changed(before, self.step_forward())
 
         did = False
 
@@ -440,13 +520,14 @@ class GuiCore(GuiCoreAnalysisMixin):
             did = True
 
         self.with_analysis_paused(mutate, stop_engine=False)
-        return did
+        return self._record_edit_if_changed(before, did)
 
     def try_swap_move(self) -> bool:
+        before = self._snapshot_edit_state()
         if self.app.future_moves:
             mv = self.app.future_moves[-1]
             if mv.kind == MoveKind.SWAP:
-                return self.step_forward()
+                return self._record_edit_if_changed(before, self.step_forward())
         if not self.can_swap_move():
             return False
 
@@ -461,7 +542,7 @@ class GuiCore(GuiCoreAnalysisMixin):
             did = True
 
         self.with_analysis_paused(mutate, stop_engine=False)
-        return did
+        return self._record_edit_if_changed(before, did)
 
     def try_drag_move(self, idx: int, src: Tuple[int, int], col: int, row: int) -> bool:
         if idx < 0 or idx >= len(self.board.history):
@@ -472,6 +553,7 @@ class GuiCore(GuiCoreAnalysisMixin):
         if not self.board.is_empty(col, row):
             return False
 
+        before = self._snapshot_edit_state()
         did = False
 
         def mutate() -> None:
@@ -488,7 +570,7 @@ class GuiCore(GuiCoreAnalysisMixin):
         self.with_analysis_paused(
             mutate, clear_analysis=self.app.analysis_running, stop_engine=False
         )
-        return did
+        return self._record_edit_if_changed(before, did)
 
     def apply_pending_size(self) -> bool:
         if self.app.pending_size == self.board.n:
@@ -502,4 +584,5 @@ class GuiCore(GuiCoreAnalysisMixin):
             self.clear_all_cached_analysis()
 
         self.with_analysis_paused(mutate, clear_analysis=self.app.analysis_running)
+        self._clear_edit_history()
         return True

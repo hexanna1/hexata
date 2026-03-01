@@ -3,6 +3,7 @@ import unittest
 from board import HexBoard, Move, MoveKind, Side
 from engine import AnalysisMove
 from gui_core import GuiCore
+from gui_core_analysis import AnalysisModeTag
 
 
 class FakeEngine:
@@ -156,22 +157,22 @@ class GuiCoreTests(unittest.TestCase):
         ]
         self.assertEqual(engine.calls, expected)
 
-    def test_candidate_root_rev_invalidation(self):
+    def test_candidate_root_key_invalidation(self):
         core, _engine = self._mk_core()
         board = core.board
 
         core.add_candidate(1, 1)
         self.assertTrue(core.app.candidate_state.candidates)
-        root_rev = core.app.candidate_state.root_rev
-        self.assertIsNotNone(root_rev)
+        root_key = core.app.candidate_state.root_key
+        self.assertIsNotNone(root_key)
 
         board.place(Side.RED, 2, 2)
-        self.assertNotEqual(board.rev, root_rev)
+        self.assertNotEqual(core.cache_key(), root_key)
 
         cleared = core.check_candidate_root()
         self.assertTrue(cleared)
         self.assertEqual(core.app.candidate_state.candidates, set())
-        self.assertIsNone(core.app.candidate_state.root_rev)
+        self.assertIsNone(core.app.candidate_state.root_key)
 
     def test_merge_analysis_lists_prefers_primary_order_prior(self):
         core, _engine = self._mk_core()
@@ -345,6 +346,22 @@ class GuiCoreTests(unittest.TestCase):
         self.assertEqual(self._history_coords(core), [(2, 3), None])
         self.assertEqual(self._future_coords(core), [(5, 4)])
 
+    def test_undo_redo_restore_handles_swap_history(self):
+        core, _engine = self._mk_core()
+
+        core.try_play_move(3, 2)  # c2
+        core.try_swap_move()
+        core.try_play_move(5, 4)  # e4
+        core.delete_tail()  # remove e4; undo target includes swap history
+
+        self.assertTrue(core.undo_edit())
+        self.assertEqual([mv.kind for mv in core.board.history], [MoveKind.PLACE, MoveKind.SWAP, MoveKind.PLACE])
+        self.assertEqual(self._history_coords(core), [(2, 3), None, (5, 4)])
+
+        self.assertTrue(core.redo_edit())
+        self.assertEqual([mv.kind for mv in core.board.history], [MoveKind.PLACE, MoveKind.SWAP])
+        self.assertEqual(self._history_coords(core), [(2, 3), None])
+
     def test_try_swap_move_invalid_noop_does_not_restart_analysis(self):
         core, engine = self._mk_core()
 
@@ -491,6 +508,56 @@ class GuiCoreTests(unittest.TestCase):
         self.assertNotEqual(core.cache_key(), stale_key)
         self.assertIn(stale_key, core.app.analysis_cache)
         self.assertEqual(core.get_active_analysis(), [])
+
+    def test_undo_redo_does_not_clear_analysis_cache(self):
+        core, _engine = self._mk_core()
+
+        core.try_play_move(1, 1)
+        key_before = core.cache_key()
+        core.app.analysis_cache[key_before] = ["a"]
+
+        core.try_play_move(2, 1)
+        key_after = core.cache_key()
+        core.app.analysis_cache[key_after] = ["b"]
+
+        self.assertTrue(core.undo_edit())
+        self.assertEqual(core.cache_key(), key_before)
+        self.assertEqual(core.app.analysis_cache[key_before], ["a"])
+        self.assertEqual(core.app.analysis_cache[key_after], ["b"])
+
+        self.assertTrue(core.redo_edit())
+        self.assertEqual(core.cache_key(), key_after)
+        self.assertEqual(core.app.analysis_cache[key_before], ["a"])
+        self.assertEqual(core.app.analysis_cache[key_after], ["b"])
+
+    def test_undo_restores_candidates_and_candidate_mode(self):
+        core, _engine = self._mk_core()
+
+        core.toggle_analysis()
+        core.add_candidate(1, 1)
+
+        self.assertEqual(core.app.analysis_mode, AnalysisModeTag.CANDIDATE)
+
+        core.try_play_move(2, 1)
+        self.assertEqual(core.app.candidate_state.candidates, set())
+        self.assertEqual(core.app.analysis_mode, AnalysisModeTag.LIVE)
+
+        self.assertTrue(core.undo_edit())
+        self.assertEqual(core.app.candidate_state.candidates, {(1, 1)})
+        self.assertEqual(core.app.candidate_state.root_key, core.cache_key())
+        self.assertEqual(core.app.analysis_mode, AnalysisModeTag.CANDIDATE)
+
+    def test_undo_during_batch_exits_batch_mode(self):
+        core, _engine = self._mk_core()
+
+        core.try_play_move(1, 1)
+        core.try_play_move(2, 1)
+        core.start_batch_analysis(fast=True)
+
+        self.assertTrue(core.is_batch_analysis_active())
+        self.assertTrue(core.undo_edit())
+        self.assertFalse(core.is_batch_analysis_active())
+        self.assertEqual(core.app.analysis_mode, AnalysisModeTag.LIVE)
 
     def test_clear_analysis_caches_while_candidate_mode_resets_results_but_keeps_candidates(self):
         core, _engine = self._mk_core()

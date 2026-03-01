@@ -161,6 +161,10 @@ def run_gui(
         awrn_steps = [0.00, 0.01, 0.02, 0.04, 0.10, 0.20, 0.50, 1.00, 2.00]
         mods = ev.mod
         has_ctrl = bool(mods & (pygame.KMOD_META | pygame.KMOD_GUI | pygame.KMOD_CTRL))
+        is_redo_shortcut = has_ctrl and (
+            ev.key == pygame.K_y or ((mods & pygame.KMOD_SHIFT) and ev.key == pygame.K_z)
+        )
+        is_undo_shortcut = has_ctrl and ev.key == pygame.K_z and not (mods & pygame.KMOD_SHIFT)
 
         def step_awrn(direction: int) -> None:
             current = app.analysis_wide_root_noise
@@ -205,6 +209,10 @@ def run_gui(
             core.try_pass_move()
         elif ev.key == pygame.K_s and not has_ctrl:
             core.try_swap_move()
+        elif is_redo_shortcut:
+            core.redo_edit()
+        elif is_undo_shortcut:
+            core.undo_edit()
         elif has_ctrl and ev.key in (pygame.K_p, pygame.K_LEFT, pygame.K_UP):
             core.step_back_n(10)
         elif has_ctrl and ev.key in (pygame.K_n, pygame.K_RIGHT, pygame.K_DOWN):

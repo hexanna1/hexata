@@ -33,7 +33,7 @@ class CandidateState:
     results: dict[Tuple[int, int], Tuple[Optional[float], Optional[int]]]
     run: Optional[CandidateRun]
     ratio: float
-    root_rev: Optional[int]
+    root_key: Optional[bytes]
 
 
 class AnalysisModeTag(Enum):
@@ -284,7 +284,7 @@ class GuiCoreAnalysisMixin:
         state.candidates.clear()
         state.results.clear()
         self.stop_candidate_search()
-        state.root_rev = None
+        state.root_key = None
 
     def clear_candidates(self) -> None:
         self._clear_candidate_state()
@@ -293,9 +293,9 @@ class GuiCoreAnalysisMixin:
 
     def check_candidate_root(self) -> bool:
         state = self.app.candidate_state
-        if not state.candidates or state.root_rev is None:
+        if not state.candidates or state.root_key is None:
             return False
-        if self.board.rev == state.root_rev:
+        if self.cache_key() == state.root_key:
             return False
         self.clear_candidates()
         return True
@@ -305,8 +305,8 @@ class GuiCoreAnalysisMixin:
         self.stop_candidate_search()
         if reset_results:
             state.results.clear()
-        if state.candidates and state.root_rev is None:
-            state.root_rev = self.board.rev
+        if state.candidates and state.root_key is None:
+            state.root_key = self.cache_key()
 
     def set_analysis_wide_root_noise(self, value: float) -> None:
         value = max(0.0, min(2.0, float(value)))
@@ -609,7 +609,7 @@ class GuiCoreAnalysisMixin:
         if key in state.candidates:
             return
         if not state.candidates:
-            state.root_rev = self.board.rev
+            state.root_key = self.cache_key()
         state.candidates.add(key)
         if self.app.analysis_mode == AnalysisModeTag.LIVE:
             self.app.analysis_mode = AnalysisModeTag.CANDIDATE

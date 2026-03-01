@@ -958,7 +958,7 @@ class GuiRenderer:
             "shift+p:pass   s:swap",
             "t:priors   c:coords   m:moves   e:elo",
             "ctrl+v:load   ctrl+c:copy   shift+c:clear cache",
-            "del:delete tail   shift+n:new",
+            "del:delete tail   shift+n:new   ctrl+z:undo   ctrl+y:redo",
             "+/-:pending size   enter:apply size",
             "[/]:set analysisWideRootNoise",
             "d:engine debug   ctrl+s:screenshot",
