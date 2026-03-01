@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import logging
-from typing import List, NoReturn, Optional, Sequence, Tuple
+from typing import NoReturn, Optional, Sequence, Tuple
 
 from board import MAX_BOARD_SIZE, MIN_BOARD_SIZE, HexBoard, Move, MoveKind, Side, coord_to_human
 from engine import KataHexEngine
 from gui_core_analysis import AppState, CandidateState, GuiCoreAnalysisMixin
-from hexworld import parse_hexworld_position
+import hexworld
 
 logger = logging.getLogger(__name__)
 DEFAULT_ANALYZE_INTERVAL_CS = 15
@@ -91,17 +91,6 @@ class GuiCore(GuiCoreAnalysisMixin):
         out.occ = list(board.occ)
         out.history = list(board.history)
         return out
-
-    @staticmethod
-    def _opening_token_coords(moves: Sequence[Move]) -> Optional[Tuple[int, int]]:
-        if len(moves) < 2:
-            return None
-        first, second = moves[0], moves[1]
-        if first.kind != MoveKind.PLACE or second.kind != MoveKind.SWAP:
-            return None
-        if second.col is None or second.row is None:
-            return None
-        return (second.col, second.row)
 
     def move_coords(self, mv: Move) -> Optional[Tuple[int, int]]:
         match mv.kind:
@@ -191,7 +180,7 @@ class GuiCore(GuiCoreAnalysisMixin):
 
     def load_hexworld_text(self, text: str) -> bool:
         try:
-            size, past_moves, future_moves_parsed, _next_side = parse_hexworld_position(text)
+            size, past_moves, future_moves_parsed, _next_side = hexworld.parse_hexworld_position(text)
         except Exception as exc:
             logger.info("HexWorld parse failed: %s", exc)
             return False
@@ -246,7 +235,7 @@ class GuiCore(GuiCoreAnalysisMixin):
 
     def move_to_label_in_sequence(self, moves: Sequence[Move], index: int) -> str:
         mv = moves[index]
-        opening = self._opening_token_coords(moves)
+        opening = hexworld.opening_token_coords(moves)
         if index == 0 and opening is not None:
             return coord_to_human(*opening)
         return self.move_to_label(mv)
@@ -259,38 +248,9 @@ class GuiCore(GuiCoreAnalysisMixin):
             and self.board.history[1].kind == MoveKind.SWAP
         )
 
-    def _moves_to_hexworld_stream(self, moves: Sequence[Move]) -> str:
-        out: List[str] = []
-        opening = self._opening_token_coords(moves)
-        for idx, mv in enumerate(moves):
-            if idx == 0 and opening is not None:
-                out.append(coord_to_human(*opening))
-                continue
-            out.append(self._move_to_hexworld(mv))
-        return "".join(out)
-
-    def _move_to_hexworld(self, mv: Move) -> str:
-        match mv.kind:
-            case MoveKind.PLACE:
-                return coord_to_human(mv.col, mv.row)
-            case MoveKind.PASS:
-                return ":p"
-            case MoveKind.SWAP:
-                return ":s"
-        return self._assert_never(mv.kind)
-
     def build_hexworld_url(self) -> str:
-        prefix = f"{self.board.n}c1"
-        past = self._moves_to_hexworld_stream(self.board.history)
-        if not self.app.future_moves:
-            url = f"https://hexworld.org/board/#{prefix}"
-            if past:
-                url = f"{url},{past}"
-            return url
-
         future_moves = list(reversed(self.app.future_moves))
-        future = self._moves_to_hexworld_stream(future_moves)
-        return f"https://hexworld.org/board/#{prefix},{past},{future}"
+        return hexworld.build_hexworld_url(self.board.n, self.board.history, future_moves)
 
     def new_game(self) -> None:
         def mutate() -> None:

@@ -31,7 +31,13 @@ def _side_to_text(side: Side) -> str:
 
 
 def _round6(x: Optional[float]) -> Optional[float]:
-    return None if x is None else round(x, 6)
+    if x is None or not math.isfinite(x):
+        return None
+    return round(x, 6)
+
+
+def _is_nonnegative_finite(x: Optional[float]) -> bool:
+    return x is None or (math.isfinite(x) and x >= 0.0)
 
 
 def _side_winrate_to_red(winrate: Optional[float], side: Side) -> Optional[float]:
@@ -497,11 +503,11 @@ def run_cli(
     if args.cli_cmd == "analyze":
         if args.top_n is not None and args.top_n < 1:
             return _fail("--top-n must be >= 1")
-        if args.search_seconds is not None and args.search_seconds < 0:
-            return _fail("--search-seconds must be >= 0")
+        if not _is_nonnegative_finite(args.search_seconds):
+            return _fail("--search-seconds must be finite and >= 0")
     elif args.cli_cmd == "candidate":
-        if args.total_search_seconds is not None and args.total_search_seconds < 0:
-            return _fail("--total-search-seconds must be >= 0")
+        if not _is_nonnegative_finite(args.total_search_seconds):
+            return _fail("--total-search-seconds must be finite and >= 0")
 
     board = HexBoard(DEFAULT_BOARD_SIZE)
     try:

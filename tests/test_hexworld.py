@@ -1,7 +1,7 @@
 import unittest
 
-from board import MoveKind, Side
-from hexworld import parse_hexworld_position, parse_hexworld_state
+from board import Move, MoveKind, Side
+from hexworld import build_hexworld_url, parse_hexworld_position, parse_hexworld_state
 
 
 class HexWorldSwapTests(unittest.TestCase):
@@ -70,6 +70,11 @@ class HexWorldSwapTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_hexworld_position("https://hexworld.org/board/#5c1,a1,b2,c3")
 
+    def test_build_url_with_future_moves(self):
+        self.assertEqual(
+            build_hexworld_url(5, [Move.place(Side.RED, 1, 1)], [Move.place(Side.BLUE, 2, 2)]),
+            "https://hexworld.org/board/#5c1,a1,b2",
+        )
 
 if __name__ == "__main__":
     unittest.main()

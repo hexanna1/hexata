@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import re
-from typing import List, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
-from board import Move, MoveKind, Side
+from board import Move, MoveKind, Side, coord_to_human
 
 _MOVE_TOKEN_RE = re.compile(r":p|:s|:S|:rw|:rb|:fw|:fb|[a-z]+[0-9]+")
 _CELL_RE = re.compile(r"^([A-Za-z]+)([0-9]+)$")
@@ -57,6 +57,52 @@ def _tokenize_moves(move_stream: str) -> List[str]:
 
 def _other_side(side: Side) -> Side:
     return Side.BLUE if side == Side.RED else Side.RED
+
+
+def opening_token_coords(moves: Sequence[Move]) -> Optional[Tuple[int, int]]:
+    if len(moves) < 2:
+        return None
+    first, second = moves[0], moves[1]
+    if (
+        first.kind == MoveKind.PLACE
+        and second.kind == MoveKind.SWAP
+        and second.col is not None
+        and second.row is not None
+    ):
+        return (second.col, second.row)
+    return None
+
+
+def moves_to_hexworld_stream(moves: Sequence[Move]) -> str:
+    out: List[str] = []
+    opening = opening_token_coords(moves)
+    for idx, mv in enumerate(moves):
+        if idx == 0 and opening is not None:
+            out.append(coord_to_human(*opening))
+            continue
+        match mv.kind:
+            case MoveKind.PLACE:
+                out.append(coord_to_human(mv.col, mv.row))
+            case MoveKind.PASS:
+                out.append(":p")
+            case MoveKind.SWAP:
+                out.append(":s")
+            case _:
+                raise AssertionError(f"Unhandled move kind: {mv.kind}")
+    return "".join(out)
+
+
+def build_hexworld_url(
+    board_size: int,
+    past_moves: Sequence[Move],
+    future_moves: Sequence[Move] = (),
+) -> str:
+    base = f"https://hexworld.org/board/#{board_size}c1"
+    past = moves_to_hexworld_stream(past_moves)
+    if not future_moves:
+        return f"{base},{past}" if past else base
+    future = moves_to_hexworld_stream(future_moves)
+    return f"{base},{past},{future}"
 
 
 def _parse_prefix(prefix: str) -> Tuple[int, int, Tuple[str, ...]]:

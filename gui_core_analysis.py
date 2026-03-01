@@ -439,18 +439,19 @@ class GuiCoreAnalysisMixin:
 
     def get_candidate_analysis(self) -> List[AnalysisMove]:
         state = self.app.candidate_state
-        rows: List[Tuple[Tuple[int, int], Optional[float], int]] = []
+        rows: List[Tuple[Tuple[int, int], Optional[float], Optional[int]]] = []
         for key in state.candidates:
             wr, visits = state.results.get(key, (None, None))
             rows.append((key, wr, visits))
 
         def sort_key(
             row: Tuple[Tuple[int, int], Optional[float], Optional[int]]
-        ) -> Tuple[int, float, int]:
-            _key, wr, visits = row
+        ) -> Tuple[int, float, int, int, int]:
+            key, wr, visits = row
+            col, row_ = key
             if wr is None:
-                return (1, 0.0, -self._visits(visits))
-            return (0, -wr, -self._visits(visits))
+                return (1, 0.0, -self._visits(visits), col, row_)
+            return (0, -wr, -self._visits(visits), col, row_)
 
         rows.sort(key=sort_key)
 

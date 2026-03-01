@@ -342,11 +342,9 @@ def run_gui(
                 handle_mouse_motion(ev, ui)
             elif ev.type == pygame.MOUSEWHEEL:
                 if ev.y > 0:
-                    for _ in range(ev.y):
-                        core.step_back()
+                    core.step_back_n(ev.y)
                 elif ev.y < 0:
-                    for _ in range(-ev.y):
-                        core.step_forward()
+                    core.step_forward_n(-ev.y)
             elif ev.type == pygame.VIDEORESIZE:
                 renderer.apply_window_size(ev.w, ev.h)
 
