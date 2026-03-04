@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import NoReturn, Optional, Sequence, Tuple
+from typing import Callable, NoReturn, Optional, Sequence, Tuple
 
 from board import MAX_BOARD_SIZE, MIN_BOARD_SIZE, HexBoard, Move, MoveKind, Side, coord_to_human
 from engine import KataHexEngine
@@ -10,8 +10,8 @@ import hexworld
 
 logger = logging.getLogger(__name__)
 DEFAULT_ANALYZE_INTERVAL_CS = 15
+
 EditSnapshot = tuple[
-    int,
     tuple[int, ...],
     tuple[Move, ...],
     tuple[Move, ...],
@@ -55,7 +55,6 @@ class GuiCore(GuiCoreAnalysisMixin):
         # results are analysis-derived and cached, and excluding them avoids extra
         # invalidation edge cases; tradeoff: run-progress ordering may restart.
         return (
-            self.board.n,
             tuple(self.board.occ),
             tuple(self.board.history),
             tuple(self.app.future_moves),
@@ -66,20 +65,38 @@ class GuiCore(GuiCoreAnalysisMixin):
         self.edit_undo.clear()
         self.edit_redo.clear()
 
-    def _record_edit_if_changed(self, before: EditSnapshot, did: bool) -> bool:
-        if did:
-            after = self._snapshot_edit_state()
-            if after != before:
-                self.edit_undo.append(before)
-                self.edit_redo.clear()
-        return did
+    def _record_edit_if_changed(self, before: EditSnapshot) -> bool:
+        if self._snapshot_edit_state() == before:
+            return False
+        self.edit_undo.append(before)
+        self.edit_redo.clear()
+        return True
+
+    def _run_tracked_edit(
+        self,
+        mutate: Callable[[], None],
+        *,
+        resume_after: bool = True,
+    ) -> bool:
+        before = self._snapshot_edit_state()
+        self.with_analysis_keep_engine_synced(mutate, resume_after=resume_after)
+        return self._record_edit_if_changed(before)
+
+    def _try_replay_future_kind(self, kind: MoveKind) -> bool:
+        if not self.app.future_moves:
+            return False
+        mv = self.app.future_moves[-1]
+        if mv.kind != kind:
+            return False
+        before = self._snapshot_edit_state()
+        if not self.step_forward():
+            return False
+        return self._record_edit_if_changed(before)
 
     def _restore_edit_state(self, snap: EditSnapshot) -> None:
-        size, occ, history, future, candidates = snap
+        occ, history, future, candidates = snap
 
         def mutate() -> None:
-            self.engine.set_board_size(size)
-            self.board.set_size(size)
             self.board.occ = list(occ)
             self.board.history = list(history)
             self.app.future_moves.clear()
@@ -96,7 +113,7 @@ class GuiCore(GuiCoreAnalysisMixin):
                 )
             self.rebuild_engine_from_history()
 
-        self.with_analysis_paused(mutate, clear_analysis=self.app.analysis_running)
+        self.with_analysis_stopped(mutate)
 
     def undo_edit(self) -> bool:
         if not self.edit_undo:
@@ -120,7 +137,6 @@ class GuiCore(GuiCoreAnalysisMixin):
         side = self.current_side()
         if not self.board.place(side, col, row):
             return False
-        self.engine.clear_analysis()
         self.play_engine_mapped(side, col, row)
         return True
 
@@ -128,7 +144,6 @@ class GuiCore(GuiCoreAnalysisMixin):
         side = self.current_side()
         if not self.board.pass_move(side):
             return False
-        self.engine.clear_analysis()
         self.play_engine_mapped(side, None, None)
         return True
 
@@ -136,7 +151,6 @@ class GuiCore(GuiCoreAnalysisMixin):
         side = self.current_side()
         if not self.board.swap_move(side):
             return False
-        self.engine.clear_analysis()
         return True
 
     def _assert_never(self, value: MoveKind) -> NoReturn:
@@ -223,25 +237,24 @@ class GuiCore(GuiCoreAnalysisMixin):
             return
         self.app.future_moves = list(reversed(redo[:cut]))
 
-    def with_analysis_paused(
+    def _with_analysis_paused(
         self,
-        fn,
+        fn: Callable[[], None],
         *,
-        clear_analysis: bool = False,
-        stop_engine: bool = True,
+        keep_engine_synced: bool,
         resume_after: bool = True,
     ) -> None:
         was_running = self.app.analysis_running
         rev_before = self.board.rev
-        if was_running and stop_engine:
-            self.stop_analysis()
-        if was_running and (not stop_engine):
-            self.stop_candidate_search()
-            self.engine.cancel_reply_capture()
-            self.engine.clear_analysis()
+        if was_running:
+            if keep_engine_synced:
+                self.stop_candidate_search()
+                self.engine.cancel_reply_capture()
+                self.engine.clear_analysis()
+            else:
+                self.stop_analysis()
         fn()
-        if clear_analysis:
-            self.engine.clear_analysis()
+        self.engine.clear_analysis()
         if (
             was_running
             and resume_after
@@ -252,6 +265,14 @@ class GuiCore(GuiCoreAnalysisMixin):
         if was_running and resume_after:
             self.check_candidate_root()
             self.resume_analysis()
+
+    def with_analysis_stopped(self, fn: Callable[[], None], *, resume_after: bool = True) -> None:
+        self._with_analysis_paused(fn, keep_engine_synced=False, resume_after=resume_after)
+
+    def with_analysis_keep_engine_synced(
+        self, fn: Callable[[], None], *, resume_after: bool = True
+    ) -> None:
+        self._with_analysis_paused(fn, keep_engine_synced=True, resume_after=resume_after)
 
     def load_hexworld_text(self, text: str) -> bool:
         try:
@@ -295,7 +316,7 @@ class GuiCore(GuiCoreAnalysisMixin):
 
             self.app.future_moves.extend(reversed(future_moves_parsed))
 
-        self.with_analysis_paused(mutate, clear_analysis=self.app.analysis_running)
+        self.with_analysis_stopped(mutate)
         self._clear_edit_history()
         return True
 
@@ -335,7 +356,7 @@ class GuiCore(GuiCoreAnalysisMixin):
             self.app.future_moves.clear()
             self.clear_all_cached_analysis()
 
-        self.with_analysis_paused(mutate, stop_engine=False)
+        self.with_analysis_keep_engine_synced(mutate)
         self._clear_edit_history()
 
     def undo_one(self) -> bool:
@@ -343,9 +364,6 @@ class GuiCore(GuiCoreAnalysisMixin):
             return False
         last = self.board.history[-1]
         if self.board.undo():
-            # Undo changes the root position, so any buffered live analysis is stale
-            # even if analysis is currently paused.
-            self.engine.clear_analysis()
             if last.kind != MoveKind.SWAP:
                 self.engine.undo()
             return True
@@ -373,9 +391,7 @@ class GuiCore(GuiCoreAnalysisMixin):
                 self.app.future_moves.append(last)
                 did = True
 
-        self.with_analysis_paused(
-            mutate, clear_analysis=self.app.analysis_running, stop_engine=False
-        )
+        self.with_analysis_keep_engine_synced(mutate)
         return did
 
     def step_forward_n(self, count: int, *, resume_after: bool = True) -> bool:
@@ -394,7 +410,10 @@ class GuiCore(GuiCoreAnalysisMixin):
                 self.app.future_moves.pop()
                 did = True
 
-        self.with_analysis_paused(mutate, stop_engine=False, resume_after=resume_after)
+        self.with_analysis_keep_engine_synced(
+            mutate,
+            resume_after=resume_after,
+        )
         return did
 
     def go_first(self, *, resume_after: bool = True) -> bool:
@@ -411,10 +430,8 @@ class GuiCore(GuiCoreAnalysisMixin):
                 self.app.future_moves.append(last)
                 did = True
 
-        self.with_analysis_paused(
+        self.with_analysis_keep_engine_synced(
             mutate,
-            clear_analysis=self.app.analysis_running,
-            stop_engine=False,
             resume_after=resume_after,
         )
         return did
@@ -433,36 +450,27 @@ class GuiCore(GuiCoreAnalysisMixin):
                 self.app.future_moves.pop()
                 did = True
 
-        self.with_analysis_paused(mutate, stop_engine=False)
+        self.with_analysis_keep_engine_synced(mutate)
         return did
 
     def delete_tail(self) -> bool:
-        before = self._snapshot_edit_state()
         if self.app.future_moves:
+            before = self._snapshot_edit_state()
             self.app.future_moves.clear()
-            return self._record_edit_if_changed(before, True)
+            return self._record_edit_if_changed(before)
         if not self.board.history:
             return False
 
-        did = False
-
         def mutate() -> None:
-            nonlocal did
-            did = self.undo_one()
+            self.undo_one()
 
-        self.with_analysis_paused(
-            mutate, clear_analysis=self.app.analysis_running, stop_engine=False
-        )
-        return self._record_edit_if_changed(before, did)
+        return self._run_tracked_edit(mutate)
 
     def try_play_moves(self, moves: Sequence[Tuple[int, int]]) -> bool:
         if not moves:
             return False
-        before = self._snapshot_edit_state()
-        did = False
 
         def mutate() -> None:
-            nonlocal did
             remaining = list(moves)
             while remaining and self.app.future_moves:
                 mv = self.app.future_moves[-1]
@@ -473,7 +481,6 @@ class GuiCore(GuiCoreAnalysisMixin):
                     return
                 self.app.future_moves.pop()
                 remaining.pop(0)
-                did = True
 
             if not remaining:
                 return
@@ -484,10 +491,8 @@ class GuiCore(GuiCoreAnalysisMixin):
             for col, row in remaining:
                 if not self.apply_move_to_state(col, row):
                     return
-                did = True
 
-        self.with_analysis_paused(mutate, stop_engine=False)
-        return self._record_edit_if_changed(before, did)
+        return self._run_tracked_edit(mutate)
 
     def try_play_move(self, col: int, row: int) -> bool:
         return self.try_play_moves([(col, row)])
@@ -503,46 +508,30 @@ class GuiCore(GuiCoreAnalysisMixin):
         return self.current_side() == Side.BLUE
 
     def try_pass_move(self) -> bool:
-        before = self._snapshot_edit_state()
-        if self.app.future_moves:
-            mv = self.app.future_moves[-1]
-            if mv.kind == MoveKind.PASS:
-                return self._record_edit_if_changed(before, self.step_forward())
-
-        did = False
+        if self._try_replay_future_kind(MoveKind.PASS):
+            return True
 
         def mutate() -> None:
-            nonlocal did
             if not self.apply_pass_to_state():
                 return
             if self.app.future_moves:
                 self.app.future_moves.clear()
-            did = True
 
-        self.with_analysis_paused(mutate, stop_engine=False)
-        return self._record_edit_if_changed(before, did)
+        return self._run_tracked_edit(mutate)
 
     def try_swap_move(self) -> bool:
-        before = self._snapshot_edit_state()
-        if self.app.future_moves:
-            mv = self.app.future_moves[-1]
-            if mv.kind == MoveKind.SWAP:
-                return self._record_edit_if_changed(before, self.step_forward())
+        if self._try_replay_future_kind(MoveKind.SWAP):
+            return True
         if not self.can_swap_move():
             return False
 
-        did = False
-
         def mutate() -> None:
-            nonlocal did
             if not self.apply_swap_to_state():
                 return
             if self.app.future_moves:
                 self.app.future_moves.clear()
-            did = True
 
-        self.with_analysis_paused(mutate, stop_engine=False)
-        return self._record_edit_if_changed(before, did)
+        return self._run_tracked_edit(mutate)
 
     def try_drag_move(self, idx: int, src: Tuple[int, int], col: int, row: int) -> bool:
         if idx < 0 or idx >= len(self.board.history):
@@ -553,11 +542,7 @@ class GuiCore(GuiCoreAnalysisMixin):
         if not self.board.is_empty(col, row):
             return False
 
-        before = self._snapshot_edit_state()
-        did = False
-
         def mutate() -> None:
-            nonlocal did
             if not self.board.move_in_history(idx, col, row):
                 return
             if idx == 0 and self.app.future_moves and self.app.future_moves[-1].kind == MoveKind.SWAP:
@@ -565,12 +550,8 @@ class GuiCore(GuiCoreAnalysisMixin):
                 self.app.future_moves[-1] = Move.swap(side=swap_mv.side, col=col, row=row)
             self.truncate_future_moves_on_conflict()
             self.rebuild_engine_from_history()
-            did = True
 
-        self.with_analysis_paused(
-            mutate, clear_analysis=self.app.analysis_running, stop_engine=False
-        )
-        return self._record_edit_if_changed(before, did)
+        return self._run_tracked_edit(mutate)
 
     def apply_pending_size(self) -> bool:
         if self.app.pending_size == self.board.n:
@@ -583,6 +564,6 @@ class GuiCore(GuiCoreAnalysisMixin):
             self.app.future_moves.clear()
             self.clear_all_cached_analysis()
 
-        self.with_analysis_paused(mutate, clear_analysis=self.app.analysis_running)
+        self.with_analysis_stopped(mutate)
         self._clear_edit_history()
         return True

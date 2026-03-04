@@ -191,19 +191,19 @@ class GuiCoreTests(unittest.TestCase):
         self.assertEqual(merged[0].winrate, 0.7)
         self.assertEqual(merged[0].visits, 50)
 
-    def test_with_analysis_paused_stops_candidate_run_when_stop_engine_false(self):
+    def test_with_analysis_keep_engine_synced_stops_candidate_run(self):
         core, engine = self._mk_core()
         self._start_candidate_run(core, 1, 1)
         self.assertTrue(any(call[0] == "play" for call in engine.calls))
 
-        core.with_analysis_paused(lambda: None, stop_engine=False)
+        core.with_analysis_keep_engine_synced(lambda: None)
 
         self.assertIsNone(core.app.candidate_state.run)
         self.assertIn(("undo",), engine.calls)
         # Analysis should resume (candidates exist), which plays the candidate move.
         self.assertTrue(any(call[0] == "play" for call in engine.calls))
 
-    def test_undo_one_clears_buffered_engine_analysis(self):
+    def test_step_back_clears_buffered_engine_analysis(self):
         core, engine = self._mk_core()
         core.try_play_move(1, 1)
         core.try_play_move(2, 1)
@@ -219,7 +219,7 @@ class GuiCoreTests(unittest.TestCase):
             AnalysisMove("c1", order=0, col=3, row=1, winrate=0.6, visits=10, prior=0.4, pv=None)
         ]
 
-        self.assertTrue(core.undo_one())
+        self.assertTrue(core.step_back())
         self.assertEqual(engine.analysis, [])
 
     def test_delete_tail_keeps_existing_cache_entries(self):
