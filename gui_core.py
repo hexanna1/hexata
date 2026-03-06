@@ -108,9 +108,7 @@ class GuiCore(GuiCoreAnalysisMixin):
             state.run = None
             state.root_key = self.cache_key() if state.candidates else None
             if self.app.analysis_mode != AnalysisModeTag.OFF:
-                self.app.analysis_mode = (
-                    AnalysisModeTag.CANDIDATE if state.candidates else AnalysisModeTag.LIVE
-                )
+                self.app.analysis_mode = AnalysisModeTag.LIVE
             self.rebuild_engine_from_history()
 
         self.with_analysis_stopped(mutate)
@@ -375,7 +373,7 @@ class GuiCore(GuiCoreAnalysisMixin):
     def step_forward(self) -> bool:
         return self.step_forward_n(1)
 
-    def step_back_n(self, count: int) -> bool:
+    def step_back_n(self, count: int, *, resume_after: bool = True) -> bool:
         if count <= 0 or not self.board.history:
             return False
         did = False
@@ -391,7 +389,10 @@ class GuiCore(GuiCoreAnalysisMixin):
                 self.app.future_moves.append(last)
                 did = True
 
-        self.with_analysis_keep_engine_synced(mutate)
+        self.with_analysis_keep_engine_synced(
+            mutate,
+            resume_after=resume_after,
+        )
         return did
 
     def step_forward_n(self, count: int, *, resume_after: bool = True) -> bool:
@@ -417,41 +418,10 @@ class GuiCore(GuiCoreAnalysisMixin):
         return did
 
     def go_first(self, *, resume_after: bool = True) -> bool:
-        if not self.board.history:
-            return False
-        did = False
-
-        def mutate() -> None:
-            nonlocal did
-            while self.board.history:
-                last = self.board.history[-1]
-                if not self.undo_one():
-                    break
-                self.app.future_moves.append(last)
-                did = True
-
-        self.with_analysis_keep_engine_synced(
-            mutate,
-            resume_after=resume_after,
-        )
-        return did
+        return self.step_back_n(len(self.board.history), resume_after=resume_after)
 
     def go_last(self) -> bool:
-        if not self.app.future_moves:
-            return False
-        did = False
-
-        def mutate() -> None:
-            nonlocal did
-            while self.app.future_moves:
-                mv = self.app.future_moves[-1]
-                if not self.apply_move_to_state_from_move(mv):
-                    break
-                self.app.future_moves.pop()
-                did = True
-
-        self.with_analysis_keep_engine_synced(mutate)
-        return did
+        return self.step_forward_n(len(self.app.future_moves))
 
     def delete_tail(self) -> bool:
         if self.app.future_moves:

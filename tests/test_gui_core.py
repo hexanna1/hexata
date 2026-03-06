@@ -530,13 +530,13 @@ class GuiCoreTests(unittest.TestCase):
         self.assertEqual(core.app.analysis_cache[key_before], ["a"])
         self.assertEqual(core.app.analysis_cache[key_after], ["b"])
 
-    def test_undo_restores_candidates_and_candidate_mode(self):
+    def test_undo_restores_candidates_and_candidate_analysis(self):
         core, _engine = self._mk_core()
 
         core.toggle_analysis()
         core.add_candidate(1, 1)
 
-        self.assertEqual(core.app.analysis_mode, AnalysisModeTag.CANDIDATE)
+        self.assertTrue(core.is_candidate_analysis_active())
 
         core.try_play_move(2, 1)
         self.assertEqual(core.app.candidate_state.candidates, set())
@@ -545,7 +545,7 @@ class GuiCoreTests(unittest.TestCase):
         self.assertTrue(core.undo_edit())
         self.assertEqual(core.app.candidate_state.candidates, {(1, 1)})
         self.assertEqual(core.app.candidate_state.root_key, core.cache_key())
-        self.assertEqual(core.app.analysis_mode, AnalysisModeTag.CANDIDATE)
+        self.assertTrue(core.is_candidate_analysis_active())
 
     def test_undo_during_batch_exits_batch_mode(self):
         core, _engine = self._mk_core()

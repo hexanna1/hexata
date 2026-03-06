@@ -6,7 +6,7 @@ from typing import List, Optional, Sequence, Tuple
 from board import Move, MoveKind, Side, coord_to_human
 
 _MOVE_TOKEN_RE = re.compile(r":p|:s|:S|:rw|:rb|:fw|:fb|[a-z]+[0-9]+")
-_CELL_RE = re.compile(r"^([A-Za-z]+)([0-9]+)$")
+_CELL_RE = re.compile(r"^([a-z]+)([0-9]+)$")
 _PREFIX_RE = re.compile(r"^([0-9]+)(?:x([0-9]+))?([a-z0-9]*)$")
 
 
@@ -23,7 +23,6 @@ def _letters_to_idx(letters: str) -> int:
     Excel-like letters -> 0-index:
       a->0, z->25, aa->26, ab->27, ...
     """
-    letters = letters.lower()
     n = 0
     for ch in letters:
         if not ("a" <= ch <= "z"):

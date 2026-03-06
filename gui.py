@@ -177,6 +177,7 @@ def run_gui(
 
         if ev.unicode == "?":
             ui.show_help = not ui.show_help
+        # `Ctrl+D` is reserved as an EOF-style quit shortcut; debug toggle stays on plain `d`.
         elif ev.key == pygame.K_d and not (ev.mod & pygame.KMOD_CTRL):
             ui.show_engine_debug = not ui.show_engine_debug
         elif ev.key == pygame.K_m:
