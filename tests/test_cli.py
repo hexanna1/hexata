@@ -110,22 +110,33 @@ class CliTests(unittest.TestCase):
             def __init__(self):
                 self.engine = object()
                 self.board = _AlwaysEmptyBoard(3)
-                self.board.history = []
-                self.app = SimpleNamespace(
-                    future_moves=[
-                        Move.place(Side.BLUE, 2, 1),  # stack top is last; next move at end
-                        Move.place(Side.RED, 1, 1),
-                    ]
-                )
+                self._past = []
+                self._future = [
+                    Move.place(Side.RED, 1, 1),
+                    Move.place(Side.BLUE, 2, 1),
+                ]
 
             def go_first(self):
+                self._future = self._past + self._future
+                self._past = []
                 return True
 
             def step_forward(self):
-                if not self.app.future_moves:
+                if not self._future:
                     return False
-                self.app.future_moves.pop()
+                self._past.append(self._future.pop(0))
                 return True
+
+            def current_ply(self):
+                return len(self._past)
+
+            def next_mainline_move(self):
+                if not self._future:
+                    return None
+                return self._future[0]
+
+            def mainline_tail_moves(self):
+                return list(self._future)
 
             def _map_coords_to_engine(self, col, row):
                 return (col, row)

@@ -258,7 +258,7 @@ def _score_policy_move_fast_batch(core: GuiCore, raw: RawNNResult, mv) -> tuple 
 
 
 def _run_batch_fast_cli(core: GuiCore, *, include_plies: bool) -> tuple[bool, dict]:
-    if core.board.history and not core.go_first():
+    if core.current_ply() and not core.go_first():
         return False, {"error": "Failed to rewind to start for batch analysis"}
 
     acc_red = _empty_batch_acc()
@@ -266,8 +266,10 @@ def _run_batch_fast_cli(core: GuiCore, *, include_plies: bool) -> tuple[bool, di
     plies_total = 0
     plies: list[dict] | None = [] if include_plies else None
 
-    while core.app.future_moves:
-        mv = core.app.future_moves[-1]
+    while True:
+        mv = core.next_mainline_move()
+        if mv is None:
+            break
         ply = plies_total + 1
         acc_side = acc_red if mv.side == Side.RED else acc_blue
         plies_total += 1
@@ -335,8 +337,8 @@ def _run_batch_fast_cli(core: GuiCore, *, include_plies: bool) -> tuple[bool, di
 def _position_payload(core: GuiCore) -> dict:
     return {
         "to_play": _side_to_text(core.current_side()),
-        "past_len": len(core.board.history),
-        "future_len": len(core.app.future_moves),
+        "past_len": core.current_ply(),
+        "future_len": len(core.mainline_tail_moves()),
     }
 
 
@@ -523,8 +525,9 @@ def run_cli(
     core = GuiCore(board, engine)
     started_at = time.monotonic()
     try:
-        if not core.load_hexworld_text(args.position):
-            return _fail("Invalid position")
+        position_error = core.load_hexworld_text(args.position)
+        if position_error is not None:
+            return _fail(position_error)
 
         awrn = getattr(args, "analysis_wide_root_noise", None)
         if awrn is not None:

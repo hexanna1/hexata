@@ -70,6 +70,13 @@ class HexBoard:
     def clear(self) -> None:
         self.set_size(self.n)
 
+    def copy(self) -> "HexBoard":
+        out = HexBoard(self.n)
+        out.rev = self.rev
+        out.occ = list(self.occ)
+        out.history = list(self.history)
+        return out
+
     def in_bounds(self, col: int, row: int) -> bool:
         return 1 <= col <= self.n and 1 <= row <= self.n
 
@@ -183,6 +190,15 @@ class HexBoard:
             self.history[0] = Move.place(side=restored_side, col=mv.col, row=mv.row)
         self._bump_rev()
         return True
+
+    def apply_move(self, mv: Move) -> bool:
+        if mv.kind == MoveKind.PLACE:
+            return self.place(mv.side, mv.col, mv.row)
+        if mv.kind == MoveKind.PASS:
+            return self.pass_move(mv.side)
+        if mv.kind == MoveKind.SWAP:
+            return self.swap_move(mv.side)
+        raise AssertionError(f"Unhandled move kind: {mv.kind}")
 
 
 def col_to_human_letters(col: int) -> str:

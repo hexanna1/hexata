@@ -10,7 +10,7 @@ A lightweight, keyboard-first GUI for analyzing Hex with the [KataHex](https://w
 - Dedicated candidate search and batch analysis modes.
 - Move list panel with undo/redo, navigation ([HexWorld](https://hexworld.org/board/#14c1)-style shortcuts), and eval graph (winrate or Elo).
 - Native handling for pass and swap moves.
-- Clipboard import/export to HexWorld.
+- Clipboard import/export to HexWorld and Hexata format.
 - Adjustable board size and analysis noise.
 - Fast, responsive feel with low engine and UI latency.
 
@@ -35,7 +35,9 @@ A lightweight, keyboard-first GUI for analyzing Hex with the [KataHex](https://w
 - `gui_render.py`: Pygame rendering, layout, HUD, and panels.
 - `gui_core.py`: Game state, move history, import/export, and engine coordination.
 - `gui_core_analysis.py`: Analysis/candidate-search state and cache management.
+- `history_tree.py`: Tree model for move history, branching, and cursor navigation.
 - `engine.py`: Engine process wrapper, GTP-ish parsing, and analysis I/O.
+- `hexata_format.py`: Parser/serializer for Hexata move-tree format.
 - `board.py`: Hex board model, history, and move rules.
 - `hexworld.py`: HexWorld import/export parsing utilities.
 
@@ -45,9 +47,10 @@ A few implementation details were tricky to get right and are useful background 
 - KataHex uses a nonstandard GTP-ish dialect. The GUI uses a minimal handshake (mute until the first "=" after `kata-analyze`) to keep latency low while avoiding analysis leakage.
 - Candidate search isn’t a native KataHex mode. The GUI simulates it by cycling candidates as temporary roots and collecting per-candidate results, but because each position is evaluated from scratch (with only partial internal caching), the switching policy needs to reduce wasted rebuild time and make steady progress per candidate.
   - Regular analysis applies `analysisWideRootNoise` at the root, but candidate mode is comparing what are effectively child positions, so candidate runs force `analysisWideRootNoise` to `0`.
-- Swap support ended up being more than just adding a new move token. The hardest part was redo/drag conflict pruning around moves 1 and 2: editing either one can make the other collide with a later move, and that conflict has to invalidate the tail from that point onward. The inverse problem also appears after transposition: a coordinate that looks duplicated can still be legal because swap moved the opening stone away.
+- Swap support was especially tricky. Subtree pruning around moves 1 and 2 means editing either move can make the other collide with later descendants, and those invalid descendants need to be removed without disturbing surviving sibling branches. The inverse problem also appears after transposition: a coordinate that looks duplicated can still be valid because swap moved the opening stone away.
+- Drag-edit branch merging was another tricky case. If a dragged move lands on a sibling move that already exists, the two branches must merge recursively, and sibling order becomes the tie-breaker for which continuation stays preferred.
 
 ## Limitations
-- No branching move history, buttons, or clickable move list.
+- No buttons or clickable move list.
 - Only tested on macOS; other platforms or some HiDPI setups may need tweaks.
 - No robust engine error handling or recovery yet, though it hasn’t been an issue in testing.

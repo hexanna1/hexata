@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 import sys
@@ -7,7 +8,7 @@ import time
 import warnings
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional, Tuple
+from typing import Callable, Optional, Tuple
 
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 warnings.filterwarnings(
@@ -22,6 +23,8 @@ from board import MAX_BOARD_SIZE, MIN_BOARD_SIZE, HexBoard
 from engine import KataHexEngine
 from gui_core import DEFAULT_ANALYZE_INTERVAL_CS, GuiCore
 from gui_render import GuiRenderer
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -48,6 +51,20 @@ class UiState:
 class UiPrefs:
     show_move_numbers: bool = False
     show_elo: bool = False
+
+
+def load_position_text(text: str, *, core: GuiCore, on_success: Callable[[], None]) -> bool:
+    hexworld_error = core.load_hexworld_text(text)
+    if hexworld_error is None:
+        on_success()
+        return True
+    hexata_error = core.load_hexata_format(text)
+    if hexata_error is None:
+        on_success()
+        return True
+    logger.info("%s", hexworld_error)
+    logger.info("%s", hexata_error)
+    return False
 
 
 def run_gui(
@@ -137,22 +154,24 @@ def run_gui(
         pygame.image.save(renderer.screen, path)
         return path
 
-    def load_hexworld_text(text: str) -> bool:
-        if not core.load_hexworld_text(text):
-            return False
+    def relayout_after_load() -> None:
         win_w, win_h = pygame.display.get_window_size()
         renderer.apply_window_size(win_w, win_h)
-        return True
 
     def load_from_clipboard() -> None:
         text = get_clipboard_text()
         if not text:
             return
-        load_hexworld_text(text)
+        load_position_text(text, core=core, on_success=relayout_after_load)
 
     def copy_hexworld_url() -> None:
         url = core.build_hexworld_url()
         set_clipboard_text(url)
+
+    def copy_hexata_format() -> None:
+        text = core.build_hexata_format()
+        if text:
+            set_clipboard_text(text)
 
     running = True
 
@@ -200,6 +219,8 @@ def run_gui(
             core.new_game()
         elif ev.key == pygame.K_v and has_ctrl:
             load_from_clipboard()
+        elif ev.key == pygame.K_c and has_ctrl and (mods & pygame.KMOD_SHIFT):
+            copy_hexata_format()
         elif ev.key == pygame.K_c and has_ctrl:
             copy_hexworld_url()
         elif ev.key == pygame.K_s and has_ctrl:
@@ -214,14 +235,18 @@ def run_gui(
             core.redo_edit()
         elif is_undo_shortcut:
             core.undo_edit()
-        elif has_ctrl and ev.key in (pygame.K_p, pygame.K_LEFT, pygame.K_UP):
+        elif has_ctrl and ev.key in (pygame.K_p, pygame.K_UP):
             core.step_back_n(10)
-        elif has_ctrl and ev.key in (pygame.K_n, pygame.K_RIGHT, pygame.K_DOWN):
+        elif has_ctrl and ev.key in (pygame.K_n, pygame.K_DOWN):
             core.step_forward_n(10)
-        elif ev.key in (pygame.K_p, pygame.K_LEFT, pygame.K_UP):
+        elif ev.key in (pygame.K_p, pygame.K_UP):
             core.step_back()
-        elif ev.key in (pygame.K_n, pygame.K_RIGHT, pygame.K_DOWN):
+        elif ev.key in (pygame.K_n, pygame.K_DOWN):
             core.step_forward()
+        elif ev.key == pygame.K_LEFT:
+            core.go_sibling(-1)
+        elif ev.key == pygame.K_RIGHT:
+            core.go_sibling(1)
         elif ev.key == pygame.K_f:
             core.go_first()
         elif ev.key == pygame.K_l:
@@ -265,12 +290,12 @@ def run_gui(
             if board.is_empty(col, row):
                 core.try_play_move(col, row)
                 return
-            idx = core.find_history_index(col, row)
+            idx = core.find_applied_move_index(col, row)
             if idx is None:
                 return
             if core.can_swap_move():
-                first = board.history[0] if board.history else None
-                first_coords = core.move_coords(first) if first is not None else None
+                history = core.applied_history()
+                first_coords = core.move_coords(history[0]) if history else None
                 ui.swap_click_candidate = first_coords == (col, row)
             ui.drag_move = True
             ui.drag_move_from = cell

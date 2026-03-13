@@ -38,6 +38,7 @@ BASE_R = 24
 MAX_R = 38
 LABEL_PAD_K = 0.85
 PANEL_W = 230
+MOVELIST_GUTTER_GAP = 8
 DEFAULT_WIN_W = 1456
 DEFAULT_WIN_H = 808
 
@@ -226,29 +227,13 @@ class GuiRenderer:
             io_font=pygame.freetype.SysFont(["Menlo", "Consolas", "monospace"], 12),
         )
         self.text = TextRenderer.from_fonts(self.fonts)
-        self._eval_graph_sig: Optional[tuple[int, tuple[Move, ...]]] = None
-        self._eval_graph_prefix_keys: list[bytes] = []
+        self._eval_graph_sig: Optional[tuple[int, int, tuple[Move, ...]]] = None
+        self._eval_graph_data: Optional[tuple[tuple[Move, ...], tuple[bytes, ...]]] = None
+        self._movelist_sig: Optional[tuple] = None
+        self._movelist_view = None
         self._frozen_pv_sig: Optional[Tuple[Optional[Tuple[int, int]], int]] = None
         self._frozen_pv: Optional[Tuple[Tuple[int, int], ...]] = None
         self.apply_window_size(DEFAULT_WIN_W, DEFAULT_WIN_H)
-
-    def _get_eval_graph_prefix_keys(self, moves: List[Move]) -> list[bytes]:
-        sig = (self.board.n, tuple(moves))
-        if self._eval_graph_sig == sig:
-            return self._eval_graph_prefix_keys
-        self._eval_graph_sig = sig
-        move_sig = sig[1]
-        # Swap quirk (feature, not a bug):
-        # Prefix keys come from internal history. After swap, internal move 1
-        # is rewritten, so the eval graph no longer queries the original
-        # opening move 1 key. This is true even when the coordinate is
-        # unchanged (for example b2), because side to play also changes. We
-        # keep this behavior to avoid a misleading move 1 to move 2 jump,
-        # since the engine eval here is not swap-rule aware.
-        self._eval_graph_prefix_keys = [
-            self.core.cache_key_for_moves(move_sig[:m]) for m in range(1, len(move_sig) + 1)
-        ]
-        return self._eval_graph_prefix_keys
 
     def make_board_small(self, r: int) -> pygame.freetype.Font:
         t = clamp01((BASE_R - r) / (BASE_R - 8))
@@ -473,30 +458,38 @@ class GuiRenderer:
                 pygame.draw.polygon(self.screen, GRID_EDGE, pts, 1)
 
     def draw_next_future_outline(self) -> None:
-        if not self.app.future_moves:
-            return
-        mv = self.app.future_moves[-1]
-        coords = self.core.move_coords(mv)
-        if coords is None:
-            return
-        col, row = coords
-        if not self.board.is_empty(col, row):
-            return
-
-        ax, ay = col - 1, row - 1
-        pts = self.poly(ax, ay)
-        colr = RED if self.core.current_side() == Side.RED else BLUE
+        mv = self.core.next_mainline_move()
         thickness = max(3, int(self.layout.r * 0.12))
-        pygame.draw.polygon(self.screen, colr, pts, thickness)
+        if mv is not None:
+            coords = self.core.move_coords(mv)
+            if coords is not None:
+                col, row = coords
+                if self.board.is_empty(col, row):
+                    ax, ay = col - 1, row - 1
+                    pts = self.poly(ax, ay)
+                    colr = RED if self.core.current_side() == Side.RED else BLUE
+                    pygame.draw.polygon(self.screen, colr, pts, thickness)
+
+        for mv in self.core.next_variation_moves():
+            coords = self.core.move_coords(mv)
+            if coords is None:
+                continue
+            col, row = coords
+            if not self.board.is_empty(col, row):
+                continue
+            ax, ay = col - 1, row - 1
+            pts = self.poly(ax, ay)
+            colr = lerp_rgb(RED if mv.side == Side.RED else BLUE, OFF_WHITE, 0.5)
+            pygame.draw.polygon(self.screen, colr, pts, thickness)
 
     def draw_move_numbers(self, show_all: bool) -> None:
-        if not self.board.history:
+        history = self.core.applied_history()
+        if not history:
             return
-        last_idx = len(self.board.history) - 1
+        last_idx = len(history) - 1
         if show_all:
             number_tint = 0.45
-            for idx in range(len(self.board.history)):
-                mv = self.board.history[idx]
+            for idx, mv in enumerate(history):
                 coords = self.core.move_coords(mv)
                 if coords is None:
                     continue
@@ -505,7 +498,7 @@ class GuiRenderer:
                 txt = "S" if self.core.is_swapped_stone_index(idx) else str(idx + 1)
                 swap_active_here = (
                     self.core.is_swapped_stone_index(idx)
-                    and self.board.history[last_idx].kind == MoveKind.SWAP
+                    and history[last_idx].kind == MoveKind.SWAP
                 )
                 if idx == last_idx or swap_active_here:
                     colr = OFF_WHITE
@@ -515,10 +508,10 @@ class GuiRenderer:
                 self.text.board.blit_center(txt, colr, cx, cy)
             return
 
-        mv = self.board.history[-1]
+        mv = history[-1]
         coords = self.core.move_coords(mv)
-        if coords is None and mv.kind == MoveKind.SWAP and self.board.history:
-            coords = self.core.move_coords(self.board.history[0])
+        if coords is None and mv.kind == MoveKind.SWAP:
+            coords = self.core.move_coords(history[0])
         if coords is None:
             return
         ax, ay = coords[0] - 1, coords[1] - 1
@@ -653,7 +646,8 @@ class GuiRenderer:
     def draw_eval_graph(
         self,
         rect: pygame.Rect,
-        moves: List[Move],
+        moves: Tuple[Move, ...],
+        prefix_keys: Tuple[bytes, ...],
         cursor_ply: int,
         show_elo: bool,
     ) -> None:
@@ -708,7 +702,6 @@ class GuiRenderer:
         if n_moves <= 0:
             return
 
-        prefix_keys = self._get_eval_graph_prefix_keys(moves)
         values: dict[int, float] = {}
         max_analyzed = 0
         for m, key in enumerate(prefix_keys, start=1):
@@ -772,6 +765,21 @@ class GuiRenderer:
                     ly = rect.bottom - line_h - GRAPH_EDGE_PAD
                 self.text.hud_small.blit_line(label, RED, lx, ly)
 
+    def get_eval_graph_data(self) -> tuple[tuple[Move, ...], tuple[bytes, ...]]:
+        sig = (self.board.n, self.board.rev, tuple(self.core.mainline_tail_moves()))
+        if self._eval_graph_sig != sig or self._eval_graph_data is None:
+            graph_data = self.core.build_eval_graph_data()
+            self._eval_graph_sig = sig
+            self._eval_graph_data = (graph_data.moves, graph_data.prefix_keys)
+        return self._eval_graph_data
+
+    def get_movelist_view(self):
+        sig = self.core.tree.signature()
+        if self._movelist_sig != sig or self._movelist_view is None:
+            self._movelist_sig = sig
+            self._movelist_view = self.core.build_movelist_view()
+        return self._movelist_view
+
     def draw_movelist_panel(self, ui: UiStateLike) -> None:
         x0 = self.layout.board_px_w
         pygame.draw.rect(self.screen, PANEL_BG, pygame.Rect(x0, 0, PANEL_W, self.screen.get_height()))
@@ -781,13 +789,10 @@ class GuiRenderer:
         self.blit_segments(x0 + pad, y, [("Moves", BLACK)], use_small=False)
         y += 26
 
-        moves = list(self.board.history)
-        if self.app.future_moves:
-            moves.extend(reversed(self.app.future_moves))
-
-        total_moves = len(moves)
-        cursor_ply = len(self.board.history)
-        nrows = (total_moves + 1) // 2
+        view = self.get_movelist_view()
+        rows = view.rows
+        total_rows = len(rows)
+        cursor_ply = self.core.current_ply()
 
         line_h = self.fonts.movelist_font.get_sized_height() + 4
         io_line_h = self.text.line_io + 2
@@ -802,42 +807,57 @@ class GuiRenderer:
         max_lines = max(0, (io_top - y - 6) // line_h)
 
         start = 0
-        if max_lines and nrows > max_lines:
-            if cursor_ply == total_moves:
-                start = nrows - max_lines
+        if max_lines and total_rows > max_lines:
+            if view.focus_row >= total_rows - 1:
+                start = total_rows - max_lines
             else:
-                focus_row = 0 if cursor_ply == 0 else (cursor_ply - 1) // 2
-                start = focus_row - (max_lines // 2)
-                start = max(0, min(start, nrows - max_lines))
+                start = view.focus_row - (max_lines // 2)
+                start = max(0, min(start, total_rows - max_lines))
 
-        end = min(nrows, start + max_lines)
+        end = min(total_rows, start + max_lines)
+        space_w = self.text.movelist.font.get_rect(" ").width
+        gutter_w = self.text.movelist.font.get_rect(f"{total_rows}.").width if total_rows else 0
+        content_x = x0 + pad + gutter_w + MOVELIST_GUTTER_GAP
+        content_right = x0 + PANEL_W - pad
+        content_w = max(1, content_right - content_x)
+        visible_cols = max(1, content_w // max(1, space_w))
+        left_col = 0
+        if cursor_ply > 0 and 0 <= view.focus_row < total_rows:
+            active_cell = next((cell for cell in rows[view.focus_row].cells if cell.played), None)
+            if active_cell is not None:
+                active_lane = active_cell.column
+                lane_end = active_lane + len(active_cell.label)
+                max_end = lane_end
+                for row in rows:
+                    for cell in row.cells:
+                        cell_end = cell.column + len(cell.label)
+                        if cell_end > max_end:
+                            max_end = cell_end
+                        if cell.column == active_lane and cell_end > lane_end:
+                            lane_end = cell_end
+                max_left = max(0, max_end - visible_cols)
+                left_col = min(
+                    max(0, lane_end - visible_cols),
+                    max_left,
+                )
+        scroll_px = left_col * space_w
+        content_clip_rect = pygame.Rect(x0 + pad, 0, PANEL_W - (2 * pad), io_top)
+        prior_clip = self.screen.get_clip()
+        self.screen.set_clip(content_clip_rect)
 
-        for row_idx in range(start, end):
-            red_i = 2 * row_idx
-            blue_i = red_i + 1
-
-            red_mv = self.core.move_to_label_in_sequence(moves, red_i)
-            blue_mv = (
-                self.core.move_to_label_in_sequence(moves, blue_i) if blue_i < total_moves else None
-            )
-
-            odd = 2 * row_idx + 1
-            label = f"{odd}."
-
-            red_col = RED if red_i < cursor_ply else GRAY
-            parts: List[Tuple[str, Tuple[int, int, int]]] = [
-                (f"{label:>3} ", BLACK),
-                (red_mv + " ", red_col),
-            ]
-
-            if blue_mv:
-                blue_col = BLUE if blue_i < cursor_ply else GRAY
-                parts.append((blue_mv, blue_col))
-
-            cx = x0 + pad
-            for txt, col in parts:
-                cx += self.text.movelist.blit_line(txt, col, cx, y)
+        for row in rows[start:end]:
+            ply_label = f"{row.ply}."
+            ply_w = self.text.movelist.font.get_rect(ply_label).width
+            self.text.movelist.blit_line(ply_label, BLACK, x0 + pad + gutter_w - ply_w - scroll_px, y)
+            for cell in row.cells:
+                cx = content_x + (cell.column * space_w) - scroll_px
+                if not cell.played:
+                    color = GRAY
+                else:
+                    color = RED if cell.side == Side.RED else BLUE
+                self.text.movelist.blit_line(cell.label, color, cx, y)
             y += line_h
+        self.screen.set_clip(prior_clip)
 
         if ui.show_engine_debug:
             io_rect = pygame.Rect(x0, io_top, PANEL_W, self.screen.get_height() - io_top)
@@ -856,13 +876,20 @@ class GuiRenderer:
                 self.text.io.blit_line(line, BLACK, x0 + pad, io_y)
                 io_y += io_line_h
         elif graph_h >= GRAPH_MIN_HEIGHT:
+            moves, prefix_keys = self.get_eval_graph_data()
             graph_rect = pygame.Rect(
                 x0,
                 graph_top,
                 PANEL_W,
                 self.screen.get_height() - graph_top,
             )
-            self.draw_eval_graph(graph_rect, moves, cursor_ply, ui.prefs.show_elo)
+            self.draw_eval_graph(
+                graph_rect,
+                moves,
+                prefix_keys,
+                cursor_ply,
+                ui.prefs.show_elo,
+            )
 
         pygame.draw.line(self.screen, PANEL_EDGE, (x0, 0), (x0, self.screen.get_height()), 1)
 
@@ -954,11 +981,12 @@ class GuiRenderer:
             "Help (? to hide)",
             "space:analysis   ,:play best/PV   esc:quit",
             "p:prev   n:next   f:first   l:last   scroll:prev/next",
-            "ctrl+p:prev 10   ctrl+n:next 10",
+            "ctrl+p:prev 10   ctrl+n:next 10   left/right:branch",
             "shift+p:pass   s:swap",
             "t:priors   c:coords   m:moves   e:elo",
-            "ctrl+v:load   ctrl+c:copy   shift+c:clear cache",
-            "del:delete tail   shift+n:new   ctrl+z:undo   ctrl+y:redo",
+            "ctrl+v:load   ctrl+c:hexworld   ctrl+shift+c:hexata",
+            "shift+c:clear cache   del:delete tail   shift+n:new",
+            "ctrl+z:undo   ctrl+y:redo",
             "+/-:pending size   enter:apply size",
             "[/]:set analysisWideRootNoise",
             "d:engine debug   ctrl+s:screenshot",
@@ -997,9 +1025,10 @@ class GuiRenderer:
         drag_target = None
         drag_side = None
         drag_source = None
+        history = self.core.applied_history()
         if ui.drag_move and ui.drag_move_from is not None and ui.drag_move_idx is not None:
-            if 0 <= ui.drag_move_idx < len(self.board.history):
-                drag_side = self.board.history[ui.drag_move_idx].side
+            if 0 <= ui.drag_move_idx < len(history):
+                drag_side = history[ui.drag_move_idx].side
                 drag_source = ui.drag_move_from
                 if (
                     ui.hover_cell is not None

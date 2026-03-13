@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import List, Optional, Sequence, Tuple
 
-from board import Move, MoveKind, Side, coord_to_human
+from board import HexBoard, Move, MoveKind, Side, coord_to_human
 from engine import AnalysisMove
 
 SLOW_BATCH_SECONDS_PER_POS = 3.0
@@ -23,6 +23,7 @@ class CandidateRun:
 class BatchRun:
     kind: "BatchKind"
     first_update_at: Optional[float]
+    line: tuple[Move, ...]
     expected_rev: int
     raw_pending: bool = False
 
@@ -52,7 +53,6 @@ AnalysisMode = AnalysisModeTag | BatchRun
 @dataclass
 class AppState:
     pending_size: int
-    future_moves: list[Move]
     candidate_state: CandidateState
     analysis_cache: dict[bytes, list[AnalysisMove]]
     root_eval_cache: dict[bytes, float]
@@ -78,10 +78,18 @@ class GuiCoreAnalysisMixin:
 
     # -------------------- analysis cache (GUI-only) --------------------
     def current_side(self) -> Side:
-        if not self.board.history:
+        moves = self.current_path_moves()
+        if not moves:
             return Side.RED
-        last = self.board.history[-1]
+        last = moves[-1]
         return self.flip_side(last.side)
+
+    def _materialized_history_for_moves(self, moves: Sequence[Move]) -> tuple[Move, ...]:
+        probe = HexBoard(self.board.n)
+        for mv in moves:
+            if not probe.apply_move(mv):
+                raise AssertionError(f"Illegal move sequence for cache key: {moves!r}")
+        return tuple(probe.history)
 
     @staticmethod
     def _cache_move_token(mv: Move) -> tuple[int, int, int, int]:
@@ -92,7 +100,7 @@ class GuiCoreAnalysisMixin:
             kind = 2
         return (kind, int(mv.side), 0 if mv.col is None else mv.col, 0 if mv.row is None else mv.row)
 
-    def cache_key_for_moves(self, moves: Sequence[Move]) -> bytes:
+    def _hash_applied_history(self, moves: Sequence[Move]) -> bytes:
         side = Side.RED if not moves else self.flip_side(moves[-1].side)
         h = hashlib.blake2b(digest_size=16)
         h.update(struct.pack("<IB", self.board.n, int(side)))
@@ -101,8 +109,15 @@ class GuiCoreAnalysisMixin:
             h.update(struct.pack("<BBHH", kind, mv_side, col, row))
         return h.digest()
 
+    def cache_key_for_moves(self, moves: Sequence[Move]) -> bytes:
+        applied = self._materialized_history_for_moves(moves)
+        return self._hash_applied_history(applied)
+
+    def cache_key_for_applied_moves(self, moves: Sequence[Move]) -> bytes:
+        return self._hash_applied_history(moves)
+
     def cache_key(self) -> bytes:
-        return self.cache_key_for_moves(self.board.history)
+        return self._hash_applied_history(self.applied_history())
 
     def cache_reset_sig(self) -> None:
         self.app.last_cache_sig = None
@@ -134,7 +149,8 @@ class GuiCoreAnalysisMixin:
         return Side.BLUE if side == Side.RED else Side.RED
 
     def swap_active(self) -> bool:
-        return len(self.board.history) >= 2 and self.board.history[1].kind == MoveKind.SWAP
+        moves = self.current_path_moves()
+        return len(moves) >= 2 and moves[1].kind == MoveKind.SWAP
 
     def _map_side_to_engine(self, side: Side) -> Side:
         if self.swap_active():
@@ -195,11 +211,15 @@ class GuiCoreAnalysisMixin:
 
     def start_batch_analysis(self, *, fast: bool = False) -> None:
         self.clear_candidates()
-        if self.board.history and not self.app.future_moves:
+        # Freeze the selected line first. Midline batch resumes from the current ply;
+        # starting from a leaf keeps the old behavior of rewinding to the root.
+        line = tuple(self.visible_line_moves())
+        if self.current_ply() >= len(line) and self.current_ply():
             self.go_first(resume_after=False)
         self.app.analysis_mode = BatchRun(
             kind=BatchKind.RAW_NN if fast else BatchKind.TIMED,
             first_update_at=None,
+            line=line,
             expected_rev=self.board.rev,
         )
         self._apply_analysis_enabled_transition(True)
@@ -404,19 +424,28 @@ class GuiCoreAnalysisMixin:
         self.app.root_eval_cache[cache_key] = synthetic_wr
 
     def _advance_batch_position(self, *, restart_analysis: bool) -> None:
-        if not self.app.future_moves:
-            self.finish_batch_analysis()
-            return
-        if not self.step_forward_n(1, resume_after=False):
-            self.cancel_batch_analysis()
-            return
         run = self.app.analysis_mode
         if not isinstance(run, BatchRun):
             return
+        next_ply = self.current_ply()
+        if next_ply >= len(run.line):
+            self.finish_batch_analysis()
+            return
+        mv = run.line[next_ply]
+        did = False
+
+        def mutate() -> None:
+            nonlocal did
+            did = self._follow_existing_tree_move(mv, promote=False)
+
+        self.with_analysis_keep_engine_synced(mutate, resume_after=False)
+        if not did:
+            self.cancel_batch_analysis()
+            return
+        run.expected_rev = self.board.rev
         if restart_analysis:
             # Batch owns the restart timing after stepping to the next position.
             self.resume_analysis()
-        run.expected_rev = self.board.rev
 
     def _resume_batch_engine(self, run: BatchRun) -> None:
         self.stop_candidate_search()
