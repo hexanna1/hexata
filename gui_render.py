@@ -13,22 +13,37 @@ from gui_core import GuiCore
 
 RED = (220, 60, 60)
 BLUE = (40, 100, 220)
-BG = (247, 243, 233)
-OFF_WHITE = (246, 241, 232)
-GRID_EDGE = (182, 182, 182)
-BLACK = (15, 15, 15)
-HOVER_DOT = (190, 190, 190)
-GRAY = (135, 135, 135)
-PANEL_BG = (242, 238, 228)
-PANEL_EDGE = (210, 210, 210)
-WHITE = (250, 250, 250)
+TEXT_ON_LIGHT = (15, 15, 15)
+TEXT_ON_DARK = (250, 250, 250)
+TEXT_MUTED = (132, 132, 132)
+SURFACE_BG = (237, 230, 217)
+BOARD_EMPTY = (228, 216, 194)
+LINE = (130, 118, 100)
 
-ANALYSIS_LOW = (250, 236, 220)
+
+def _bg_relative_color(
+    delta: Tuple[int, int, int], *, base: Optional[Tuple[int, int, int]] = None
+) -> Tuple[int, int, int]:
+    def clamp_byte(v: int) -> int:
+        return max(0, min(255, v))
+
+    if base is None:
+        base = BOARD_EMPTY
+
+    return (
+        clamp_byte(base[0] + delta[0]),
+        clamp_byte(base[1] + delta[1]),
+        clamp_byte(base[2] + delta[2]),
+    )
+
+
+SURFACE_PANEL = _bg_relative_color((-4, -4, -6), base=SURFACE_BG)
+ANALYSIS_LOW = _bg_relative_color((4, -5, -12))
 ANALYSIS_HIGH = (160, 210, 140)
 ANALYSIS_BEST = (175, 235, 240)
-CANDIDATE_LOW = (244, 232, 250)
+CANDIDATE_LOW = _bg_relative_color((-2, -9, 18))
 CANDIDATE_HIGH = (170, 125, 210)
-CANDIDATE_UNKNOWN = (228, 214, 245)
+CANDIDATE_UNKNOWN = _bg_relative_color((-18, -27, 13))
 CANDIDATE_ACTIVE = (250, 196, 92)
 
 HUD_H = 48
@@ -91,7 +106,7 @@ class BaselineText:
 
     @classmethod
     def for_font(cls, font: pygame.freetype.Font) -> "BaselineText":
-        _surf, rect = font.render("0", fgcolor=BLACK)
+        _surf, rect = font.render("0", fgcolor=TEXT_ON_LIGHT)
         return cls(
             font=font,
             baseline_offset=rect.y - rect.height / 2,
@@ -430,7 +445,7 @@ class GuiRenderer:
                     elif show_prior:
                         pr = prior_map.get((col, row))
                         if pr is None:
-                            fill = OFF_WHITE
+                            fill = BOARD_EMPTY
                         else:
                             t = clamp01(pr) ** 0.9
                             fill = lerp_rgb(ANALYSIS_LOW, ANALYSIS_HIGH, t)
@@ -440,7 +455,7 @@ class GuiRenderer:
                         v = visits_map.get((col, row))
                         wr = winrate_map.get((col, row))
                         if v is None or wr is None:
-                            fill = OFF_WHITE
+                            fill = BOARD_EMPTY
                         else:
                             t = 0.0 if denom <= 0 else (math.log(max(1, v)) / denom)
                             t = clamp01(t) ** 1.1
@@ -455,7 +470,7 @@ class GuiRenderer:
 
                 pts = self.poly(ax, ay)
                 pygame.draw.polygon(self.screen, fill, pts, 0)
-                pygame.draw.polygon(self.screen, GRID_EDGE, pts, 1)
+                pygame.draw.polygon(self.screen, LINE, pts, 1)
 
     def draw_next_future_outline(self) -> None:
         mv = self.core.next_mainline_move()
@@ -479,7 +494,7 @@ class GuiRenderer:
                 continue
             ax, ay = col - 1, row - 1
             pts = self.poly(ax, ay)
-            colr = lerp_rgb(RED if mv.side == Side.RED else BLUE, OFF_WHITE, 0.5)
+            colr = lerp_rgb(RED if mv.side == Side.RED else BLUE, BOARD_EMPTY, 0.5)
             pygame.draw.polygon(self.screen, colr, pts, thickness)
 
     def draw_move_numbers(self, show_all: bool) -> None:
@@ -501,10 +516,10 @@ class GuiRenderer:
                     and history[last_idx].kind == MoveKind.SWAP
                 )
                 if idx == last_idx or swap_active_here:
-                    colr = OFF_WHITE
+                    colr = TEXT_ON_DARK
                 else:
                     base = RED if mv.side == Side.RED else BLUE
-                    colr = lerp_rgb(base, OFF_WHITE, number_tint)
+                    colr = lerp_rgb(base, TEXT_ON_DARK, number_tint)
                 self.text.board.blit_center(txt, colr, cx, cy)
             return
 
@@ -517,7 +532,7 @@ class GuiRenderer:
         ax, ay = coords[0] - 1, coords[1] - 1
         cx, cy = self.center(ax, ay)
         dot_r = max(2, int(self.layout.r * 0.18))
-        pygame.draw.circle(self.screen, OFF_WHITE, (int(cx), int(cy)), dot_r, 0)
+        pygame.draw.circle(self.screen, BOARD_EMPTY, (int(cx), int(cy)), dot_r, 0)
 
     def draw_borders(self) -> None:
         thickness = 4
@@ -536,8 +551,8 @@ class GuiRenderer:
                     )
 
     def draw_side_coords(self) -> None:
-        col_color = GRAY
-        row_color = GRAY
+        col_color = TEXT_MUTED
+        row_color = TEXT_MUTED
         for col in range(1, self.board.n + 1):
             ax, ay = col - 1, -1
             cx, cy = self.center(ax, ay)
@@ -553,9 +568,9 @@ class GuiRenderer:
         ax, ay = cell[0] - 1, cell[1] - 1
         pts = self.poly(ax, ay)
         base = RED if side == Side.RED else BLUE
-        ghost = lerp_rgb(base, OFF_WHITE, 0.5)
+        ghost = lerp_rgb(base, BOARD_EMPTY, 0.5)
         pygame.draw.polygon(self.screen, ghost, pts, 0)
-        pygame.draw.polygon(self.screen, GRID_EDGE, pts, 1)
+        pygame.draw.polygon(self.screen, LINE, pts, 1)
 
     def draw_pv_ghosts(self, pv: Tuple[Tuple[int, int], ...], start_side: Side) -> None:
         side = start_side
@@ -575,7 +590,7 @@ class GuiRenderer:
                 continue
             ax, ay = cell[0] - 1, cell[1] - 1
             cx, cy = self.center(ax, ay)
-            self.text.board.blit_center(str(idx + 1), OFF_WHITE, cx, cy)
+            self.text.board.blit_center(str(idx + 1), TEXT_ON_DARK, cx, cy)
             side = self.core.flip_side(side)
 
     def draw_analysis_text(
@@ -591,10 +606,7 @@ class GuiRenderer:
                 for col in range(1, self.board.n + 1):
                     ax, ay = col - 1, row - 1
                     cx, cy = self.center(ax, ay)
-
-                    occ = self.board.get(col, row)
-                    colr = WHITE if occ >= 0 else BLACK
-
+                    colr = TEXT_ON_DARK if self.board.get(col, row) >= 0 else TEXT_ON_LIGHT
                     txt = coord_to_human(col, row)
                     self.text.board.blit_center(txt, colr, cx, cy)
             return
@@ -614,7 +626,7 @@ class GuiRenderer:
                 pr = fmt_prior(r.prior)
                 if not pr:
                     continue
-                self.text.board.blit_center(pr, BLACK, cx, cy)
+                self.text.board.blit_center(pr, TEXT_ON_LIGHT, cx, cy)
                 continue
 
             wr = fmt_wr_or_elo(r.winrate, ui.prefs.show_elo)
@@ -629,11 +641,11 @@ class GuiRenderer:
             top = cy - total_h / 2
             x1 = cx - rect1.width / 2
             y1 = top - self.text.board.line_ref_y + rect1.y
-            self.text.board.blit_line(wr, BLACK, x1, y1)
+            self.text.board.blit_line(wr, TEXT_ON_LIGHT, x1, y1)
             top2 = top + rect1.height + gap
             x2 = cx - rect2.width / 2
             y2 = top2 - self.text.board.line_ref_y + rect2.y
-            self.text.board.blit_line(vv, BLACK, x2, y2)
+            self.text.board.blit_line(vv, TEXT_ON_LIGHT, x2, y2)
 
     def blit_segments(
         self, x: int, y: int, parts: List[Tuple[str, Tuple[int, int, int]]], use_small: bool
@@ -651,8 +663,8 @@ class GuiRenderer:
         cursor_ply: int,
         show_elo: bool,
     ) -> None:
-        pygame.draw.rect(self.screen, PANEL_BG, rect)
-        pygame.draw.rect(self.screen, PANEL_EDGE, rect, 1)
+        pygame.draw.rect(self.screen, SURFACE_PANEL, rect)
+        pygame.draw.rect(self.screen, LINE, rect, 1)
 
         n_moves = len(moves)
         if rect.width <= 1 or rect.height <= 1:
@@ -697,7 +709,7 @@ class GuiRenderer:
             return rect.top + int(round((1.0 - t) * (rect.height - 1)))
 
         mid_y = y_for_plot(0.5)
-        pygame.draw.line(self.screen, GRID_EDGE, (rect.left, mid_y), (rect.right, mid_y), 1)
+        pygame.draw.line(self.screen, LINE, (rect.left, mid_y), (rect.right, mid_y), 1)
 
         if n_moves <= 0:
             return
@@ -782,11 +794,11 @@ class GuiRenderer:
 
     def draw_movelist_panel(self, ui: UiStateLike) -> None:
         x0 = self.layout.board_px_w
-        pygame.draw.rect(self.screen, PANEL_BG, pygame.Rect(x0, 0, PANEL_W, self.screen.get_height()))
+        pygame.draw.rect(self.screen, SURFACE_PANEL, pygame.Rect(x0, 0, PANEL_W, self.screen.get_height()))
 
         pad = 12
         y = 10
-        self.blit_segments(x0 + pad, y, [("Moves", BLACK)], use_small=False)
+        self.blit_segments(x0 + pad, y, [("Moves", TEXT_ON_LIGHT)], use_small=False)
         y += 26
 
         view = self.get_movelist_view()
@@ -848,11 +860,11 @@ class GuiRenderer:
         for row in rows[start:end]:
             ply_label = f"{row.ply}."
             ply_w = self.text.movelist.font.get_rect(ply_label).width
-            self.text.movelist.blit_line(ply_label, BLACK, x0 + pad + gutter_w - ply_w - scroll_px, y)
+            self.text.movelist.blit_line(ply_label, TEXT_ON_LIGHT, x0 + pad + gutter_w - ply_w - scroll_px, y)
             for cell in row.cells:
                 cx = content_x + (cell.column * space_w) - scroll_px
                 if not cell.played:
-                    color = GRAY
+                    color = TEXT_MUTED
                 else:
                     color = RED if cell.side == Side.RED else BLUE
                 self.text.movelist.blit_line(cell.label, color, cx, y)
@@ -861,8 +873,8 @@ class GuiRenderer:
 
         if ui.show_engine_debug:
             io_rect = pygame.Rect(x0, io_top, PANEL_W, self.screen.get_height() - io_top)
-            pygame.draw.rect(self.screen, PANEL_BG, io_rect)
-            pygame.draw.rect(self.screen, PANEL_EDGE, io_rect, 1)
+            pygame.draw.rect(self.screen, SURFACE_PANEL, io_rect)
+            pygame.draw.rect(self.screen, LINE, io_rect, 1)
 
             io_y = io_top + 4
             logs = self.core.engine.get_io_log(io_max_lines)
@@ -873,7 +885,7 @@ class GuiRenderer:
                     line = f"{prefix} {msg} ({count})"
                 else:
                     line = f"{prefix} {msg}"
-                self.text.io.blit_line(line, BLACK, x0 + pad, io_y)
+                self.text.io.blit_line(line, TEXT_ON_LIGHT, x0 + pad, io_y)
                 io_y += io_line_h
         elif graph_h >= GRAPH_MIN_HEIGHT:
             moves, prefix_keys = self.get_eval_graph_data()
@@ -891,31 +903,31 @@ class GuiRenderer:
                 ui.prefs.show_elo,
             )
 
-        pygame.draw.line(self.screen, PANEL_EDGE, (x0, 0), (x0, self.screen.get_height()), 1)
+        pygame.draw.line(self.screen, LINE, (x0, 0), (x0, self.screen.get_height()), 1)
 
     def draw_hud(self, ui: UiStateLike) -> None:
-        pygame.draw.rect(self.screen, BG, pygame.Rect(0, 0, self.screen.get_width(), HUD_H))
+        pygame.draw.rect(self.screen, SURFACE_BG, pygame.Rect(0, 0, self.screen.get_width(), HUD_H))
 
         turn_side = self.core.current_side()
         turn_color = RED if turn_side == Side.RED else BLUE
         turn_name = "Red" if turn_side == Side.RED else "Blue"
         analysis_txt = "ON" if self.app.analysis_running else "OFF"
-        analysis_color = BLACK if self.app.analysis_running else GRAY
+        analysis_color = TEXT_ON_LIGHT if self.app.analysis_running else TEXT_MUTED
 
         parts: List[Tuple[str, Tuple[int, int, int]]] = [
-            ("Size: ", BLACK),
-            (f"{self.board.n}", BLACK),
+            ("Size: ", TEXT_ON_LIGHT),
+            (f"{self.board.n}", TEXT_ON_LIGHT),
         ]
         if self.app.pending_size != self.board.n:
             parts += [
-                ("  (pending ", BLACK),
-                (f"{self.app.pending_size}", BLACK),
-                (")", BLACK),
+                ("  (pending ", TEXT_ON_LIGHT),
+                (f"{self.app.pending_size}", TEXT_ON_LIGHT),
+                (")", TEXT_ON_LIGHT),
             ]
         parts += [
-            ("   |   Turn: ", BLACK),
+            ("   |   Turn: ", TEXT_ON_LIGHT),
             (turn_name, turn_color),
-            ("   |   ", BLACK),
+            ("   |   ", TEXT_ON_LIGHT),
             ("Analysis: ", analysis_color),
             (analysis_txt, analysis_color),
         ]
@@ -928,7 +940,7 @@ class GuiRenderer:
             if cand_key is None:
                 next_keys = self.core.sorted_candidates_by_visits()
                 cand_key = next_keys[0] if next_keys else None
-            parts += [("   |   ", BLACK), ("Cand: ", BLACK)]
+            parts += [("   |   ", TEXT_ON_LIGHT), ("Cand: ", TEXT_ON_LIGHT)]
             if cand_key is not None:
                 parts += [(coord_to_human(*cand_key), turn_color)]
         else:
@@ -944,28 +956,28 @@ class GuiRenderer:
                     display = r
             if display is not None:
                 best_label = "Batch: " if self.core.is_batch_analysis_active() else "Best: "
-                parts += [("   |   ", BLACK), (best_label, BLACK)]
+                parts += [("   |   ", TEXT_ON_LIGHT), (best_label, TEXT_ON_LIGHT)]
                 coord = coord_to_human(display.col, display.row)
                 parts += [(coord, turn_color)]
                 wr = fmt_wr_or_elo(display.winrate, ui.prefs.show_elo)
                 if wr:
                     if ui.prefs.show_elo:
-                        parts += [(" ", BLACK), (wr, BLACK)]
+                        parts += [(" ", TEXT_ON_LIGHT), (wr, TEXT_ON_LIGHT)]
                     else:
-                        parts += [(" ", BLACK), (f"{wr}%", BLACK)]
+                        parts += [(" ", TEXT_ON_LIGHT), (f"{wr}%", TEXT_ON_LIGHT)]
                 vv = fmt_visits(display.visits)
                 if vv:
-                    parts += [(" ", BLACK), (f"({vv})", BLACK)]
+                    parts += [(" ", TEXT_ON_LIGHT), (f"({vv})", TEXT_ON_LIGHT)]
         self.blit_segments(12, 10, parts, use_small=False)
 
         help_line = "space:analysis • ,:play best • +/-/enter:size • ?:help"
-        self.text.hud_small.blit_line(help_line, BLACK, 12, 32)
+        self.text.hud_small.blit_line(help_line, TEXT_ON_LIGHT, 12, 32)
 
         awrn = f"{self.app.analysis_wide_root_noise:.2f}".rstrip("0").rstrip(".")
         awrn_text = "AWRN –" if self.app.candidate_state.candidates else f"AWRN {awrn}"
         awrn_w = self.fonts.hud_small.get_rect(awrn_text).width
         awrn_x = max(12, self.layout.board_px_w - awrn_w - 12)
-        self.text.hud_small.blit_line(awrn_text, GRAY, awrn_x, 10)
+        self.text.hud_small.blit_line(awrn_text, TEXT_MUTED, awrn_x, 10)
         vps_suffix = " visits/s"
         if ui.speed_vps is not None and ui.speed_vps > 0:
             vps_text = f"{fmt_visits(int(ui.speed_vps))}{vps_suffix}"
@@ -974,7 +986,7 @@ class GuiRenderer:
         vps_w = self.fonts.hud_small.get_rect(vps_text).width
         vps_x = max(12, self.layout.board_px_w - vps_w - 12)
         vps_y = 10 + self.text.line_hud_small + 2
-        self.text.hud_small.blit_line(vps_text, GRAY, vps_x, vps_y)
+        self.text.hud_small.blit_line(vps_text, TEXT_MUTED, vps_x, vps_y)
 
     def draw_help_overlay(self) -> None:
         lines = [
@@ -996,17 +1008,17 @@ class GuiRenderer:
         ]
         pad = 8
         gap = 2
-        surfs = [self.fonts.hud_small.render(line, fgcolor=BLACK)[0] for line in lines]
+        surfs = [self.fonts.hud_small.render(line, fgcolor=TEXT_ON_LIGHT)[0] for line in lines]
         w = max(s.get_width() for s in surfs)
         line_h = self.text.line_hud_small
         h = line_h * len(lines) + gap * (len(surfs) - 1)
         x = 12
         y = HUD_H + 12
         rect = pygame.Rect(x - pad, y - pad, w + pad * 2, h + pad * 2)
-        pygame.draw.rect(self.screen, PANEL_BG, rect)
-        pygame.draw.rect(self.screen, PANEL_EDGE, rect, 1)
+        pygame.draw.rect(self.screen, SURFACE_PANEL, rect)
+        pygame.draw.rect(self.screen, LINE, rect, 1)
         for line in lines:
-            self.text.hud_small.blit_line(line, BLACK, x, y)
+            self.text.hud_small.blit_line(line, TEXT_ON_LIGHT, x, y)
             y += line_h + gap
 
     def draw_frame(
@@ -1017,7 +1029,7 @@ class GuiRenderer:
         top_cell: Optional[Tuple[int, int]],
         top_visits: int,
     ) -> None:
-        self.screen.fill(BG)
+        self.screen.fill(SURFACE_BG)
         self.draw_hud(ui)
         pv = self.get_display_pv(ui.hover_cell)
         show_pv = self.should_show_pv(pv)
@@ -1049,7 +1061,7 @@ class GuiRenderer:
             ax, ay = ui.hover_cell[0] - 1, ui.hover_cell[1] - 1
             cx, cy = self.center(ax, ay)
             dot_r = max(2, int(self.layout.r * 0.12))
-            pygame.draw.circle(self.screen, HOVER_DOT, (int(cx), int(cy)), dot_r, 0)
+            pygame.draw.circle(self.screen, LINE, (int(cx), int(cy)), dot_r, 0)
         self.draw_borders()
         self.draw_side_coords()
         self.draw_analysis_text(ui, show_prior, show_coords, suppress_cells=pv_cells)
