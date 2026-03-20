@@ -164,6 +164,49 @@ class CliTests(unittest.TestCase):
         self.assertEqual(raw_once.call_count, 3)  # 2 plies + 1 final fill
         self.assertEqual(score.call_count, 1)  # ply 1 skipped; ply 2 attempted
 
+    def test_run_cli_analyze_streams_one_result_per_position_and_clears_cache_between(self):
+        engine = SimpleNamespace(clear_cache=Mock(), close=Mock())
+        core = SimpleNamespace(
+            load_hexworld_text=Mock(
+                side_effect=lambda text: None if text != "bad" else "HexWorld parse failed: bad"
+            ),
+        )
+        args = SimpleNamespace(
+            cli_cmd="analyze",
+            positions=["good-1", "bad", "good-2"],
+            top_n=None,
+            search_seconds=None,
+            analysis_wide_root_noise=None,
+        )
+        ok_payload = {
+            "mode": "analyze",
+            "method": "raw_nn",
+            "best_reply": None,
+            "root_eval": {"red_winrate": 0.4},
+            "moves": [],
+        }
+
+        with patch("cli.KataHexEngine", return_value=engine), patch(
+            "cli.GuiCore", return_value=core
+        ), patch("cli._position_payload", return_value={}), patch(
+            "cli._run_cli_analyze", side_effect=[(True, ok_payload), (True, ok_payload)]
+        ) as run_analyze, patch("cli._emit") as emit:
+            exit_code = cli.run_cli(args, engine_cmd=["katahex"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(engine.clear_cache.call_count, 2)
+        self.assertEqual(
+            [call.args[0] for call in core.load_hexworld_text.call_args_list],
+            ["good-1", "bad", "good-2"],
+        )
+        self.assertEqual(run_analyze.call_count, 2)
+        self.assertEqual(emit.call_count, 3)
+        self.assertEqual(
+            [(call.args[0]["input"], call.args[0]["ok"]) for call in emit.call_args_list],
+            [("good-1", True), ("bad", False), ("good-2", True)],
+        )
+        engine.close.assert_called_once_with()
+
 
 if __name__ == "__main__":
     unittest.main()

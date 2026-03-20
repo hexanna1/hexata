@@ -360,23 +360,27 @@ def _run_cli_analyze(core: GuiCore, args: argparse.Namespace) -> tuple[bool, dic
 
     side_to_play = core.current_side()
     core.toggle_analysis()
-    if not _run_for_seconds_from_first_update(core, args.search_seconds):
-        return False, {"error": "No analysis update received from engine"}
+    try:
+        if not _run_for_seconds_from_first_update(core, args.search_seconds):
+            return False, {"error": "No analysis update received from engine"}
 
-    recs = core.get_active_analysis()
-    moves = [_to_output_row(r, side_to_play=side_to_play) for r in recs]
-    if args.top_n is not None:
-        moves = moves[: args.top_n]
+        recs = core.get_active_analysis()
+        moves = [_to_output_row(r, side_to_play=side_to_play) for r in recs]
+        if args.top_n is not None:
+            moves = moves[: args.top_n]
 
-    best = None
-    if moves:
-        m0 = moves[0]
-        best = {
-            "move": m0["move"],
-            "red_winrate": m0["red_winrate"],
-            "visits": m0["visits"],
-        }
-    return True, {"mode": "analyze", "method": "search", "best_reply": best, "moves": moves}
+        best = None
+        if moves:
+            m0 = moves[0]
+            best = {
+                "move": m0["move"],
+                "red_winrate": m0["red_winrate"],
+                "visits": m0["visits"],
+            }
+        return True, {"mode": "analyze", "method": "search", "best_reply": best, "moves": moves}
+    finally:
+        if core.app.analysis_running:
+            core.toggle_analysis()
 
 
 def _run_cli_candidate(core: GuiCore, args: argparse.Namespace) -> tuple[bool, dict]:
@@ -457,7 +461,7 @@ def add_cli_arguments(ap: argparse.ArgumentParser) -> None:
     sub = ap.add_subparsers(dest="cli_cmd", required=True)
 
     analyze_ap = sub.add_parser("analyze", help="Analyze root position")
-    _add_cli_position_argument(analyze_ap)
+    analyze_ap.add_argument("positions", nargs="+", help="HexWorld URL(s) or hash(es)")
     analyze_ap.add_argument("--top-n", type=int, default=None, help="Limit number of returned moves")
     analyze_ap.add_argument(
         "--search-seconds",
@@ -523,21 +527,38 @@ def run_cli(
         return _fail("Engine executable not found")
 
     core = GuiCore(board, engine)
-    started_at = time.monotonic()
     try:
+        if args.cli_cmd == "analyze":
+            awrn = getattr(args, "analysis_wide_root_noise", None)
+            if awrn is not None:
+                core.set_analysis_wide_root_noise(awrn)
+            for i, position_input in enumerate(args.positions):
+                if i > 0:
+                    engine.clear_cache()
+
+                started_at = time.monotonic()
+                position_error = core.load_hexworld_text(position_input)
+                record = {"input": position_input, "ok": False, "error": position_error}
+                if position_error is None:
+                    ok, payload = _run_cli_analyze(core, args)
+                    record.update(
+                        {
+                            "ok": ok,
+                            "error": None if ok else payload["error"],
+                            "position": _position_payload(core),
+                            **({} if not ok else payload),
+                        }
+                    )
+                record["meta"] = {"elapsed_ms": int(round((time.monotonic() - started_at) * 1000))}
+                _emit(record)
+            return 0
         position_error = core.load_hexworld_text(args.position)
         if position_error is not None:
             return _fail(position_error)
 
-        awrn = getattr(args, "analysis_wide_root_noise", None)
-        if awrn is not None:
-            core.set_analysis_wide_root_noise(awrn)
-
+        started_at = time.monotonic()
         position_payload = _position_payload(core)
-
-        if args.cli_cmd == "analyze":
-            ok, payload = _run_cli_analyze(core, args)
-        elif args.cli_cmd == "candidate":
+        if args.cli_cmd == "candidate":
             ok, payload = _run_cli_candidate(core, args)
         elif args.cli_cmd == "batch":
             ok, payload = _run_cli_batch(core, args)
