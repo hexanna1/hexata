@@ -4,8 +4,9 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import sys
 import time
-from typing import Optional
+from typing import Iterator, Optional
 
 from board import DEFAULT_BOARD_SIZE, HexBoard, MoveKind, Side, coord_to_human
 from engine import AnalysisMove, KataHexEngine, RawNNResult
@@ -453,6 +454,17 @@ def _run_cli_batch(core: GuiCore, args: argparse.Namespace) -> tuple[bool, dict]
     return True, {"mode": "batch", "batch": batch}
 
 
+def _iter_analyze_positions(positions: list[str]) -> Iterator[str]:
+    for position in positions:
+        if position != "-":
+            yield position
+            continue
+        for line in sys.stdin:
+            position = line.strip()
+            if position:
+                yield position
+
+
 def _add_cli_position_argument(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("position", help="HexWorld URL or hash")
 
@@ -461,7 +473,11 @@ def add_cli_arguments(ap: argparse.ArgumentParser) -> None:
     sub = ap.add_subparsers(dest="cli_cmd", required=True)
 
     analyze_ap = sub.add_parser("analyze", help="Analyze root position")
-    analyze_ap.add_argument("positions", nargs="+", help="HexWorld URL(s) or hash(es)")
+    analyze_ap.add_argument(
+        "positions",
+        nargs="+",
+        help="HexWorld URL(s), hash(es), or '-' to read one per line from stdin",
+    )
     analyze_ap.add_argument("--top-n", type=int, default=None, help="Limit number of returned moves")
     analyze_ap.add_argument(
         "--search-seconds",
@@ -532,7 +548,7 @@ def run_cli(
             awrn = getattr(args, "analysis_wide_root_noise", None)
             if awrn is not None:
                 core.set_analysis_wide_root_noise(awrn)
-            for i, position_input in enumerate(args.positions):
+            for i, position_input in enumerate(_iter_analyze_positions(args.positions)):
                 if i > 0:
                     engine.clear_cache()
 

@@ -1,3 +1,4 @@
+import io
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -206,6 +207,13 @@ class CliTests(unittest.TestCase):
             [("good-1", True), ("bad", False), ("good-2", True)],
         )
         engine.close.assert_called_once_with()
+
+    def test_iter_analyze_positions_expands_stdin_sentinel_in_position_order(self):
+        with patch("cli.sys.stdin", io.StringIO("\nstdin-1\nstdin-2\n\n")):
+            self.assertEqual(
+                list(cli._iter_analyze_positions(["good-1", "-", "good-2"])),
+                ["good-1", "stdin-1", "stdin-2", "good-2"],
+            )
 
 
 if __name__ == "__main__":
