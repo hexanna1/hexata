@@ -421,7 +421,7 @@ class GuiCoreTests(unittest.TestCase):
 
         core.add_candidate(1, 1)
         self.assertEqual(core.app.candidate_state.candidates, {(1, 1)})
-        self.assertFalse(core.app.analysis_running)
+        self.assertFalse(core.app.analysis_enabled)
 
         self.assertTrue(core.try_play_move(1, 1))
         self.assertEqual(core.app.candidate_state.candidates, set())
@@ -1062,7 +1062,7 @@ class GuiCoreTests(unittest.TestCase):
         core.add_candidate(1, 1)
         core.app.candidate_state.results[(1, 1)] = (0.4, 5)
 
-        self.assertTrue(core.is_candidate_analysis_active())
+        self.assertTrue(core.is_candidate_mode())
 
         core.try_play_move(2, 1)
         self.assertEqual(core.app.candidate_state.candidates, set())
@@ -1072,7 +1072,7 @@ class GuiCoreTests(unittest.TestCase):
         self.assertEqual(core.app.candidate_state.candidates, {(1, 1)})
         self.assertEqual(core.app.candidate_state.results, {(1, 1): (0.4, 5)})
         self.assertEqual(core.app.candidate_state.root_key, core.cache_key())
-        self.assertTrue(core.is_candidate_analysis_active())
+        self.assertTrue(core.is_candidate_mode())
 
     def test_undo_during_batch_exits_batch_mode(self):
         core, _engine = self._mk_core()
@@ -1100,7 +1100,7 @@ class GuiCoreTests(unittest.TestCase):
 
         core.clear_analysis_caches()
 
-        self.assertTrue(core.app.analysis_running)
+        self.assertTrue(core.app.analysis_enabled)
         self.assertEqual(core.app.candidate_state.candidates, {(1, 1), (2, 2)})
         self.assertEqual(core.app.candidate_state.results, {})
         self.assertEqual(core.app.analysis_cache, {})
@@ -1254,7 +1254,7 @@ class GuiCoreTests(unittest.TestCase):
         core.start_batch_analysis()
         new_calls = self._new_calls(engine, before)
 
-        self.assertTrue(core.app.analysis_running)
+        self.assertTrue(core.app.analysis_enabled)
         self.assertEqual(core.app.candidate_state.candidates, set())
         self.assertIsNone(core.app.candidate_state.run)
         self.assertTrue(core.is_batch_analysis_active())
@@ -1295,7 +1295,7 @@ class GuiCoreTests(unittest.TestCase):
         self.assertEqual(len(core.board.history), 3)
         self.assertEqual(core.mainline_tail_moves(), [])
         self.assertFalse(core.is_batch_analysis_active())
-        self.assertFalse(core.app.analysis_running)
+        self.assertFalse(core.app.analysis_enabled)
 
     def test_batch_analysis_restarts_live_analysis_after_step_forward(self):
         core, engine = self._mk_core()
@@ -1405,7 +1405,7 @@ class GuiCoreTests(unittest.TestCase):
         core.delete_tail()
 
         self.assertFalse(core.is_batch_analysis_active())
-        self.assertTrue(core.app.analysis_running)
+        self.assertTrue(core.app.analysis_enabled)
         self.assertEqual(core.board.rev, before_rev)
         self.assertEqual(self._future_coords(core), [(3, 1)])
         self.assertEqual(self._history_coords(core), [])
@@ -1423,7 +1423,7 @@ class GuiCoreTests(unittest.TestCase):
         new_calls = self._new_calls(engine, before)
 
         self.assertFalse(core.is_batch_analysis_active())
-        self.assertTrue(core.app.analysis_running)
+        self.assertTrue(core.app.analysis_enabled)
         self.assertEqual(sum(1 for call in new_calls if call[0] == "start_analysis"), 1)
 
         before = len(engine.calls)
@@ -1445,7 +1445,7 @@ class GuiCoreTests(unittest.TestCase):
         new_calls = self._new_calls(engine, before)
 
         self.assertFalse(core.is_batch_analysis_active())
-        self.assertTrue(core.app.analysis_running)
+        self.assertTrue(core.app.analysis_enabled)
         self.assertEqual(sum(1 for call in new_calls if call[0] == "start_analysis"), 1)
 
         before = len(engine.calls)
@@ -1487,9 +1487,8 @@ class GuiCoreTests(unittest.TestCase):
                 core._apply_analysis_enabled_transition(True)
                 new_calls = self._new_calls(engine, before)
 
-                self.assertTrue(core.app.analysis_running)
+                self.assertTrue(core.app.analysis_enabled)
                 self.assertFalse(core.is_batch_analysis_active())
-
                 if with_candidates:
                     self.assertEqual(core.app.candidate_state.candidates, {(1, 1)})
                     self.assertIsNone(core.app.candidate_state.run)
@@ -1504,10 +1503,10 @@ class GuiCoreTests(unittest.TestCase):
         core, engine = self._mk_core()
         self._start_slow_batch(core, engine)
         self.assertTrue(core.is_batch_analysis_active())
-        self.assertTrue(core.app.analysis_running)
+        self.assertTrue(core.app.analysis_enabled)
         core.toggle_analysis()
         core.tick(0.1)
-        self.assertFalse(core.app.analysis_running)
+        self.assertFalse(core.app.analysis_enabled)
         self.assertFalse(core.is_batch_analysis_active())
 
     def test_play_move_during_candidate_run_cases(self):
@@ -1523,7 +1522,7 @@ class GuiCoreTests(unittest.TestCase):
             core.try_play_move(2, 2)
             new_calls = self._new_calls(engine, before)
 
-            self.assertTrue(core.app.analysis_running)
+            self.assertTrue(core.app.analysis_enabled)
             self.assertEqual(core.app.candidate_state.candidates, set())
             self.assertIsNone(core.app.candidate_state.run)
             self.assertFalse(core.is_batch_analysis_active())
@@ -1564,26 +1563,28 @@ class GuiCoreTests(unittest.TestCase):
         self.assertEqual(len(undo_calls), 2)
 
     def test_removing_last_candidate_resumes_live_analysis(self):
-        core, engine = self._mk_core()
+        for remover in (GuiCore.toggle_candidate, GuiCore.remove_candidate):
+            with self.subTest(remover=remover.__name__):
+                core, engine = self._mk_core()
 
-        self._start_candidate_run(core, 1, 1)
-        engine.analysis = [
-            AnalysisMove("b2", order=0, col=2, row=2, winrate=0.6, visits=10, prior=0.4, pv=None)
-        ]
+                self._start_candidate_run(core, 1, 1)
+                engine.analysis = [
+                    AnalysisMove("b2", order=0, col=2, row=2, winrate=0.6, visits=10, prior=0.4, pv=None)
+                ]
 
-        def clear_analysis_realistic():
-            engine.calls.append(("clear_analysis",))
-            engine.analysis.clear()
+                def clear_analysis_realistic():
+                    engine.calls.append(("clear_analysis",))
+                    engine.analysis.clear()
 
-        engine.clear_analysis = clear_analysis_realistic
+                engine.clear_analysis = clear_analysis_realistic
 
-        before = len(engine.calls)
-        core.toggle_candidate(1, 1)
+                before = len(engine.calls)
+                remover(core, 1, 1)
 
-        new_calls = self._new_calls(engine, before)
-        self._assert_undo_before(new_calls, lambda call: call[0] == "start_analysis")
-        self.assertFalse(core.app.candidate_state.candidates)
-        self.assertEqual(engine.analysis, [])
+                new_calls = self._new_calls(engine, before)
+                self._assert_undo_before(new_calls, lambda call: call[0] == "start_analysis")
+                self.assertFalse(core.app.candidate_state.candidates)
+                self.assertEqual(engine.analysis, [])
 
     def test_delete_tail_behavior(self):
         for at_end in (False, True):

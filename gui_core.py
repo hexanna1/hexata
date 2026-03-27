@@ -293,6 +293,9 @@ class GuiCore(GuiCoreAnalysisMixin):
         self.edit_undo.clear()
         self.edit_redo.clear()
 
+    def _edit_state_sig(self) -> tuple[tuple, tuple[Tuple[int, int], ...]]:
+        return (self.tree.signature(), tuple(sorted(self.app.candidate_state.candidates)))
+
     def _run_tracked_edit(
         self,
         mutate: Callable[[], None],
@@ -300,9 +303,9 @@ class GuiCore(GuiCoreAnalysisMixin):
         resume_after: bool = True,
     ) -> bool:
         before = self._capture_edit_state()
-        before_sig = (before[0].signature(), before[1])
+        before_sig = self._edit_state_sig()
         self.with_analysis_keep_engine_synced(mutate, resume_after=resume_after)
-        if (self.tree.signature(), tuple(sorted(self.app.candidate_state.candidates))) == before_sig:
+        if self._edit_state_sig() == before_sig:
             return False
         self.edit_undo.append(before)
         self.edit_redo.clear()
@@ -442,13 +445,13 @@ class GuiCore(GuiCoreAnalysisMixin):
         keep_engine_synced: bool,
         resume_after: bool = True,
     ) -> None:
-        was_running = self.app.analysis_running
+        was_running = self.app.analysis_enabled
         was_batch = self.is_batch_analysis_active()
         rev_before = self.board.rev
         tree_sig_before = self.tree.signature() if was_batch and resume_after else None
         if was_running:
             if keep_engine_synced:
-                self.stop_candidate_search()
+                self.stop_candidate_run()
                 self.engine.cancel_reply_capture()
                 self.engine.clear_analysis()
             else:
@@ -690,9 +693,9 @@ class GuiCore(GuiCoreAnalysisMixin):
 
     def delete_tail(self) -> bool:
         before = self._capture_edit_state()
-        before_sig = (before[0].signature(), before[1])
+        before_sig = self._edit_state_sig()
         if self.tree.delete_selected_tail():
-            if (self.tree.signature(), tuple(sorted(self.app.candidate_state.candidates))) == before_sig:
+            if self._edit_state_sig() == before_sig:
                 return False
             self.edit_undo.append(before)
             self.edit_redo.clear()

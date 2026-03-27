@@ -79,7 +79,6 @@ class UiStateLike(Protocol):
     drag_move: bool
     drag_move_from: Optional[Tuple[int, int]]
     drag_move_idx: Optional[int]
-    hover_cell: Optional[Tuple[int, int]]
     show_help: bool
     prefs: UiPrefsLike
     show_engine_debug: bool
@@ -911,8 +910,8 @@ class GuiRenderer:
         turn_side = self.core.current_side()
         turn_color = RED if turn_side == Side.RED else BLUE
         turn_name = "Red" if turn_side == Side.RED else "Blue"
-        analysis_txt = "ON" if self.app.analysis_running else "OFF"
-        analysis_color = TEXT_ON_LIGHT if self.app.analysis_running else TEXT_MUTED
+        analysis_txt = "ON" if self.app.analysis_enabled else "OFF"
+        analysis_color = TEXT_ON_LIGHT if self.app.analysis_enabled else TEXT_MUTED
 
         parts: List[Tuple[str, Tuple[int, int, int]]] = [
             ("Size: ", TEXT_ON_LIGHT),
@@ -1024,6 +1023,7 @@ class GuiRenderer:
     def draw_frame(
         self,
         ui: UiStateLike,
+        hover_cell: Optional[Tuple[int, int]],
         show_prior: bool,
         show_coords: bool,
         top_cell: Optional[Tuple[int, int]],
@@ -1031,7 +1031,7 @@ class GuiRenderer:
     ) -> None:
         self.screen.fill(SURFACE_BG)
         self.draw_hud(ui)
-        pv = self.get_display_pv(ui.hover_cell)
+        pv = self.get_display_pv(hover_cell)
         show_pv = self.should_show_pv(pv)
         pv_cells = set(pv[1:]) if show_pv else None
         drag_target = None
@@ -1043,11 +1043,11 @@ class GuiRenderer:
                 drag_side = history[ui.drag_move_idx].side
                 drag_source = ui.drag_move_from
                 if (
-                    ui.hover_cell is not None
-                    and ui.hover_cell != ui.drag_move_from
-                    and self.board.is_empty(*ui.hover_cell)
+                    hover_cell is not None
+                    and hover_cell != ui.drag_move_from
+                    and self.board.is_empty(*hover_cell)
                 ):
-                    drag_target = ui.hover_cell
+                    drag_target = hover_cell
         self.draw_grid_and_stones(top_cell, top_visits, show_prior, skip_cell=None)
         if show_pv and pv is not None:
             self.draw_pv_ghosts(pv, self.core.current_side())
@@ -1057,8 +1057,8 @@ class GuiRenderer:
             if drag_target is not None:
                 self.draw_ghost_cell(drag_target, drag_side)
         self.draw_next_future_outline()
-        if drag_target is None and ui.hover_cell is not None and self.board.is_empty(*ui.hover_cell) and not show_pv:
-            ax, ay = ui.hover_cell[0] - 1, ui.hover_cell[1] - 1
+        if drag_target is None and hover_cell is not None and self.board.is_empty(*hover_cell) and not show_pv:
+            ax, ay = hover_cell[0] - 1, hover_cell[1] - 1
             cx, cy = self.center(ax, ay)
             dot_r = max(2, int(self.layout.r * 0.12))
             pygame.draw.circle(self.screen, LINE, (int(cx), int(cy)), dot_r, 0)

@@ -70,7 +70,7 @@ class CliTests(unittest.TestCase):
         core = SimpleNamespace(
             board=board,
             engine=engine,
-            app=SimpleNamespace(analysis_running=False),
+            app=SimpleNamespace(analysis_enabled=False),
             set_analysis_wide_root_noise=Mock(),
             current_side=lambda: Side.RED,
             _map_side_to_engine=lambda side: side,

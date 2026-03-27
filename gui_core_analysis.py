@@ -61,7 +61,7 @@ class AppState:
     analysis_mode: AnalysisMode = AnalysisModeTag.OFF
 
     @property
-    def analysis_running(self) -> bool:
+    def analysis_enabled(self) -> bool:
         return self.analysis_mode != AnalysisModeTag.OFF
 
 
@@ -69,11 +69,9 @@ class GuiCoreAnalysisMixin:
     def is_batch_analysis_active(self) -> bool:
         return isinstance(self.app.analysis_mode, BatchRun)
 
-    def is_candidate_analysis_active(self) -> bool:
-        return (
-            self.app.analysis_running
-            and not isinstance(self.app.analysis_mode, BatchRun)
-            and bool(self.app.candidate_state.candidates)
+    def is_candidate_mode(self) -> bool:
+        return self.app.analysis_enabled and not self.is_batch_analysis_active() and bool(
+            self.app.candidate_state.candidates
         )
 
     # -------------------- analysis cache (GUI-only) --------------------
@@ -128,16 +126,14 @@ class GuiCoreAnalysisMixin:
         self.cache_reset_sig()
 
     def clear_analysis_caches(self) -> None:
-        was_running = self.app.analysis_running
+        was_running = self.app.analysis_enabled
         state = self.app.candidate_state
         had_candidates = bool(state.candidates)
-        if was_running:
-            self.stop_candidate_search()
+        self._clear_candidate_progress(reset_results=True)
 
         self.engine.clear_analysis()
         self.engine.clear_cache()
         self.clear_all_cached_analysis()
-        state.results.clear()
 
         if was_running:
             if had_candidates:
@@ -206,7 +202,7 @@ class GuiCoreAnalysisMixin:
             )
         return out
 
-    def stop_candidate_search(self) -> None:
+    def stop_candidate_run(self) -> None:
         self._end_candidate_run()
 
     def start_batch_analysis(self, *, fast: bool = False) -> None:
@@ -249,7 +245,7 @@ class GuiCoreAnalysisMixin:
 
     def _should_cancel_batch(self, run: BatchRun) -> bool:
         return (
-            (not self.app.analysis_running)
+            (not self.app.analysis_enabled)
             or self.app.candidate_state.candidates
             or (self.board.rev != run.expected_rev)
         )
@@ -291,7 +287,7 @@ class GuiCoreAnalysisMixin:
         if self.app.candidate_state.candidates:
             self.start_candidate_search(reset_results=False)
             return
-        self.stop_candidate_search()
+        self.stop_candidate_run()
         self._start_analysis(self.current_side(), is_candidate=False)
 
     def _apply_analysis_enabled_transition(self, enabled: bool) -> None:
@@ -304,39 +300,66 @@ class GuiCoreAnalysisMixin:
             self.app.analysis_mode = AnalysisModeTag.LIVE
         self._refresh_analysis()
 
-    def _clear_candidate_state(self) -> None:
+    def _clear_candidate_selection(self) -> None:
         state = self.app.candidate_state
         state.candidates.clear()
-        state.results.clear()
-        self.stop_candidate_search()
         state.root_key = None
 
-    def clear_candidates(self) -> None:
-        self._clear_candidate_state()
-
-    def check_candidate_root(self) -> bool:
+    def _clear_candidate_progress(self, *, reset_results: bool) -> None:
         state = self.app.candidate_state
-        if not state.candidates or state.root_key is None:
+        self.stop_candidate_run()
+        if reset_results:
+            state.results.clear()
+
+    def _ensure_candidate_root(self) -> None:
+        state = self.app.candidate_state
+        if state.candidates and state.root_key is None:
+            state.root_key = self.cache_key()
+
+    def _update_candidate_selection(self, key: Tuple[int, int], *, selected: bool) -> bool:
+        state = self.app.candidate_state
+        if selected:
+            if not self.board.is_empty(*key) or key in state.candidates:
+                return False
+            state.candidates.add(key)
+            self._ensure_candidate_root()
+            return True
+        if key not in state.candidates:
             return False
-        if self.cache_key() == state.root_key:
+        state.candidates.remove(key)
+        state.results.pop(key, None)
+        if state.run is not None and key == state.run.key:
+            self.stop_candidate_run()
+        if not state.candidates:
+            self._clear_candidate_selection()
+            if self.app.analysis_enabled and not self.is_batch_analysis_active():
+                self._apply_analysis_enabled_transition(True)
+        return True
+
+    def _invalidate_candidate_root(self) -> bool:
+        state = self.app.candidate_state
+        if not state.candidates or state.root_key is None or self.cache_key() == state.root_key:
             return False
         self.clear_candidates()
         return True
 
+    def clear_candidates(self) -> None:
+        self._clear_candidate_progress(reset_results=True)
+        self._clear_candidate_selection()
+
+    def check_candidate_root(self) -> bool:
+        return self._invalidate_candidate_root()
+
     def start_candidate_search(self, *, reset_results: bool) -> None:
-        state = self.app.candidate_state
-        self.stop_candidate_search()
-        if reset_results:
-            state.results.clear()
-        if state.candidates and state.root_key is None:
-            state.root_key = self.cache_key()
+        self._clear_candidate_progress(reset_results=reset_results)
+        self._ensure_candidate_root()
 
     def set_analysis_wide_root_noise(self, value: float) -> None:
         value = max(0.0, min(2.0, float(value)))
         if abs(self.app.analysis_wide_root_noise - value) < 1e-9:
             return
         self.app.analysis_wide_root_noise = value
-        if self.app.analysis_running and not self.app.candidate_state.candidates:
+        if self.app.analysis_enabled and not self.app.candidate_state.candidates:
             self.resume_analysis()
 
     def _start_analysis(self, side_to_analyze: Side, *, is_candidate: bool) -> None:
@@ -448,7 +471,7 @@ class GuiCoreAnalysisMixin:
             self.resume_analysis()
 
     def _resume_batch_engine(self, run: BatchRun) -> None:
-        self.stop_candidate_search()
+        self.stop_candidate_run()
         self.engine.cancel_reply_capture()
         self.engine.clear_analysis()
         if run.kind == BatchKind.RAW_NN:
@@ -537,7 +560,7 @@ class GuiCoreAnalysisMixin:
 
     def step_candidate_search(self, now: float) -> None:
         state = self.app.candidate_state
-        if not self.is_candidate_analysis_active():
+        if not self.is_candidate_mode():
             return
         while True:
             if state.run is None:
@@ -583,14 +606,14 @@ class GuiCoreAnalysisMixin:
             return base
         if self.app.candidate_state.candidates:
             return self.get_candidate_analysis()
-        if self.app.analysis_running:
+        if self.app.analysis_enabled:
             live = self.get_engine_analysis()
             if live:
                 return live
         return []
 
     def maybe_update_analysis_cache(self) -> None:
-        if not self.app.analysis_running or self.is_candidate_analysis_active():
+        if not self.app.analysis_enabled or self.is_candidate_mode():
             return
         live = self.get_engine_analysis()
         if not live:
@@ -617,53 +640,28 @@ class GuiCoreAnalysisMixin:
         self._refresh_analysis()
 
     def stop_analysis(self) -> None:
-        self.stop_candidate_search()
+        self.stop_candidate_run()
         self.engine.stop_analysis()
 
     def toggle_analysis(self) -> None:
-        if self.app.analysis_running:
+        if self.app.analysis_enabled:
             self._apply_analysis_enabled_transition(False)
         else:
             self._apply_analysis_enabled_transition(True)
 
     def add_candidate(self, col: int, row: int) -> None:
-        state = self.app.candidate_state
-        if not self.board.is_empty(col, row):
-            return
-        key = (col, row)
-        if key in state.candidates:
-            return
-        if not state.candidates:
-            state.root_key = self.cache_key()
-        state.candidates.add(key)
-        return
+        self._update_candidate_selection((col, row), selected=True)
 
     def toggle_candidate(self, col: int, row: int) -> None:
-        state = self.app.candidate_state
-        if not self.board.is_empty(col, row):
-            return
         key = (col, row)
-        if key not in state.candidates:
+        if key not in self.app.candidate_state.candidates:
             self.add_candidate(col, row)
             return
 
-        state.candidates.remove(key)
-        state.results.pop(key, None)
-        if state.run is not None and key == state.run.key:
-            self.stop_candidate_search()
-
-        if not state.candidates:
-            should_resume_live = self.app.analysis_running and not self.is_batch_analysis_active()
-            self._clear_candidate_state()
-            if should_resume_live:
-                self._apply_analysis_enabled_transition(True)
-            return
+        self._update_candidate_selection(key, selected=False)
 
     def remove_candidate(self, col: int, row: int) -> None:
-        state = self.app.candidate_state
-        key = (col, row)
-        if key in state.candidates:
-            self.toggle_candidate(col, row)
+        self._update_candidate_selection((col, row), selected=False)
 
     def get_top_move(self) -> Tuple[Optional[Tuple[int, int]], int]:
         best: Optional[AnalysisMove] = None

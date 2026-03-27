@@ -37,7 +37,6 @@ class UiState:
     drag_move: bool = False
     drag_move_from: Optional[Tuple[int, int]] = None
     drag_move_idx: Optional[int] = None
-    hover_cell: Optional[Tuple[int, int]] = None
     show_help: bool = False
     show_engine_debug: bool = False
     last_cand_display: Optional[Tuple[int, int]] = None
@@ -175,6 +174,10 @@ def run_gui(
 
     running = True
 
+    def current_hover_cell() -> Optional[Tuple[int, int]]:
+        mx, my = renderer.window_to_surface_pos(pygame.mouse.get_pos())
+        return renderer.pixel_to_cell(mx, my)
+
     def handle_keydown(ev: pygame.event.Event, ui: UiState) -> None:
         nonlocal running
         awrn_steps = [0.00, 0.01, 0.02, 0.04, 0.10, 0.20, 0.50, 1.00, 2.00]
@@ -256,10 +259,10 @@ def run_gui(
         elif ev.key == pygame.K_x and (ev.mod & pygame.KMOD_SHIFT):
             had = bool(app.candidate_state.candidates)
             core.clear_candidates()
-            if had and app.analysis_running:
+            if had and app.analysis_enabled:
                 core.resume_analysis()
         elif ev.key == pygame.K_COMMA:
-            pv = renderer.get_display_pv(ui.hover_cell)
+            pv = renderer.get_display_pv(current_hover_cell())
             if renderer.should_show_pv(pv):
                 core.try_play_moves(list(pv))
             else:
@@ -351,19 +354,19 @@ def run_gui(
 
     def handle_mouse_motion(ev: pygame.event.Event, ui: UiState) -> None:
         mx, my = renderer.window_to_surface_pos(ev.pos)
-        ui.hover_cell = renderer.pixel_to_cell(mx, my)
+        hover_cell = renderer.pixel_to_cell(mx, my)
         if not ui.drag_select or not ev.buttons[2]:
             return
-        if ui.hover_cell is None or ui.hover_cell == ui.drag_last_cell:
+        if hover_cell is None or hover_cell == ui.drag_last_cell:
             return
-        col, row = ui.hover_cell
+        col, row = hover_cell
         start = ui.drag_start_candidates or set()
         if (col, row) in start:
             core.remove_candidate(col, row)
         else:
             core.add_candidate(col, row)
         ui.drag_added = True
-        ui.drag_last_cell = ui.hover_cell
+        ui.drag_last_cell = hover_cell
 
     def handle_events(ui: UiState) -> None:
         nonlocal running
@@ -386,9 +389,7 @@ def run_gui(
             elif ev.type == pygame.VIDEORESIZE:
                 renderer.apply_window_size(ev.w, ev.h)
 
-    def update_frame_state(
-        now: float, ui: UiState
-    ) -> Tuple[bool, bool, Optional[Tuple[int, int]], int]:
+    def update_frame_state(now: float, ui: UiState) -> Tuple[bool, bool, Optional[Tuple[int, int]], int]:
         # Snapshot live analysis for this position so undo/redo can instantly display cached overlays.
         core.tick(now)
         if app.candidate_state.run is not None:
@@ -402,7 +403,7 @@ def run_gui(
         )
         top_cell, top_visits = core.get_top_move()
 
-        if app.analysis_running:
+        if app.analysis_enabled:
             total_visits = 0
             for r in core.get_engine_analysis():
                 if r.visits:
@@ -436,7 +437,8 @@ def run_gui(
         handle_events(ui)
         now = time.monotonic()
         show_prior, show_coords, top_cell, top_visits = update_frame_state(now, ui)
-        renderer.draw_frame(ui, show_prior, show_coords, top_cell, top_visits)
+        hover_cell = current_hover_cell()
+        renderer.draw_frame(ui, hover_cell, show_prior, show_coords, top_cell, top_visits)
         pygame.display.flip()
         clock.tick(60)
 

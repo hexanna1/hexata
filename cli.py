@@ -380,7 +380,7 @@ def _run_cli_analyze(core: GuiCore, args: argparse.Namespace) -> tuple[bool, dic
             }
         return True, {"mode": "analyze", "method": "search", "best_reply": best, "moves": moves}
     finally:
-        if core.app.analysis_running:
+        if core.app.analysis_enabled:
             core.toggle_analysis()
 
 
@@ -428,7 +428,7 @@ def _run_cli_candidate(core: GuiCore, args: argparse.Namespace) -> tuple[bool, d
         if i > 0:
             core.clear_candidates()
         core.add_candidate(col, row)
-        if not core.app.analysis_running:
+        if not core.app.analysis_enabled:
             core.toggle_analysis()
         if not _run_for_seconds_from_first_update(core, per_candidate_seconds):
             core.clear_candidates()
