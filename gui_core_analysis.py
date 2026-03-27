@@ -449,6 +449,7 @@ class GuiCoreAnalysisMixin:
 
     def _resume_batch_engine(self, run: BatchRun) -> None:
         self.stop_candidate_search()
+        self.engine.cancel_reply_capture()
         self.engine.clear_analysis()
         if run.kind == BatchKind.RAW_NN:
             run.raw_pending = False

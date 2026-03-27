@@ -53,6 +53,28 @@ class FakeEngine:
         return list(self.analysis)
 
 
+class RawCaptureBlockingEngine(FakeEngine):
+    def __init__(self):
+        super().__init__()
+        self.raw_capture_pending = False
+
+    def cancel_reply_capture(self):
+        self.calls.append(("cancel_reply_capture",))
+        self.raw_capture_pending = False
+        return None
+
+    def start_kata_raw_nn(self, symmetry=0):
+        self.calls.append(("start_kata_raw_nn", symmetry))
+        if self.raw_capture_pending:
+            return False
+        self.raw_capture_pending = True
+        return True
+
+    def poll_kata_raw_nn(self):
+        self.calls.append(("poll_kata_raw_nn",))
+        return False, None
+
+
 class GuiCoreTests(unittest.TestCase):
     def _mk_core(self):
         board = HexBoard(5)
@@ -391,6 +413,17 @@ class GuiCoreTests(unittest.TestCase):
 
         cleared = core.check_candidate_root()
         self.assertTrue(cleared)
+        self.assertEqual(core.app.candidate_state.candidates, set())
+        self.assertIsNone(core.app.candidate_state.root_key)
+
+    def test_play_move_with_analysis_off_clears_invalid_candidates_immediately(self):
+        core, _engine = self._mk_core()
+
+        core.add_candidate(1, 1)
+        self.assertEqual(core.app.candidate_state.candidates, {(1, 1)})
+        self.assertFalse(core.app.analysis_running)
+
+        self.assertTrue(core.try_play_move(1, 1))
         self.assertEqual(core.app.candidate_state.candidates, set())
         self.assertIsNone(core.app.candidate_state.root_key)
 
@@ -1027,6 +1060,7 @@ class GuiCoreTests(unittest.TestCase):
 
         core.toggle_analysis()
         core.add_candidate(1, 1)
+        core.app.candidate_state.results[(1, 1)] = (0.4, 5)
 
         self.assertTrue(core.is_candidate_analysis_active())
 
@@ -1036,6 +1070,7 @@ class GuiCoreTests(unittest.TestCase):
 
         self.assertTrue(core.undo_edit())
         self.assertEqual(core.app.candidate_state.candidates, {(1, 1)})
+        self.assertEqual(core.app.candidate_state.results, {(1, 1): (0.4, 5)})
         self.assertEqual(core.app.candidate_state.root_key, core.cache_key())
         self.assertTrue(core.is_candidate_analysis_active())
 
@@ -1070,6 +1105,31 @@ class GuiCoreTests(unittest.TestCase):
         self.assertEqual(core.app.candidate_state.results, {})
         self.assertEqual(core.app.analysis_cache, {})
         self.assertIsNone(core.app.candidate_state.run)
+
+    def test_clear_analysis_caches_during_fast_batch_restarts_raw_nn_immediately(self):
+        board = HexBoard(5)
+        engine = RawCaptureBlockingEngine()
+        core = GuiCore(board, engine)
+
+        core.try_play_move(1, 1)
+        core.start_batch_analysis(fast=True)
+        core.tick(0.0)
+        run = core.app.analysis_mode
+
+        self.assertTrue(core.is_batch_analysis_active())
+        self.assertTrue(engine.raw_capture_pending)
+        self.assertTrue(run.raw_pending)
+
+        core.clear_analysis_caches()
+        self.assertTrue(core.is_batch_analysis_active())
+        self.assertFalse(engine.raw_capture_pending)
+        self.assertFalse(run.raw_pending)
+
+        engine.calls.clear()
+        core.tick(1.0)
+
+        self.assertIn(("start_kata_raw_nn", 0), engine.calls)
+        self.assertTrue(run.raw_pending)
 
     def test_live_cache_updates_when_only_non_top_rows_change(self):
         core, engine = self._mk_core()

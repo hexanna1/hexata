@@ -14,6 +14,7 @@ DEFAULT_ANALYZE_INTERVAL_CS = 15
 EditSnapshot = tuple[
     MoveTree,
     tuple[Tuple[int, int], ...],
+    dict[Tuple[int, int], tuple[Optional[float], Optional[int]]],
 ]
 
 
@@ -285,6 +286,7 @@ class GuiCore(GuiCoreAnalysisMixin):
         return (
             self.tree.clone(),
             tuple(sorted(state.candidates)),
+            dict(state.results),
         )
 
     def _clear_edit_history(self) -> None:
@@ -317,7 +319,7 @@ class GuiCore(GuiCoreAnalysisMixin):
         self.rebuild_engine_from_applied_history()
 
     def _restore_edit_state(self, snap: EditSnapshot) -> None:
-        tree, candidates = snap
+        tree, candidates, results = snap
 
         def mutate() -> None:
             self.tree = tree.clone()
@@ -325,6 +327,7 @@ class GuiCore(GuiCoreAnalysisMixin):
             state.candidates.clear()
             state.candidates.update(candidates)
             state.results.clear()
+            state.results.update(results)
             state.run = None
             self._rebuild_position_from_tree()
             state.root_key = self.cache_key() if state.candidates else None
@@ -452,12 +455,12 @@ class GuiCore(GuiCoreAnalysisMixin):
                 self.stop_analysis()
         fn()
         self.engine.clear_analysis()
+        self.check_candidate_root()
         if was_running and resume_after:
             # User-driven navigation/edits should exit batch immediately once
             # they actually change the selected tree or materialized position.
             if was_batch and (self.board.rev != rev_before or self.tree.signature() != tree_sig_before):
                 self.app.analysis_mode = AnalysisModeTag.LIVE
-            self.check_candidate_root()
             self.resume_analysis()
 
     def with_analysis_stopped(self, fn: Callable[[], None], *, resume_after: bool = True) -> None:

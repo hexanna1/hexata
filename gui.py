@@ -301,6 +301,9 @@ def run_gui(
             ui.drag_move_from = cell
             ui.drag_move_idx = idx
         elif ev.button == 3:
+            mx, my = renderer.window_to_surface_pos(ev.pos)
+            if renderer.pixel_to_cell(mx, my) is None:
+                return
             ui.drag_select = True
             ui.drag_added = False
             ui.drag_last_cell = None
@@ -331,15 +334,16 @@ def run_gui(
             ui.drag_move_idx = None
             ui.swap_click_candidate = False
         elif ev.button == 3:
-            mx, my = renderer.window_to_surface_pos(ev.pos)
-            cell = renderer.pixel_to_cell(mx, my)
-            if cell is not None and not ui.drag_added:
-                col, row = cell
-                start = ui.drag_start_candidates or set()
-                if (col, row) in start:
-                    core.remove_candidate(col, row)
-                else:
-                    core.add_candidate(col, row)
+            if ui.drag_select:
+                mx, my = renderer.window_to_surface_pos(ev.pos)
+                cell = renderer.pixel_to_cell(mx, my)
+                if cell is not None and not ui.drag_added:
+                    col, row = cell
+                    start = ui.drag_start_candidates or set()
+                    if (col, row) in start:
+                        core.remove_candidate(col, row)
+                    else:
+                        core.add_candidate(col, row)
             ui.drag_select = False
             ui.drag_added = False
             ui.drag_last_cell = None
