@@ -541,6 +541,8 @@ def run_cli(
         )
     except FileNotFoundError:
         return _fail("Engine executable not found")
+    except RuntimeError as exc:
+        return _fail(str(exc))
 
     core = GuiCore(board, engine)
     try:

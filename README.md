@@ -11,13 +11,13 @@ A lightweight, keyboard-first GUI for analyzing Hex with the [KataHex](https://w
 - Move list panel with undo/redo, navigation ([HexWorld](https://hexworld.org/board/#14c1)-style shortcuts), and eval graph (winrate or Elo).
 - Native handling for pass and swap moves.
 - Clipboard import/export to HexWorld and Hexata format.
-- Adjustable board size and analysis noise.
+- Adjustable board size, analysis noise, and multi-engine support.
 - Fast, responsive feel with low engine and UI latency.
 
 ## Quick setup
 - Install deps: `pip install -r requirements.txt` (pygame only).
 - Install KataHex separately (engine binary, config, and model weights): [KataHex 20240812](https://github.com/hzyhhzy/KataGomo_fork/releases/tag/Hex_20240812)
-- Edit `config.ini` and set `[engine].cmd` to point at your KataHex binary, config, and model.
+- Edit `config.ini` and set `[engine.main].cmd` to point at your KataHex binary, config, and model.
   - Example format: `cmd = path/to/katahex gtp -config path/to/engine.cfg -model path/to/weights.bin.gz`
 - Run: `python3 main.py gui`
 

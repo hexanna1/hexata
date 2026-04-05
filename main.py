@@ -11,7 +11,7 @@ import shlex
 from board import DEFAULT_BOARD_SIZE, MAX_BOARD_SIZE, MIN_BOARD_SIZE, HexBoard
 from cli import add_cli_arguments, run_cli
 from engine import KataHexEngine
-from gui import UiPrefs, run_gui
+from gui import EngineProfile, UiPrefs, run_gui
 
 
 def _expand_cmd(cmd_str: str) -> list[str]:
@@ -39,15 +39,43 @@ def _load_config_parser(base_dir: str) -> tuple[configparser.ConfigParser, str]:
     return parser, config_local_path
 
 
-def _engine_cmd_from_parser(parser: configparser.ConfigParser) -> list[str]:
-    return _expand_cmd(_require_config_value(parser, "engine", "cmd"))
+def _engine_profiles_from_parser(parser: configparser.ConfigParser) -> tuple[EngineProfile, ...]:
+    profiles: list[EngineProfile] = []
+    for section in parser.sections():
+        if not section.startswith("engine."):
+            continue
+        name = section[len("engine.") :].strip()
+        if not name:
+            raise ValueError("Empty [engine.<name>] section in config.ini")
+        profiles.append(
+            EngineProfile(
+                name=name,
+                cmd=tuple(_expand_cmd(_require_config_value(parser, section, "cmd"))),
+            )
+        )
+    if not profiles:
+        raise ValueError("Missing [engine.<name>] cmd in config.ini")
+    return tuple(profiles)
+
+
+def _select_engine_profile(
+    parser: configparser.ConfigParser,
+    profiles: tuple[EngineProfile, ...],
+) -> EngineProfile:
+    default_name = parser.get("engine", "default_engine", fallback="").strip()
+    if not default_name:
+        return profiles[0]
+    for profile in profiles:
+        if profile.name == default_name:
+            return profile
+    raise ValueError(f"Unknown engine.default_engine in config.ini: {default_name}")
 
 
 def _emit_config_error(exc: Exception, *, json_mode: bool) -> int:
     msg = f"Engine config error: {exc}"
     print(json.dumps({"ok": False, "error": msg}) if json_mode else msg)
     if not json_mode:
-        print("Edit config.ini and set [engine].cmd to your KataHex command.")
+        print("Edit config.ini and set [engine.<name>].cmd to your KataHex command.")
     return 1
 
 
@@ -103,13 +131,14 @@ def main() -> int:
 
     try:
         parser, config_local_path = _load_config_parser(base_dir)
-        engine_cmd = _engine_cmd_from_parser(parser)
+        engine_profiles = _engine_profiles_from_parser(parser)
+        selected_engine = _select_engine_profile(parser, engine_profiles)
     except (FileNotFoundError, ValueError, configparser.Error) as exc:
         return _emit_config_error(exc, json_mode=(args.mode == "cli"))
 
     if args.mode == "cli":
         logging.getLogger("gui_core").setLevel(logging.WARNING)
-        return run_cli(args, engine_cmd=engine_cmd)
+        return run_cli(args, engine_cmd=list(selected_engine.cmd))
 
     try:
         size, ui_prefs = _load_gui_runtime_config(parser)
@@ -122,25 +151,27 @@ def main() -> int:
     try:
         engine = KataHexEngine(
             board_size=size,
-            cmd=engine_cmd,
+            cmd=list(selected_engine.cmd),
             engine_echo=args.engine_echo,
             suppress_stderr=True,
         )
-    except FileNotFoundError:
-        print("Engine executable not found. Check [engine].cmd in config.ini.")
+    except (OSError, RuntimeError) as exc:
+        print(f"Engine startup failed: {exc}")
         return 1
 
     try:
         run_gui(
             board,
             engine,
+            engine_profiles=engine_profiles,
+            current_engine_name=selected_engine.name,
+            engine_echo=args.engine_echo,
             ui_prefs=ui_prefs,
         )
     except KeyboardInterrupt:
         exit_code = 130
     finally:
         _save_ui_prefs(config_local_path, ui_prefs, board_size=board.n)
-        engine.close()
 
     return exit_code
 

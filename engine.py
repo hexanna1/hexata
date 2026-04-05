@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from collections import deque
 import re
 import sys
 import threading
 import subprocess
 import math
+import time
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
@@ -232,7 +234,9 @@ class KataHexEngine:
         self._io_lock = threading.Lock()
         self._io_log: List[Tuple[str, str, int]] = []
         self._io_max = 200
+        self._stderr_lines: deque[str] = deque(maxlen=8)
         self._engine_echo = engine_echo
+        self._suppress_stderr = suppress_stderr
         self._reply_lock = threading.Lock()
         self._raw_nn_capture: Optional[_RawNNCapture] = None
 
@@ -260,7 +264,7 @@ class KataHexEngine:
             cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=(subprocess.DEVNULL if suppress_stderr else subprocess.PIPE),
+            stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
         )
@@ -277,11 +281,12 @@ class KataHexEngine:
             args=(self.proc.stdout, on_stdout_line),
             daemon=True,
         ).start()
-        if not suppress_stderr and self.proc.stderr is not None:
-            threading.Thread(target=_pump, args=(self.proc.stderr, self._echo_debug), daemon=True).start()
+        if self.proc.stderr is not None:
+            threading.Thread(target=_pump, args=(self.proc.stderr, self._on_stderr_line), daemon=True).start()
 
         self.set_board_size(board_size)
         self.clear_board()
+        self._check_startup_health()
 
     def set_board_size(self, n: int) -> None:
         self.board_n = n
@@ -413,6 +418,20 @@ class KataHexEngine:
         sys.stderr.write(msg)
         sys.stderr.flush()
 
+    def _on_stderr_line(self, line: str) -> None:
+        if not self._suppress_stderr:
+            self._echo_debug(line)
+        stripped = line.strip()
+        if stripped:
+            self._stderr_lines.append(stripped)
+
+    def _check_startup_health(self) -> None:
+        time.sleep(0.2)
+        code = self.proc.poll()
+        if code is not None:
+            detail = self._stderr_lines[-1] if self._stderr_lines else f"exit code {code}"
+            raise RuntimeError(f"Engine exited during startup: {detail}")
+
     def _log_io(self, direction: str, msg: str) -> None:
         short = self._truncate_io(msg)
         with self._io_lock:
@@ -434,10 +453,6 @@ class KataHexEngine:
             return list(self._io_log[-max_items:])
 
     def close(self) -> None:
-        try:
-            self.stop_analysis()
-        except Exception:
-            pass
         try:
             self.proc.terminate()
         except Exception:

@@ -19,6 +19,7 @@ TEXT_MUTED = (132, 132, 132)
 SURFACE_BG = (237, 230, 217)
 BOARD_EMPTY = (228, 216, 194)
 LINE = (130, 118, 100)
+HELP_HEADER = tuple((RED[i] + BLUE[i]) // 2 for i in range(3))
 
 
 def _bg_relative_color(
@@ -84,6 +85,8 @@ class UiStateLike(Protocol):
     show_engine_debug: bool
     last_cand_display: Optional[Tuple[int, int]]
     speed_vps: Optional[float]
+    current_engine_name: Optional[str]
+    has_multiple_engines: bool
 
 
 @dataclass
@@ -972,52 +975,68 @@ class GuiRenderer:
         help_line = "space:analysis • ,:play best • +/-/enter:size • ?:help"
         self.text.hud_small.blit_line(help_line, TEXT_ON_LIGHT, 12, 32)
 
+    def draw_top_right_status(self, ui: UiStateLike) -> None:
         awrn = f"{self.app.analysis_wide_root_noise:.2f}".rstrip("0").rstrip(".")
         awrn_text = "AWRN –" if self.app.candidate_state.candidates else f"AWRN {awrn}"
         awrn_w = self.fonts.hud_small.get_rect(awrn_text).width
         awrn_x = max(12, self.layout.board_px_w - awrn_w - 12)
         self.text.hud_small.blit_line(awrn_text, TEXT_MUTED, awrn_x, 10)
         vps_suffix = " visits/s"
+        engine_tag = ""
+        if ui.has_multiple_engines and ui.current_engine_name:
+            engine_name = ui.current_engine_name
+            if len(engine_name) > 12:
+                engine_name = engine_name[:11] + "…"
+            engine_tag = f"[{engine_name}] "
         if ui.speed_vps is not None and ui.speed_vps > 0:
-            vps_text = f"{fmt_visits(int(ui.speed_vps))}{vps_suffix}"
+            vps_text = f"{engine_tag}{fmt_visits(int(ui.speed_vps))}{vps_suffix}"
         else:
-            vps_text = f"–{vps_suffix}"
+            vps_text = f"{engine_tag}–{vps_suffix}"
         vps_w = self.fonts.hud_small.get_rect(vps_text).width
         vps_x = max(12, self.layout.board_px_w - vps_w - 12)
         vps_y = 10 + self.text.line_hud_small + 2
         self.text.hud_small.blit_line(vps_text, TEXT_MUTED, vps_x, vps_y)
 
     def draw_help_overlay(self) -> None:
-        lines = [
-            "Help (? to hide)",
-            "space:analysis   ,:play best/PV   esc:quit",
-            "p:prev   n:next   f:first   l:last   scroll:prev/next",
-            "ctrl+p:prev 10   ctrl+n:next 10   left/right:branch",
-            "shift+p:pass   s:swap",
-            "t:priors   c:coords   m:moves   e:elo",
-            "ctrl+v:load   ctrl+c:hexworld   ctrl+shift+c:hexata",
-            "shift+c:clear cache   del:delete tail   shift+n:new",
-            "ctrl+z:undo   ctrl+y:redo",
-            "+/-:pending size   enter:apply size",
-            "[/]:set analysisWideRootNoise",
-            "d:engine debug   ctrl+s:screenshot",
-            "left-drag:move stone",
-            "right-click:toggle cand   right-drag:toggle cands",
-            "shift+x:clear cands   shift+b:fast batch   ctrl+shift+b:batch",
+        rows = [
+            ("title", "Help (? to hide)"),
+            ("header", "Navigation"),
+            ("item", "p:prev   n:next   f:first   l:last   scroll:prev/next"),
+            ("item", "ctrl+p:prev 10   ctrl+n:next 10   left/right:branch"),
+            ("header", "Moves / edit"),
+            ("item", ",:play best/PV   shift+p:pass   s:swap"),
+            ("item", "left-drag:move stone   del:delete tail"),
+            ("item", "ctrl+z:undo   ctrl+y:redo   shift+n:new"),
+            ("header", "Display / analysis"),
+            ("item", "space:analysis   t:priors   c:coords   m:moves   e:elo"),
+            ("item", "[/]:set analysisWideRootNoise   shift+c:clear cache"),
+            ("item", "d:engine debug   shift+e:cycle engine"),
+            ("header", "Candidates / batch"),
+            ("item", "right-click:toggle cand   right-drag:toggle cands"),
+            ("item", "shift+x:clear cands   shift+b:fast batch   ctrl+shift+b:batch"),
+            ("header", "Clipboard / misc"),
+            ("item", "ctrl+v:load   ctrl+c:hexworld   ctrl+shift+c:hexata"),
+            ("item", "+/-:pending size   enter:apply size   ctrl+s:screenshot"),
+            ("item", "esc:quit"),
         ]
         pad = 8
         gap = 2
-        surfs = [self.fonts.hud_small.render(line, fgcolor=TEXT_ON_LIGHT)[0] for line in lines]
+        surfs = [self.fonts.hud_small.render(text, fgcolor=TEXT_ON_LIGHT)[0] for _kind, text in rows]
         w = max(s.get_width() for s in surfs)
         line_h = self.text.line_hud_small
-        h = line_h * len(lines) + gap * (len(surfs) - 1)
+        header_gap = 6
+        header_count = sum(1 for kind, _text in rows if kind == "header")
+        h = line_h * len(rows) + gap * max(0, len(rows) - 1) + header_gap * header_count
         x = 12
         y = HUD_H + 12
         rect = pygame.Rect(x - pad, y - pad, w + pad * 2, h + pad * 2)
         pygame.draw.rect(self.screen, SURFACE_PANEL, rect)
         pygame.draw.rect(self.screen, LINE, rect, 1)
-        for line in lines:
-            self.text.hud_small.blit_line(line, TEXT_ON_LIGHT, x, y)
+        for kind, text in rows:
+            if kind == "header":
+                y += header_gap
+            color = HELP_HEADER if kind == "header" else TEXT_ON_LIGHT
+            self.text.hud_small.blit_line(text, color, x, y)
             y += line_h + gap
 
     def draw_frame(
@@ -1070,5 +1089,6 @@ class GuiRenderer:
         if not show_coords:
             self.draw_move_numbers(ui.prefs.show_move_numbers)
         self.draw_movelist_panel(ui)
+        self.draw_top_right_status(ui)
         if ui.show_help:
             self.draw_help_overlay()

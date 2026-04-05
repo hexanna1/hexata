@@ -27,9 +27,17 @@ from gui_render import GuiRenderer
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class EngineProfile:
+    name: str
+    cmd: tuple[str, ...]
+
+
 @dataclass
 class UiState:
     prefs: UiPrefs
+    engine_profiles: tuple[EngineProfile, ...] = ()
+    current_engine_idx: int = 0
     drag_select: bool = False
     drag_added: bool = False
     drag_last_cell: Optional[Tuple[int, int]] = None
@@ -44,6 +52,16 @@ class UiState:
     speed_last_total: Optional[int] = None
     speed_vps: Optional[float] = None
     swap_click_candidate: bool = False
+
+    @property
+    def current_engine_name(self) -> Optional[str]:
+        if not (0 <= self.current_engine_idx < len(self.engine_profiles)):
+            return None
+        return self.engine_profiles[self.current_engine_idx].name
+
+    @property
+    def has_multiple_engines(self) -> bool:
+        return len(self.engine_profiles) > 1
 
 
 @dataclass
@@ -66,10 +84,65 @@ def load_position_text(text: str, *, core: GuiCore, on_success: Callable[[], Non
     return False
 
 
+def cycle_engine_profile(core: GuiCore, ui: UiState, *, engine_echo: bool) -> bool:
+    if len(ui.engine_profiles) <= 1:
+        return False
+
+    new_engine = None
+    next_idx = ui.current_engine_idx
+    for offset in range(1, len(ui.engine_profiles)):
+        next_idx = (ui.current_engine_idx + offset) % len(ui.engine_profiles)
+        profile = ui.engine_profiles[next_idx]
+        try:
+            new_engine = KataHexEngine(
+                board_size=core.board.n,
+                cmd=list(profile.cmd),
+                engine_echo=engine_echo,
+                suppress_stderr=True,
+            )
+            break
+        except (OSError, RuntimeError) as exc:
+            logger.warning("Engine switch to %s failed: %s", profile.name, exc)
+    if new_engine is None:
+        return False
+
+    was_running = core.app.analysis_enabled
+    if was_running:
+        core.toggle_analysis()
+
+    old_engine = core.engine
+    core.engine = new_engine
+    try:
+        core.rebuild_engine_from_applied_history()
+    except Exception:
+        core.engine = old_engine
+        new_engine.close()
+        if was_running:
+            core.toggle_analysis()
+        return False
+
+    core.clear_candidates()
+    core.clear_all_cached_analysis()
+    old_engine.close()
+    ui.current_engine_idx = next_idx
+    ui.last_cand_display = None
+    ui.speed_last_t = None
+    ui.speed_last_total = None
+    ui.speed_vps = None
+    # Runtime engine cycling is intentionally session-only; config.default_engine
+    # remains the startup default instead of being rewritten from the GUI.
+    if was_running:
+        core.toggle_analysis()
+    return True
+
+
 def run_gui(
     board: HexBoard,
     engine: KataHexEngine,
     *,
+    engine_profiles: tuple[EngineProfile, ...],
+    current_engine_name: str,
+    engine_echo: bool,
     analyze_interval_cs: int = DEFAULT_ANALYZE_INTERVAL_CS,
     ui_prefs: UiPrefs,
 ) -> None:
@@ -182,7 +255,9 @@ def run_gui(
         nonlocal running
         awrn_steps = [0.00, 0.01, 0.02, 0.04, 0.10, 0.20, 0.50, 1.00, 2.00]
         mods = ev.mod
+        ch = ev.unicode
         has_ctrl = bool(mods & (pygame.KMOD_META | pygame.KMOD_GUI | pygame.KMOD_CTRL))
+        has_shift = bool(mods & pygame.KMOD_SHIFT)
         is_redo_shortcut = has_ctrl and (
             ev.key == pygame.K_y or ((mods & pygame.KMOD_SHIFT) and ev.key == pygame.K_z)
         )
@@ -197,7 +272,7 @@ def run_gui(
                 idx = min(len(awrn_steps) - 1, idx + 1)
             core.set_analysis_wide_root_noise(awrn_steps[idx])
 
-        if ev.unicode == "?":
+        if ch == "?":
             ui.show_help = not ui.show_help
         # `Ctrl+D` is reserved as an EOF-style quit shortcut; debug toggle stays on plain `d`.
         elif ev.key == pygame.K_d and not (ev.mod & pygame.KMOD_CTRL):
@@ -216,6 +291,8 @@ def run_gui(
         elif ev.key == pygame.K_b and (mods & pygame.KMOD_SHIFT) and not has_ctrl:
             if not core.is_batch_analysis_active():
                 core.start_batch_analysis(fast=True)
+        elif ev.key == pygame.K_e and has_shift and not has_ctrl:
+            cycle_engine_profile(core, ui, engine_echo=engine_echo)
         elif ev.key == pygame.K_e:
             ui.prefs.show_elo = not ui.prefs.show_elo
         elif ev.key == pygame.K_n and (mods & pygame.KMOD_SHIFT) and not has_ctrl:
@@ -261,7 +338,7 @@ def run_gui(
             core.clear_candidates()
             if had and app.analysis_enabled:
                 core.resume_analysis()
-        elif ev.key == pygame.K_COMMA:
+        elif ch == ",":
             pv = renderer.get_display_pv(current_hover_cell())
             if renderer.should_show_pv(pv):
                 core.try_play_moves(list(pv))
@@ -270,13 +347,13 @@ def run_gui(
                 if top is not None:
                     col, row = top
                     core.try_play_move(col, row)
-        elif ev.key in (pygame.K_PLUS, pygame.K_EQUALS):
+        elif ch in ("+", "="):
             app.pending_size = min(MAX_BOARD_SIZE, app.pending_size + 1)
-        elif ev.key in (pygame.K_MINUS, pygame.K_UNDERSCORE):
+        elif ch in ("-", "_"):
             app.pending_size = max(MIN_BOARD_SIZE, app.pending_size - 1)
-        elif ev.key == pygame.K_LEFTBRACKET:
+        elif ch == "[":
             step_awrn(-1)
-        elif ev.key == pygame.K_RIGHTBRACKET:
+        elif ch == "]":
             step_awrn(1)
         elif ev.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
             if core.apply_pending_size():
@@ -432,14 +509,26 @@ def run_gui(
 
         return show_prior, show_coords, top_cell, top_visits
 
-    ui = UiState(prefs=ui_prefs)
-    while running:
-        handle_events(ui)
-        now = time.monotonic()
-        show_prior, show_coords, top_cell, top_visits = update_frame_state(now, ui)
-        hover_cell = current_hover_cell()
-        renderer.draw_frame(ui, hover_cell, show_prior, show_coords, top_cell, top_visits)
-        pygame.display.flip()
-        clock.tick(60)
+    current_engine_idx = 0
+    for i, profile in enumerate(engine_profiles):
+        if profile.name == current_engine_name:
+            current_engine_idx = i
+            break
 
-    pygame.quit()
+    ui = UiState(
+        prefs=ui_prefs,
+        engine_profiles=engine_profiles,
+        current_engine_idx=current_engine_idx,
+    )
+    try:
+        while running:
+            handle_events(ui)
+            now = time.monotonic()
+            show_prior, show_coords, top_cell, top_visits = update_frame_state(now, ui)
+            hover_cell = current_hover_cell()
+            renderer.draw_frame(ui, hover_cell, show_prior, show_coords, top_cell, top_visits)
+            pygame.display.flip()
+            clock.tick(60)
+    finally:
+        pygame.quit()
+        core.engine.close()
