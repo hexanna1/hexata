@@ -61,14 +61,19 @@ def _engine_profiles_from_parser(parser: configparser.ConfigParser) -> tuple[Eng
 def _select_engine_profile(
     parser: configparser.ConfigParser,
     profiles: tuple[EngineProfile, ...],
+    *,
+    requested_name: str | None = "",
 ) -> EngineProfile:
-    default_name = parser.get("engine", "default_engine", fallback="").strip()
-    if not default_name:
+    requested = (requested_name or "").strip()
+    target_name = requested or parser.get("engine", "default_engine", fallback="").strip()
+    if not target_name:
         return profiles[0]
     for profile in profiles:
-        if profile.name == default_name:
+        if profile.name == target_name:
             return profile
-    raise ValueError(f"Unknown engine.default_engine in config.ini: {default_name}")
+    if requested:
+        raise ValueError(f"Unknown CLI engine profile in config.ini: {requested}")
+    raise ValueError(f"Unknown engine.default_engine in config.ini: {target_name}")
 
 
 def _emit_config_error(exc: Exception, *, json_mode: bool) -> int:
@@ -132,7 +137,11 @@ def main() -> int:
     try:
         parser, config_local_path = _load_config_parser(base_dir)
         engine_profiles = _engine_profiles_from_parser(parser)
-        selected_engine = _select_engine_profile(parser, engine_profiles)
+        selected_engine = _select_engine_profile(
+            parser,
+            engine_profiles,
+            requested_name=getattr(args, "engine", ""),
+        )
     except (FileNotFoundError, ValueError, configparser.Error) as exc:
         return _emit_config_error(exc, json_mode=(args.mode == "cli"))
 

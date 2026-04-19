@@ -46,6 +46,24 @@ cmd = alpha
 
         self.assertEqual(selected.name, "alpha")
 
+    def test_select_engine_profile_uses_requested_name(self):
+        parser = self._parser(
+            """
+[engine]
+default_engine = alpha
+
+[engine.beta]
+cmd = beta
+
+[engine.alpha]
+cmd = alpha
+"""
+        )
+
+        profiles = main._engine_profiles_from_parser(parser)
+        selected = main._select_engine_profile(parser, profiles, requested_name="beta")
+
+        self.assertEqual(selected.name, "beta")
 
 if __name__ == "__main__":
     unittest.main()

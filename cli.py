@@ -99,6 +99,8 @@ def _run_kata_raw_nn_once(engine: KataHexEngine) -> Optional[RawNNResult]:
         done, raw = engine.poll_kata_raw_nn()
         if done:
             return raw
+        if engine.proc.poll() is not None:
+            return None
         time.sleep(POLL_SECONDS)
 
 
@@ -469,10 +471,19 @@ def _add_cli_position_argument(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("position", help="HexWorld URL or hash")
 
 
+def _add_cli_engine_argument(ap: argparse.ArgumentParser) -> None:
+    ap.add_argument(
+        "--engine",
+        default=None,
+        help="Engine profile name from config.ini (defaults to default_engine/first profile)",
+    )
+
+
 def add_cli_arguments(ap: argparse.ArgumentParser) -> None:
     sub = ap.add_subparsers(dest="cli_cmd", required=True)
 
     analyze_ap = sub.add_parser("analyze", help="Analyze root position")
+    _add_cli_engine_argument(analyze_ap)
     analyze_ap.add_argument(
         "positions",
         nargs="+",
@@ -495,6 +506,7 @@ def add_cli_arguments(ap: argparse.ArgumentParser) -> None:
     )
 
     candidate_ap = sub.add_parser("candidate", help="Analyze specified candidate moves")
+    _add_cli_engine_argument(candidate_ap)
     _add_cli_position_argument(candidate_ap)
     candidate_ap.add_argument(
         "--moves",
@@ -509,6 +521,7 @@ def add_cli_arguments(ap: argparse.ArgumentParser) -> None:
     )
 
     batch_ap = sub.add_parser("batch", help="Fast raw-NN batch summary over the full line")
+    _add_cli_engine_argument(batch_ap)
     _add_cli_position_argument(batch_ap)
     batch_ap.add_argument(
         "--plies",
@@ -539,7 +552,7 @@ def run_cli(
             engine_echo=False,
             suppress_stderr=True,
         )
-    except FileNotFoundError:
+    except OSError:
         return _fail("Engine executable not found")
     except RuntimeError as exc:
         return _fail(str(exc))
