@@ -1,6 +1,6 @@
-# Hexata GUI
+# Hexata
 
-A lightweight, keyboard-first GUI for analyzing Hex with the [KataHex](https://www.hexwiki.net/index.php/KataHex) engine. Built with substantial AI assistance.
+A lightweight, keyboard-first GUI and CLI for analyzing Hex with the [KataHex](https://www.hexwiki.net/index.php/KataHex) engine. Built with substantial AI assistance.
 
 ![GUI example](ex1.png)
 
@@ -31,6 +31,8 @@ A lightweight, keyboard-first GUI for analyzing Hex with the [KataHex](https://w
 ## Files at a glance
 - `main.py`: App entry point; creates the board, engine, and GUI.
 - `config.ini`: Local engine launch configuration.
+- `cli.py`: CLI for root analysis, candidate analysis, batch line analysis, and engine matches.
+- `cli-output-schema.md`: Reference for emitted CLI output shapes.
 - `gui.py`: Pygame app loop, input handling, and UI flow.
 - `gui_render.py`: Pygame rendering, layout, HUD, and panels.
 - `gui_core.py`: Game state, move history, import/export, and engine coordination.

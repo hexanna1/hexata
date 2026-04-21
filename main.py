@@ -137,16 +137,37 @@ def main() -> int:
     try:
         parser, config_local_path = _load_config_parser(base_dir)
         engine_profiles = _engine_profiles_from_parser(parser)
-        selected_engine = _select_engine_profile(
-            parser,
-            engine_profiles,
-            requested_name=getattr(args, "engine", ""),
-        )
+        if args.mode == "cli" and getattr(args, "cli_cmd", "") == "match":
+            selected_engine = None
+            selected_engine_a = _select_engine_profile(
+                parser,
+                engine_profiles,
+                requested_name=getattr(args, "engine_a", ""),
+            )
+            selected_engine_b = _select_engine_profile(
+                parser,
+                engine_profiles,
+                requested_name=getattr(args, "engine_b", ""),
+            )
+        else:
+            selected_engine = _select_engine_profile(
+                parser,
+                engine_profiles,
+                requested_name=getattr(args, "engine", ""),
+            )
+            selected_engine_a = None
+            selected_engine_b = None
     except (FileNotFoundError, ValueError, configparser.Error) as exc:
         return _emit_config_error(exc, json_mode=(args.mode == "cli"))
 
     if args.mode == "cli":
         logging.getLogger("gui_core").setLevel(logging.WARNING)
+        if args.cli_cmd == "match":
+            return run_cli(
+                args,
+                engine_a_cmd=list(selected_engine_a.cmd),
+                engine_b_cmd=list(selected_engine_b.cmd),
+            )
         return run_cli(args, engine_cmd=list(selected_engine.cmd))
 
     try:

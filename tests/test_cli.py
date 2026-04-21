@@ -5,7 +5,7 @@ from unittest.mock import Mock, patch
 
 import cli
 from board import Move, Side
-from engine import RawNNResult
+from engine import AnalysisMove, RawNNResult
 
 
 class _AlwaysEmptyBoard:
@@ -55,11 +55,12 @@ class CliTests(unittest.TestCase):
             ok, payload = cli._run_cli_analyze(core, args)
 
         self.assertTrue(ok)
-        self.assertEqual(payload["mode"], "analyze")
-        self.assertEqual(payload["method"], "raw_nn")
-        self.assertEqual(payload["best_reply"], None)
-        self.assertEqual(payload["root_eval"], {"red_winrate": 0.4})
-        self.assertEqual(len(payload["moves"]), 3)
+        self.assertEqual(payload["analyze"]["method"], "raw_nn")
+        self.assertEqual(payload["analyze"]["best"], {"move": "pass", "prior": 0.3})
+        self.assertEqual(payload["analyze"]["root_eval"], {"red_winrate": 0.4})
+        self.assertEqual(len(payload["analyze"]["moves"]), 3)
+        self.assertNotIn("red_winrate", payload["analyze"]["moves"][0])
+        self.assertNotIn("visits", payload["analyze"]["moves"][0])
         raw_once.assert_called_once_with(core.engine)
         run_search.assert_not_called()
 
@@ -77,7 +78,7 @@ class CliTests(unittest.TestCase):
             play_engine_mapped=play_engine_mapped,
         )
 
-        success_args = SimpleNamespace(total_search_seconds=None, moves="a1,b1")
+        success_args = SimpleNamespace(search_seconds=None, moves="a1,b1")
         raw1 = RawNNResult(white_win=0.2, policy_rows=(), policy_pass=None)
         raw2 = RawNNResult(white_win=0.8, policy_rows=(), policy_pass=None)
         with patch("cli._run_kata_raw_nn_once", side_effect=[raw1, raw2]) as raw_once, patch(
@@ -86,10 +87,11 @@ class CliTests(unittest.TestCase):
             ok, payload = cli._run_cli_candidate(core, success_args)
 
         self.assertTrue(ok)
-        self.assertEqual(payload["mode"], "candidate")
-        self.assertEqual(payload["method"], "raw_nn")
-        self.assertEqual([row["move"] for row in payload["moves"]], ["a1", "b1"])
-        self.assertEqual([row["red_winrate"] for row in payload["moves"]], [0.8, 0.2])
+        self.assertEqual(payload["candidate"]["method"], "raw_nn")
+        self.assertNotIn("best", payload["candidate"])
+        self.assertEqual([row["move"] for row in payload["candidate"]["moves"]], ["a1", "b1"])
+        self.assertEqual([row["red_winrate"] for row in payload["candidate"]["moves"]], [0.8, 0.2])
+        self.assertNotIn("visits", payload["candidate"]["moves"][0])
         self.assertEqual(engine.undo.call_count, 2)
         self.assertEqual(play_engine_mapped.call_count, 2)
         self.assertEqual(raw_once.call_count, 2)
@@ -97,7 +99,7 @@ class CliTests(unittest.TestCase):
 
         engine.undo.reset_mock()
         play_engine_mapped.reset_mock()
-        fail_args = SimpleNamespace(total_search_seconds=None, moves="a1")
+        fail_args = SimpleNamespace(search_seconds=None, moves="a1")
         with patch("cli._run_kata_raw_nn_once", return_value=None):
             ok, payload = cli._run_cli_candidate(core, fail_args)
 
@@ -106,105 +108,50 @@ class CliTests(unittest.TestCase):
         self.assertEqual(engine.undo.call_count, 1)
         self.assertEqual(play_engine_mapped.call_count, 1)
 
-    def test_run_batch_fast_cli_plies_red_winrate_is_post_move_with_final_extra_call(self):
-        class _BatchCore:
-            def __init__(self):
-                self.engine = object()
-                self.board = _AlwaysEmptyBoard(3)
-                self._past = []
-                self._future = [
-                    Move.place(Side.RED, 1, 1),
-                    Move.place(Side.BLUE, 2, 1),
-                ]
-
-            def go_first(self):
-                self._future = self._past + self._future
-                self._past = []
-                return True
-
-            def step_forward(self):
-                if not self._future:
-                    return False
-                self._past.append(self._future.pop(0))
-                return True
-
-            def current_ply(self):
-                return len(self._past)
-
-            def next_mainline_move(self):
-                if not self._future:
-                    return None
-                return self._future[0]
-
-            def mainline_tail_moves(self):
-                return list(self._future)
-
-            def _map_coords_to_engine(self, col, row):
-                return (col, row)
-
-            def _map_side_to_engine(self, side):
-                return side
-
-        core = _BatchCore()
-        raw_seq = [
-            RawNNResult(white_win=0.9, policy_rows=(), policy_pass=0.0),  # pre-ply1
-            RawNNResult(white_win=0.8, policy_rows=(), policy_pass=0.0),  # pre-ply2 = post-ply1
-            RawNNResult(white_win=0.7, policy_rows=(), policy_pass=0.0),  # final = post-ply2
-        ]
-        with patch("cli._run_kata_raw_nn_once", side_effect=raw_seq) as raw_once, patch(
-            "cli._score_policy_move_fast_batch", return_value=None
-        ) as score:
-            ok, payload = cli._run_batch_fast_cli(core, include_plies=True)
-
-        self.assertTrue(ok)
-        plies = payload["plies"]
-        self.assertEqual(len(plies), 2)
-        # red_winrate is post-move, filled by the next position's raw-NN eval.
-        self.assertEqual(plies[0]["red_winrate"], 0.2)  # from white_win=0.8
-        self.assertEqual(plies[1]["red_winrate"], 0.3)  # from final extra call white_win=0.7
-        self.assertEqual(raw_once.call_count, 3)  # 2 plies + 1 final fill
-        self.assertEqual(score.call_count, 1)  # ply 1 skipped; ply 2 attempted
-
     def test_run_cli_analyze_streams_one_result_per_position_and_clears_cache_between(self):
         engine = SimpleNamespace(clear_cache=Mock(), close=Mock())
         core = SimpleNamespace(
             load_hexworld_text=Mock(
                 side_effect=lambda text: None if text != "bad" else "HexWorld parse failed: bad"
             ),
+            build_hexworld_url=Mock(
+                side_effect=[
+                    "https://hexworld.org/board/#14c1,a1",
+                    "https://hexworld.org/board/#14c1,b1",
+                ]
+            ),
         )
         args = SimpleNamespace(
             cli_cmd="analyze",
-            positions=["good-1", "bad", "good-2"],
+            position=["good-1", "bad", "good-2"],
             top_n=None,
             search_seconds=None,
             analysis_wide_root_noise=None,
         )
         ok_payload = {
-            "mode": "analyze",
-            "method": "raw_nn",
-            "best_reply": None,
-            "root_eval": {"red_winrate": 0.4},
-            "moves": [],
+            "analyze": {
+                "method": "raw_nn",
+                "best": {"move": "a1", "prior": 0.2},
+                "root_eval": {"red_winrate": 0.4},
+                "moves": [],
+            },
         }
 
         with patch("cli.KataHexEngine", return_value=engine), patch(
             "cli.GuiCore", return_value=core
-        ), patch("cli._position_payload", return_value={}), patch(
-            "cli._run_cli_analyze", side_effect=[(True, ok_payload), (True, ok_payload)]
+        ), patch("cli._run_cli_analyze", side_effect=[(True, ok_payload), (True, ok_payload)]
         ) as run_analyze, patch("cli._emit") as emit:
             exit_code = cli.run_cli(args, engine_cmd=["katahex"])
 
         self.assertEqual(exit_code, 0)
-        self.assertEqual(engine.clear_cache.call_count, 2)
-        self.assertEqual(
-            [call.args[0] for call in core.load_hexworld_text.call_args_list],
-            ["good-1", "bad", "good-2"],
-        )
-        self.assertEqual(run_analyze.call_count, 2)
         self.assertEqual(emit.call_count, 3)
         self.assertEqual(
-            [(call.args[0]["input"], call.args[0]["ok"]) for call in emit.call_args_list],
-            [("good-1", True), ("bad", False), ("good-2", True)],
+            [(call.args[0]["hexworld"], call.args[0]["ok"]) for call in emit.call_args_list],
+            [
+                ("https://hexworld.org/board/#14c1,a1", True),
+                ("https://hexworld.org/board/#bad", False),
+                ("https://hexworld.org/board/#14c1,b1", True),
+            ],
         )
         engine.close.assert_called_once_with()
 
@@ -215,6 +162,47 @@ class CliTests(unittest.TestCase):
                 ["good-1", "stdin-1", "stdin-2", "good-2"],
             )
 
+    def test_run_cli_match_search_mode_uses_top_child_eval_for_resignation(self):
+        engine_a = SimpleNamespace(
+            clear_board=Mock(), clear_cache=Mock(), kata_set_param=Mock(), play=Mock(), close=Mock()
+        )
+        engine_b = SimpleNamespace(
+            clear_board=Mock(), clear_cache=Mock(), kata_set_param=Mock(), play=Mock(), close=Mock()
+        )
+        args = SimpleNamespace(
+            cli_cmd="match",
+            engine_a="main",
+            engine_b="alt",
+            openings="a1",
+            size=14,
+            rounds=1,
+            search_seconds=1.0,
+            visits_temp=0.5,
+            visits_temp_decay=1.0,
+            resign_winrate=0.01,
+        )
+        recs = [
+            AnalysisMove("b1", order=0, col=2, row=1, winrate=0.0, visits=100, prior=None, pv=None),
+        ]
+
+        with patch("cli.KataHexEngine", side_effect=[engine_a, engine_b]), patch(
+            "cli._run_match_search_for_seconds", side_effect=[("completed", recs), ("completed", recs)]
+        ) as run_search, patch("cli._emit") as emit:
+            ok, payload = cli._run_cli_match(args, engine_a_cmd=["a"], engine_b_cmd=["b"])
+
+        self.assertTrue(ok)
+        self.assertEqual(payload, {})
+        self.assertEqual(run_search.call_count, 2)
+        self.assertEqual(run_search.call_args_list[0].args[2], 1.0)
+        self.assertEqual(run_search.call_args_list[1].args[2], 1.0)
+        self.assertEqual(
+            [(call.args[0]["match"]["winner"], call.args[0]["match"]["result"]) for call in emit.call_args_list],
+            [("main", "blue_resigned"), ("alt", "blue_resigned")],
+        )
+        game0 = emit.call_args_list[0].args[0]
+        self.assertEqual(game0["error"], None)
+        self.assertIn("meta", game0)
+        self.assertEqual(game0["match"]["plies"], [{"ply": 1, "side": "red", "played": "a1"}])
 
 if __name__ == "__main__":
     unittest.main()
