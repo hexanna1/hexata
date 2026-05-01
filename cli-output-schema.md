@@ -105,7 +105,17 @@ python3 main.py cli batch 'https://hexworld.org/board/#14c1,a14k4d5d4e4d6c6e3f3c
       {
         "ply": 1,
         "side": "red",
-        "played": "a1",
+        "played": "a1"
+      },
+      {
+        "ply": 2,
+        "side": "blue",
+        "played": "swap"
+      },
+      {
+        "ply": 3,
+        "side": "red",
+        "played": "b1",
         "analyze": {
           "method": "search",
           "best": {"move": "f6", "red_winrate": 0.61, "visits": 120},

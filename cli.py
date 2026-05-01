@@ -328,24 +328,23 @@ def _run_cli_batch(core: GuiCore, args: argparse.Namespace) -> tuple[bool, dict]
         if mv is None:
             break
 
-        side_to_play = core.current_side()
-        ok, recs_or_error = _run_search_for_cli(core, args.search_seconds)
-        if not ok:
-            return False, recs_or_error
-
         plies_total += 1
-        plies.append(
-            {
-                "ply": plies_total,
-                "side": _side_to_text(mv.side),
-                "played": _move_to_text(mv),
-                "analyze": _search_analyze_payload(
-                    recs_or_error,
-                    side_to_play=side_to_play,
-                    top_n=None,
-                ),
-            }
-        )
+        row = {
+            "ply": plies_total,
+            "side": _side_to_text(mv.side),
+            "played": _move_to_text(mv),
+        }
+        if plies_total != 1 and mv.kind != MoveKind.SWAP:
+            side_to_play = core.current_side()
+            ok, recs_or_error = _run_search_for_cli(core, args.search_seconds)
+            if not ok:
+                return False, recs_or_error
+            row["analyze"] = _search_analyze_payload(
+                recs_or_error,
+                side_to_play=side_to_play,
+                top_n=None,
+            )
+        plies.append(row)
 
         if not core.step_forward():
             return False, {"error": "Failed to step forward during batch analysis"}
