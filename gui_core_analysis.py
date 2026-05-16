@@ -595,10 +595,13 @@ class GuiCoreAnalysisMixin:
                 return
 
             target = run.target_visits
-            if len(state.candidates) <= 1:
-                return
             if visits <= target:
                 return
+
+            next_keys = self.sorted_candidates_by_visits()
+            if not next_keys or next_keys[0] == key:
+                return
+
             self._end_candidate_run()
 
     def get_active_analysis(self) -> List[AnalysisMove]:

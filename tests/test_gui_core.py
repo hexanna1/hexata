@@ -1538,16 +1538,28 @@ class GuiCoreTests(unittest.TestCase):
                 lambda call: call[0] == "play" and call[1] == Side.RED and call[2:] == (2, 2),
             )
 
-    def test_single_candidate_does_not_rotate_or_undo(self):
+    def test_candidate_does_not_rotate_when_current_remains_next(self):
         core, engine = self._mk_core()
-        self._start_candidate_run(core, 1, 1)
+
+        core.add_candidate(1, 1)
+        core.add_candidate(2, 2)
+        core.app.candidate_state.results[(1, 1)] = (0.4, 10)
+        core.app.candidate_state.results[(2, 2)] = (0.6, 30)
+        core._apply_analysis_enabled_transition(True)
+        core.step_candidate_search(now=0.0)
+        self.assertEqual(core.app.candidate_state.run.key, (1, 1))
+
+        engine.analysis = [
+            AnalysisMove("b2", order=0, col=2, row=2, winrate=0.5, visits=25, prior=0.4, pv=None)
+        ]
+        core.step_candidate_search(now=0.0)
         undo_before = sum(1 for call in engine.calls if call[0] == "undo")
 
         core.step_candidate_search(now=2.0)
         undo_after = sum(1 for call in engine.calls if call[0] == "undo")
 
         self.assertEqual(undo_before, undo_after)
-        self.assertIsNotNone(core.app.candidate_state.run)
+        self.assertEqual(core.app.candidate_state.run.key, (1, 1))
 
     def test_delete_tail_undoes_candidate_and_history(self):
         core, engine = self._mk_core()
