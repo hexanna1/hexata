@@ -229,23 +229,20 @@ class GuiCoreAnalysisMixin:
     def _merge_analysis_lists(
         self, primary: List[AnalysisMove], secondary: List[AnalysisMove]
     ) -> List[AnalysisMove]:
-        secondary_by_coord: dict[Tuple[int, int], AnalysisMove] = {}
-        secondary_extras: List[AnalysisMove] = []
+        def row_key(r: AnalysisMove) -> tuple[str, int | str, int | None]:
+            if r.col is not None and r.row is not None:
+                return ("coord", r.col, r.row)
+            return ("move", r.move, None)
+
+        secondary_by_key: dict[tuple[str, int | str, int | None], AnalysisMove] = {}
         for r in secondary:
-            if r.col is None or r.row is None:
-                secondary_extras.append(r)
-                continue
-            secondary_by_coord[(r.col, r.row)] = r
+            secondary_by_key[row_key(r)] = r
 
         merged: List[AnalysisMove] = []
         for r in primary:
-            if r.col is None or r.row is None:
-                merged.append(r)
-                continue
-            merged.append(self._merge_analysis(r, secondary_by_coord.pop((r.col, r.row), None)))
+            merged.append(self._merge_analysis(r, secondary_by_key.pop(row_key(r), None)))
 
-        merged.extend(secondary_extras)
-        merged.extend(secondary_by_coord.values())
+        merged.extend(secondary_by_key.values())
         return merged
 
     def _merge_live_into_cache(self, live: List[AnalysisMove]) -> None:
