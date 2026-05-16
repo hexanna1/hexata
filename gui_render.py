@@ -89,7 +89,7 @@ class UiStateLike(Protocol):
     has_multiple_engines: bool
 
 
-@dataclass
+@dataclass(slots=True)
 class LayoutState:
     r: int
     wstep: float
@@ -100,7 +100,7 @@ class LayoutState:
     board_px_h: int
 
 
-@dataclass
+@dataclass(slots=True)
 class BaselineText:
     font: pygame.freetype.Font
     baseline_offset: float
@@ -129,7 +129,7 @@ class BaselineText:
         return surf.get_width()
 
 
-@dataclass
+@dataclass(slots=True)
 class FontState:
     board_small: pygame.freetype.Font
     hud_font: pygame.freetype.Font
@@ -138,7 +138,7 @@ class FontState:
     io_font: pygame.freetype.Font
 
 
-@dataclass
+@dataclass(slots=True)
 class TextRenderer:
     board: BaselineText
     movelist: BaselineText
@@ -794,6 +794,39 @@ class GuiRenderer:
             self._movelist_view = self.core.build_movelist_view()
         return self._movelist_view
 
+    @staticmethod
+    def _movelist_start_row(focus_row: int, total_rows: int, max_lines: int) -> int:
+        if not max_lines or total_rows <= max_lines:
+            return 0
+        if focus_row >= total_rows - 1:
+            return total_rows - max_lines
+        start = focus_row - (max_lines // 2)
+        return max(0, min(start, total_rows - max_lines))
+
+    @staticmethod
+    def _movelist_left_col(rows, focus_row: int, cursor_ply: int, visible_cols: int) -> int:
+        if cursor_ply <= 0 or not (0 <= focus_row < len(rows)):
+            return 0
+        active_cell = next((cell for cell in rows[focus_row].cells if cell.played), None)
+        if active_cell is None:
+            return 0
+
+        active_lane = active_cell.column
+        lane_end = active_lane + len(active_cell.label)
+        max_end = lane_end
+        for row in rows:
+            for cell in row.cells:
+                cell_end = cell.column + len(cell.label)
+                if cell_end > max_end:
+                    max_end = cell_end
+                if cell.column == active_lane and cell_end > lane_end:
+                    lane_end = cell_end
+        max_left = max(0, max_end - visible_cols)
+        return min(
+            max(0, lane_end - visible_cols),
+            max_left,
+        )
+
     def draw_movelist_panel(self, ui: UiStateLike) -> None:
         x0 = self.layout.board_px_w
         pygame.draw.rect(self.screen, SURFACE_PANEL, pygame.Rect(x0, 0, PANEL_W, self.screen.get_height()))
@@ -820,14 +853,7 @@ class GuiRenderer:
         io_top = max(y, self.screen.get_height() - io_panel_h) if ui.show_engine_debug else graph_top
         max_lines = max(0, (io_top - y - 6) // line_h)
 
-        start = 0
-        if max_lines and total_rows > max_lines:
-            if view.focus_row >= total_rows - 1:
-                start = total_rows - max_lines
-            else:
-                start = view.focus_row - (max_lines // 2)
-                start = max(0, min(start, total_rows - max_lines))
-
+        start = self._movelist_start_row(view.focus_row, total_rows, max_lines)
         end = min(total_rows, start + max_lines)
         space_w = self.text.movelist.font.get_rect(" ").width
         gutter_w = self.text.movelist.font.get_rect(f"{total_rows}.").width if total_rows else 0
@@ -835,25 +861,7 @@ class GuiRenderer:
         content_right = x0 + PANEL_W - pad
         content_w = max(1, content_right - content_x)
         visible_cols = max(1, content_w // max(1, space_w))
-        left_col = 0
-        if cursor_ply > 0 and 0 <= view.focus_row < total_rows:
-            active_cell = next((cell for cell in rows[view.focus_row].cells if cell.played), None)
-            if active_cell is not None:
-                active_lane = active_cell.column
-                lane_end = active_lane + len(active_cell.label)
-                max_end = lane_end
-                for row in rows:
-                    for cell in row.cells:
-                        cell_end = cell.column + len(cell.label)
-                        if cell_end > max_end:
-                            max_end = cell_end
-                        if cell.column == active_lane and cell_end > lane_end:
-                            lane_end = cell_end
-                max_left = max(0, max_end - visible_cols)
-                left_col = min(
-                    max(0, lane_end - visible_cols),
-                    max_left,
-                )
+        left_col = self._movelist_left_col(rows, view.focus_row, cursor_ply, visible_cols)
         scroll_px = left_col * space_w
         content_clip_rect = pygame.Rect(x0 + pad, 0, PANEL_W - (2 * pad), io_top)
         prior_clip = self.screen.get_clip()
@@ -907,15 +915,38 @@ class GuiRenderer:
 
         pygame.draw.line(self.screen, LINE, (x0, 0), (x0, self.screen.get_height()), 1)
 
-    def draw_hud(self, ui: UiStateLike) -> None:
-        pygame.draw.rect(self.screen, SURFACE_BG, pygame.Rect(0, 0, self.screen.get_width(), HUD_H))
+    def _hud_candidate_key(self, ui: UiStateLike) -> Optional[Tuple[int, int]]:
+        cand_key = (
+            self.app.candidate_state.run.key
+            if self.app.candidate_state.run is not None
+            else ui.last_cand_display
+        )
+        if cand_key is not None and cand_key not in self.app.candidate_state.candidates:
+            cand_key = None
+        if cand_key is None:
+            next_keys = self.core.sorted_candidates_by_visits()
+            cand_key = next_keys[0] if next_keys else None
+        return cand_key
 
+    def _hud_best_analysis(self) -> Optional[AnalysisMove]:
+        display: Optional[AnalysisMove] = None
+        for r in self.core.get_active_analysis():
+            if r.col is None or r.row is None:
+                continue
+            if r.order is None:
+                continue
+            if not self.board.is_empty(r.col, r.row):
+                continue
+            if display is None or r.order < display.order:
+                display = r
+        return display
+
+    def _hud_parts(self, ui: UiStateLike) -> List[Tuple[str, Tuple[int, int, int]]]:
         turn_side = self.core.current_side()
         turn_color = RED if turn_side == Side.RED else BLUE
         turn_name = "Red" if turn_side == Side.RED else "Blue"
         analysis_txt = "ON" if self.app.analysis_enabled else "OFF"
         analysis_color = TEXT_ON_LIGHT if self.app.analysis_enabled else TEXT_MUTED
-
         parts: List[Tuple[str, Tuple[int, int, int]]] = [
             ("Size: ", TEXT_ON_LIGHT),
             (f"{self.board.n}", TEXT_ON_LIGHT),
@@ -934,28 +965,12 @@ class GuiRenderer:
             (analysis_txt, analysis_color),
         ]
         if self.app.candidate_state.candidates:
-            cand_key = (
-                self.app.candidate_state.run.key if self.app.candidate_state.run is not None else ui.last_cand_display
-            )
-            if cand_key is not None and cand_key not in self.app.candidate_state.candidates:
-                cand_key = None
-            if cand_key is None:
-                next_keys = self.core.sorted_candidates_by_visits()
-                cand_key = next_keys[0] if next_keys else None
+            cand_key = self._hud_candidate_key(ui)
             parts += [("   |   ", TEXT_ON_LIGHT), ("Cand: ", TEXT_ON_LIGHT)]
             if cand_key is not None:
                 parts += [(coord_to_human(*cand_key), turn_color)]
         else:
-            display: Optional[AnalysisMove] = None
-            for r in self.core.get_active_analysis():
-                if r.col is None or r.row is None:
-                    continue
-                if r.order is None:
-                    continue
-                if not self.board.is_empty(r.col, r.row):
-                    continue
-                if display is None or r.order < display.order:
-                    display = r
+            display = self._hud_best_analysis()
             if display is not None:
                 best_label = "Batch: " if self.core.is_batch_analysis_active() else "Best: "
                 parts += [("   |   ", TEXT_ON_LIGHT), (best_label, TEXT_ON_LIGHT)]
@@ -970,6 +985,11 @@ class GuiRenderer:
                 vv = fmt_visits(display.visits)
                 if vv:
                     parts += [(" ", TEXT_ON_LIGHT), (f"({vv})", TEXT_ON_LIGHT)]
+        return parts
+
+    def draw_hud(self, ui: UiStateLike) -> None:
+        pygame.draw.rect(self.screen, SURFACE_BG, pygame.Rect(0, 0, self.screen.get_width(), HUD_H))
+        parts = self._hud_parts(ui)
         self.blit_segments(12, 10, parts, use_small=False)
 
         help_line = "space:analysis • ,:play best • +/-/enter:size • ?:help"

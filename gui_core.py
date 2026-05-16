@@ -90,6 +90,7 @@ class GuiCore(GuiCoreAnalysisMixin):
         self.edit_undo: list[EditSnapshot] = []
         self.edit_redo: list[EditSnapshot] = []
 
+    # -------------------- tree accessors --------------------
     # The move tree is the canonical logical history. `board.history` is only the
     # currently applied/materialized path, which differs after swap because move 1
     # is transposed on the board.
@@ -114,173 +115,7 @@ class GuiCore(GuiCoreAnalysisMixin):
     def next_variation_moves(self) -> list[Move]:
         return self.tree.variation_moves()
 
-    def _make_movelist_cell(
-        self,
-        node: HistoryNode,
-        *,
-        current_path_ids: set[int],
-    ) -> MovelistCell:
-        mv = node.move
-        if mv is None:
-            raise AssertionError("History tree node missing move")
-        return MovelistCell(
-            column=0,
-            label=self.move_to_label(mv),
-            side=mv.side,
-            played=node.id in current_path_ids,
-        )
-
-    @staticmethod
-    def _shift_movelist_subtree(
-        subtree: _MovelistSubtree,
-        *,
-        row_delta: int = 0,
-        col_delta: int = 0,
-    ) -> _MovelistSubtree:
-        return _MovelistSubtree(
-            placements=tuple(
-                _MovelistPlacement(
-                    row=placement.row + row_delta,
-                    cell=MovelistCell(
-                        column=placement.cell.column + col_delta,
-                        label=placement.cell.label,
-                        side=placement.cell.side,
-                        played=placement.cell.played,
-                    ),
-                )
-                for placement in subtree.placements
-            ),
-        )
-
-    @staticmethod
-    def _merge_movelist_subtrees(first: _MovelistSubtree, second: _MovelistSubtree) -> _MovelistSubtree:
-        return _MovelistSubtree(
-            placements=first.placements + second.placements,
-        )
-
-    @staticmethod
-    def _movelist_row_right_edge(subtree: _MovelistSubtree, row: int) -> int:
-        right = -1
-        for placement in subtree.placements:
-            if placement.row != row:
-                continue
-            right = max(right, placement.end_column)
-        return right
-
-    @staticmethod
-    def _movelist_required_shift(
-        existing: _MovelistSubtree,
-        incoming: _MovelistSubtree,
-        *,
-        min_col: int,
-    ) -> int:
-        # Pack each new sibling subtree as far left as possible while keeping
-        # lanes distinct on any overlapping ply row.
-        required = min_col
-        by_row: dict[int, list[_MovelistPlacement]] = {}
-        for placement in existing.placements:
-            by_row.setdefault(placement.row, []).append(placement)
-        for incoming_placement in incoming.placements:
-            for existing_placement in by_row.get(incoming_placement.row, []):
-                required = max(
-                    required,
-                    existing_placement.end_column - incoming_placement.cell.column,
-                )
-        return required
-
-    def _pack_movelist_subtrees(self, subtrees: Sequence[_MovelistSubtree]) -> _MovelistSubtree:
-        packed = _MovelistSubtree(placements=())
-        for idx, subtree in enumerate(subtrees):
-            if idx == 0:
-                packed = self._merge_movelist_subtrees(packed, subtree)
-                continue
-            shift = self._movelist_required_shift(
-                packed,
-                subtree,
-                min_col=self._movelist_row_right_edge(packed, 0),
-            )
-            packed = self._merge_movelist_subtrees(
-                packed,
-                self._shift_movelist_subtree(subtree, col_delta=shift),
-            )
-        return packed
-
-    def _build_movelist_subtree(
-        self,
-        node: HistoryNode,
-        *,
-        current_path_ids: set[int],
-    ) -> _MovelistSubtree:
-        built: dict[int, _MovelistSubtree] = {}
-        stack: list[tuple[HistoryNode, bool]] = [(node, False)]
-        while stack:
-            current, expanded = stack.pop()
-            if not expanded:
-                stack.append((current, True))
-                for child in reversed(current.children):
-                    stack.append((child, False))
-                continue
-            if current.move is None:
-                raise AssertionError("History tree node missing move")
-            root = _MovelistSubtree(
-                placements=(
-                    _MovelistPlacement(
-                        row=0,
-                        cell=self._make_movelist_cell(current, current_path_ids=current_path_ids),
-                    ),
-                ),
-            )
-            if current.children:
-                children = self._pack_movelist_subtrees([built[child.id] for child in current.children])
-                root = self._merge_movelist_subtrees(
-                    root,
-                    self._shift_movelist_subtree(children, row_delta=1),
-                )
-            built[current.id] = root
-        return built[node.id]
-
-    def build_movelist_view(self) -> MovelistView:
-        current_path_ids = {node.id for node in self.tree.current_path_nodes()}
-        if not self.tree.root.children:
-            return MovelistView(rows=(), focus_row=0)
-
-        packed = self._pack_movelist_subtrees(
-            [self._build_movelist_subtree(child, current_path_ids=current_path_ids) for child in self.tree.root.children]
-        )
-        lane_widths: dict[int, int] = {}
-        for placement in packed.placements:
-            lane_widths[placement.cell.column] = max(
-                lane_widths.get(placement.cell.column, 0),
-                len(placement.cell.label),
-            )
-        lane_starts: dict[int, int] = {}
-        lane_x = 0
-        for lane in range(max(lane_widths, default=-1) + 1):
-            lane_starts[lane] = lane_x
-            lane_x += lane_widths.get(lane, 0) + 1
-        row_cells: dict[int, list[MovelistCell]] = {}
-        for placement in packed.placements:
-            row_cells.setdefault(placement.row, []).append(
-                MovelistCell(
-                    column=lane_starts[placement.cell.column],
-                    label=placement.cell.label,
-                    side=placement.cell.side,
-                    played=placement.cell.played,
-                )
-            )
-
-        rows = tuple(
-            MovelistRow(
-                ply=row + 1,
-                cells=tuple(sorted(row_cells.get(row, ()), key=lambda cell: cell.column)),
-            )
-            for row in range(max(row_cells) + 1)
-        )
-        return MovelistView(
-            rows=rows,
-            focus_row=max(0, self.current_ply() - 1),
-        )
-
+    # -------------------- edit history --------------------
     def _capture_edit_state(self) -> EditSnapshot:
         state = self.app.candidate_state
         return (
@@ -357,6 +192,7 @@ class GuiCore(GuiCoreAnalysisMixin):
         self.edit_undo.append(current)
         return True
 
+    # -------------------- board and engine sync --------------------
     def apply_move_to_state(self, col: int, row: int) -> bool:
         side = self.current_side()
         if not self.board.place(side, col, row):
@@ -474,6 +310,7 @@ class GuiCore(GuiCoreAnalysisMixin):
     ) -> None:
         self._with_analysis_paused(fn, keep_engine_synced=True, resume_after=resume_after)
 
+    # -------------------- import and export --------------------
     def _import_size_error(self, size: int, *, source: str) -> Optional[str]:
         if MIN_BOARD_SIZE <= size <= MAX_BOARD_SIZE:
             return None
@@ -572,23 +409,7 @@ class GuiCore(GuiCoreAnalysisMixin):
         self._install_imported_tree(size, tree)
         return None
 
-    def build_eval_graph_data(self) -> EvalGraphData:
-        past_moves = list(self.applied_history())
-        future_moves = self.mainline_tail_moves()
-        moves = past_moves + future_moves
-        keys = [self.cache_key_for_applied_moves(past_moves[:i]) for i in range(1, len(past_moves) + 1)]
-        if future_moves:
-            # Eval-graph prefixes follow applied board history. Already-played moves
-            # come from the materialized path, and future moves are replayed from the
-            # current cursor so swap-transposed prefixes stay aligned with the
-            # positions the engine actually evaluates.
-            probe = self.board.copy()
-            for mv in future_moves:
-                if not probe.apply_move(mv):
-                    raise AssertionError(f"Illegal eval-graph future move: {mv}")
-                keys.append(self.cache_key_for_applied_moves(probe.history))
-        return EvalGraphData(moves=tuple(moves), prefix_keys=tuple(keys))
-
+    # -------------------- move navigation and editing --------------------
     def new_game(self) -> None:
         def mutate() -> None:
             self.engine.clear_board()
@@ -849,3 +670,191 @@ class GuiCore(GuiCoreAnalysisMixin):
         self.with_analysis_stopped(mutate)
         self._clear_edit_history()
         return True
+
+    # -------------------- view models --------------------
+    def build_eval_graph_data(self) -> EvalGraphData:
+        past_moves = list(self.applied_history())
+        future_moves = self.mainline_tail_moves()
+        moves = past_moves + future_moves
+        keys = [self.cache_key_for_applied_moves(past_moves[:i]) for i in range(1, len(past_moves) + 1)]
+        if future_moves:
+            # Eval-graph prefixes follow applied board history. Already-played moves
+            # come from the materialized path, and future moves are replayed from the
+            # current cursor so swap-transposed prefixes stay aligned with the
+            # positions the engine actually evaluates.
+            probe = self.board.copy()
+            for mv in future_moves:
+                if not probe.apply_move(mv):
+                    raise AssertionError(f"Illegal eval-graph future move: {mv}")
+                keys.append(self.cache_key_for_applied_moves(probe.history))
+        return EvalGraphData(moves=tuple(moves), prefix_keys=tuple(keys))
+
+    def _make_movelist_cell(
+        self,
+        node: HistoryNode,
+        *,
+        current_path_ids: set[int],
+    ) -> MovelistCell:
+        mv = node.move
+        if mv is None:
+            raise AssertionError("History tree node missing move")
+        return MovelistCell(
+            column=0,
+            label=self.move_to_label(mv),
+            side=mv.side,
+            played=node.id in current_path_ids,
+        )
+
+    @staticmethod
+    def _shift_movelist_subtree(
+        subtree: _MovelistSubtree,
+        *,
+        row_delta: int = 0,
+        col_delta: int = 0,
+    ) -> _MovelistSubtree:
+        return _MovelistSubtree(
+            placements=tuple(
+                _MovelistPlacement(
+                    row=placement.row + row_delta,
+                    cell=MovelistCell(
+                        column=placement.cell.column + col_delta,
+                        label=placement.cell.label,
+                        side=placement.cell.side,
+                        played=placement.cell.played,
+                    ),
+                )
+                for placement in subtree.placements
+            ),
+        )
+
+    @staticmethod
+    def _merge_movelist_subtrees(first: _MovelistSubtree, second: _MovelistSubtree) -> _MovelistSubtree:
+        return _MovelistSubtree(
+            placements=first.placements + second.placements,
+        )
+
+    @staticmethod
+    def _movelist_row_right_edge(subtree: _MovelistSubtree, row: int) -> int:
+        right = -1
+        for placement in subtree.placements:
+            if placement.row != row:
+                continue
+            right = max(right, placement.end_column)
+        return right
+
+    @staticmethod
+    def _movelist_required_shift(
+        existing: _MovelistSubtree,
+        incoming: _MovelistSubtree,
+        *,
+        min_col: int,
+    ) -> int:
+        # Pack each new sibling subtree as far left as possible while keeping
+        # lanes distinct on any overlapping ply row.
+        required = min_col
+        by_row: dict[int, list[_MovelistPlacement]] = {}
+        for placement in existing.placements:
+            by_row.setdefault(placement.row, []).append(placement)
+        for incoming_placement in incoming.placements:
+            for existing_placement in by_row.get(incoming_placement.row, []):
+                required = max(
+                    required,
+                    existing_placement.end_column - incoming_placement.cell.column,
+                )
+        return required
+
+    def _pack_movelist_subtrees(self, subtrees: Sequence[_MovelistSubtree]) -> _MovelistSubtree:
+        packed = _MovelistSubtree(placements=())
+        for idx, subtree in enumerate(subtrees):
+            if idx == 0:
+                packed = self._merge_movelist_subtrees(packed, subtree)
+                continue
+            shift = self._movelist_required_shift(
+                packed,
+                subtree,
+                min_col=self._movelist_row_right_edge(packed, 0),
+            )
+            packed = self._merge_movelist_subtrees(
+                packed,
+                self._shift_movelist_subtree(subtree, col_delta=shift),
+            )
+        return packed
+
+    def _build_movelist_subtree(
+        self,
+        node: HistoryNode,
+        *,
+        current_path_ids: set[int],
+    ) -> _MovelistSubtree:
+        built: dict[int, _MovelistSubtree] = {}
+        stack: list[tuple[HistoryNode, bool]] = [(node, False)]
+        while stack:
+            current, expanded = stack.pop()
+            if not expanded:
+                stack.append((current, True))
+                for child in reversed(current.children):
+                    stack.append((child, False))
+                continue
+            if current.move is None:
+                raise AssertionError("History tree node missing move")
+            root = _MovelistSubtree(
+                placements=(
+                    _MovelistPlacement(
+                        row=0,
+                        cell=self._make_movelist_cell(current, current_path_ids=current_path_ids),
+                    ),
+                ),
+            )
+            if current.children:
+                children = self._pack_movelist_subtrees([built[child.id] for child in current.children])
+                root = self._merge_movelist_subtrees(
+                    root,
+                    self._shift_movelist_subtree(children, row_delta=1),
+                )
+            built[current.id] = root
+        return built[node.id]
+
+    def build_movelist_view(self) -> MovelistView:
+        current_path_ids = {node.id for node in self.tree.current_path_nodes()}
+        if not self.tree.root.children:
+            return MovelistView(rows=(), focus_row=0)
+
+        packed = self._pack_movelist_subtrees(
+            [
+                self._build_movelist_subtree(child, current_path_ids=current_path_ids)
+                for child in self.tree.root.children
+            ]
+        )
+        lane_widths: dict[int, int] = {}
+        for placement in packed.placements:
+            lane_widths[placement.cell.column] = max(
+                lane_widths.get(placement.cell.column, 0),
+                len(placement.cell.label),
+            )
+        lane_starts: dict[int, int] = {}
+        lane_x = 0
+        for lane in range(max(lane_widths, default=-1) + 1):
+            lane_starts[lane] = lane_x
+            lane_x += lane_widths.get(lane, 0) + 1
+        row_cells: dict[int, list[MovelistCell]] = {}
+        for placement in packed.placements:
+            row_cells.setdefault(placement.row, []).append(
+                MovelistCell(
+                    column=lane_starts[placement.cell.column],
+                    label=placement.cell.label,
+                    side=placement.cell.side,
+                    played=placement.cell.played,
+                )
+            )
+
+        rows = tuple(
+            MovelistRow(
+                ply=row + 1,
+                cells=tuple(sorted(row_cells.get(row, ()), key=lambda cell: cell.column)),
+            )
+            for row in range(max(row_cells) + 1)
+        )
+        return MovelistView(
+            rows=rows,
+            focus_row=max(0, self.current_ply() - 1),
+        )

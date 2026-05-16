@@ -27,13 +27,13 @@ from gui_render import GuiRenderer
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class EngineProfile:
     name: str
     cmd: tuple[str, ...]
 
 
-@dataclass
+@dataclass(slots=True)
 class UiState:
     prefs: UiPrefs
     engine_profiles: tuple[EngineProfile, ...] = ()
@@ -64,7 +64,7 @@ class UiState:
         return len(self.engine_profiles) > 1
 
 
-@dataclass
+@dataclass(slots=True)
 class UiPrefs:
     show_move_numbers: bool = False
     show_elo: bool = False
