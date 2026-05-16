@@ -497,6 +497,7 @@ class GuiCore(GuiCoreAnalysisMixin):
             self.board.set_size(size)
             self.tree = tree
             self.app.pending_size = size
+            self.clear_candidates()
             self.clear_all_cached_analysis()
             self._rebuild_position_from_tree()
 
@@ -593,6 +594,7 @@ class GuiCore(GuiCoreAnalysisMixin):
             self.engine.clear_board()
             self.board.clear()
             self.tree.clear()
+            self.clear_candidates()
             self.clear_all_cached_analysis()
 
         self.with_analysis_keep_engine_synced(mutate)
@@ -791,6 +793,8 @@ class GuiCore(GuiCoreAnalysisMixin):
         mv = self.applied_history()[idx]
         if self.move_coords(mv) != src:
             return False
+        # Only drag onto currently empty cells; future tail conflicts can be
+        # pruned after the edited prefix is rebuilt, but applied stones stay fixed.
         if not self.board.is_empty(col, row):
             return False
 

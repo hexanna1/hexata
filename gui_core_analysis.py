@@ -323,6 +323,8 @@ class GuiCoreAnalysisMixin:
                 return False
             state.candidates.add(key)
             self._ensure_candidate_root()
+            if self.is_batch_analysis_active():
+                self.cancel_batch_analysis()
             return True
         if key not in state.candidates:
             return False
@@ -665,7 +667,12 @@ class GuiCoreAnalysisMixin:
 
     def get_top_move(self) -> Tuple[Optional[Tuple[int, int]], int]:
         best: Optional[AnalysisMove] = None
-        for r in self.get_active_analysis():
+        recs = self.app.analysis_cache.get(self.cache_key(), [])
+        if not recs and self.app.candidate_state.candidates:
+            return None, 0
+        if not recs and self.app.analysis_enabled:
+            recs = self.get_engine_analysis()
+        for r in recs:
             if r.col is None or r.row is None or r.order is None:
                 continue
             if not self.board.is_empty(r.col, r.row):
