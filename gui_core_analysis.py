@@ -56,6 +56,7 @@ class AppState:
     candidate_state: CandidateState
     analysis_cache: dict[bytes, list[AnalysisMove]]
     root_eval_cache: dict[bytes, float]
+    analysis_cache_generation: int
     last_cache_sig: Optional[tuple]
     analysis_wide_root_noise: float
     analysis_mode: AnalysisMode = AnalysisModeTag.OFF
@@ -189,6 +190,7 @@ class GuiCoreAnalysisMixin:
     def clear_all_cached_analysis(self) -> None:
         self.app.analysis_cache.clear()
         self.app.root_eval_cache.clear()
+        self.app.analysis_cache_generation += 1
         self.cache_reset_sig()
 
     def clear_analysis_caches(self) -> None:

@@ -15,6 +15,7 @@ EditSnapshot = tuple[
     MoveTree,
     tuple[Tuple[int, int], ...],
     dict[Tuple[int, int], tuple[Optional[float], Optional[int]]],
+    int,
 ]
 
 
@@ -84,6 +85,7 @@ class GuiCore(GuiCoreAnalysisMixin):
             ),
             analysis_cache={},
             root_eval_cache={},
+            analysis_cache_generation=0,
             last_cache_sig=None,
             analysis_wide_root_noise=0.04,
         )
@@ -122,6 +124,7 @@ class GuiCore(GuiCoreAnalysisMixin):
             self.tree.clone(),
             tuple(sorted(state.candidates)),
             dict(state.results),
+            self.app.analysis_cache_generation,
         )
 
     def _clear_edit_history(self) -> None:
@@ -157,7 +160,7 @@ class GuiCore(GuiCoreAnalysisMixin):
         self.rebuild_engine_from_applied_history()
 
     def _restore_edit_state(self, snap: EditSnapshot) -> None:
-        tree, candidates, results = snap
+        tree, candidates, results, cache_generation = snap
 
         def mutate() -> None:
             self.tree = tree.clone()
@@ -165,7 +168,8 @@ class GuiCore(GuiCoreAnalysisMixin):
             state.candidates.clear()
             state.candidates.update(candidates)
             state.results.clear()
-            state.results.update(results)
+            if cache_generation == self.app.analysis_cache_generation:
+                state.results.update(results)
             state.run = None
             self._rebuild_position_from_tree()
             state.root_key = self.cache_key() if state.candidates else None

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum, IntEnum
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 MIN_BOARD_SIZE = 4
 MAX_BOARD_SIZE = 42
@@ -38,12 +38,6 @@ class Move:
     @staticmethod
     def swap(side: Side, col: int, row: int) -> "Move":
         return Move(kind=MoveKind.SWAP, side=side, col=col, row=row)
-
-    def is_pass(self) -> bool:
-        return self.kind == MoveKind.PASS
-
-    def is_swap(self) -> bool:
-        return self.kind == MoveKind.SWAP
 
 
 class HexBoard:
@@ -135,34 +129,6 @@ class HexBoard:
         self.occ[new_idx] = int(swapped_side)
         self.history[0] = Move.place(side=swapped_side, col=new_col, row=new_row)
         self.history.append(Move.swap(side=side, col=old_col, row=old_row))
-        self._bump_rev()
-        return True
-
-    def move_in_history(self, index: int, col: int, row: int) -> bool:
-        if index < 0 or index >= len(self.history):
-            return False
-        if not self.in_bounds(col, row):
-            return False
-        if not self.is_empty(col, row):
-            return False
-
-        mv = self.history[index]
-        if mv.kind != MoveKind.PLACE:
-            return False
-        self.occ[self._idx(mv.col, mv.row)] = -1
-        self.occ[self._idx(col, row)] = int(mv.side)
-        self.history[index] = Move.place(side=mv.side, col=col, row=row)
-        # Keep SWAP metadata aligned so move 1 label/export still uses the
-        # opening token from pre-transpose perspective.
-        if (
-            index == 0
-            and len(self.history) >= 2
-            and self.history[1].kind == MoveKind.SWAP
-            and self.history[1].col is not None
-            and self.history[1].row is not None
-        ):
-            swap_mv = self.history[1]
-            self.history[1] = Move.swap(side=swap_mv.side, col=row, row=col)
         self._bump_rev()
         return True
 

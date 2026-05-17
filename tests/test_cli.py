@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import cli
-from board import Move, Side
+from board import Side
 from engine import AnalysisMove, RawNNResult
 
 

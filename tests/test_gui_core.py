@@ -2,7 +2,7 @@ import unittest
 import sys
 from unittest import mock
 
-from board import HexBoard, Move, MoveKind, Side, coord_to_human
+from board import HexBoard, Move, MoveKind, Side
 from engine import AnalysisMove
 from gui_core import GuiCore
 from gui_core_analysis import AnalysisModeTag
@@ -1073,6 +1073,21 @@ class GuiCoreTests(unittest.TestCase):
         self.assertEqual(core.app.candidate_state.results, {(1, 1): (0.4, 5)})
         self.assertEqual(core.app.candidate_state.root_key, core.cache_key())
         self.assertTrue(core.is_candidate_mode())
+
+    def test_undo_after_cache_clear_restores_candidates_without_stale_analysis(self):
+        core, _engine = self._mk_core()
+
+        core.toggle_analysis()
+        core.add_candidate(1, 1)
+        core.app.candidate_state.results[(1, 1)] = (0.4, 5)
+
+        self.assertTrue(core.try_play_move(2, 1))
+        core.clear_analysis_caches()
+
+        self.assertTrue(core.undo_edit())
+        self.assertEqual(core.app.candidate_state.candidates, {(1, 1)})
+        self.assertEqual(core.app.candidate_state.results, {})
+        self.assertEqual(core.app.candidate_state.root_key, core.cache_key())
 
     def test_undo_during_batch_exits_batch_mode(self):
         core, _engine = self._mk_core()
