@@ -397,8 +397,6 @@ class GuiRenderer:
         top_cell: Optional[Tuple[int, int]],
         top_visits: int,
         show_prior: bool,
-        *,
-        skip_cell: Optional[Tuple[int, int]] = None,
     ) -> None:
         visits_map: dict[Tuple[int, int], int] = {}
         winrate_map: dict[Tuple[int, int], float] = {}
@@ -427,8 +425,6 @@ class GuiRenderer:
             for col in range(1, self.board.n + 1):
                 ax, ay = col - 1, row - 1
                 occ = self.board.get(col, row)
-                if skip_cell is not None and skip_cell == (col, row):
-                    occ = -1
 
                 if occ < 0:
                     if (col, row) in self.app.candidate_state.candidates:
@@ -1087,7 +1083,7 @@ class GuiRenderer:
                     and self.board.is_empty(*hover_cell)
                 ):
                     drag_target = hover_cell
-        self.draw_grid_and_stones(top_cell, top_visits, show_prior, skip_cell=None)
+        self.draw_grid_and_stones(top_cell, top_visits, show_prior)
         if show_pv and pv is not None:
             self.draw_pv_ghosts(pv, self.core.current_side())
         if drag_side is not None:

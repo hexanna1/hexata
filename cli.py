@@ -68,7 +68,7 @@ def _to_output_row(r: AnalysisMove, *, side_to_play: Side) -> dict:
         move = coord_to_human(r.col, r.row)
     return {
         "move": move,
-        "rank": r.order + 1,
+        "rank": None if r.order is None else r.order + 1,
         "red_winrate": _side_winrate_to_red(r.winrate, side_to_play),
         "visits": r.visits,
         "prior": _round6(r.prior),
@@ -98,11 +98,14 @@ def _run_for_seconds_from_first_update(core: GuiCore, seconds: float) -> str:
 def _run_kata_raw_nn_once(engine: KataHexEngine) -> Optional[RawNNResult]:
     if not engine.start_kata_raw_nn(0):
         return None
+    started_at = time.monotonic()
     while True:
         done, raw = engine.poll_kata_raw_nn()
         if done:
             return raw
         if engine.proc.poll() is not None:
+            return None
+        if time.monotonic() - started_at >= STARTUP_TIMEOUT_SECONDS:
             return None
         time.sleep(POLL_SECONDS)
 
