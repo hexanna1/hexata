@@ -68,6 +68,10 @@ class UiState:
 class UiPrefs:
     show_move_numbers: bool = False
     show_elo: bool = False
+    board_orientation: str = "flat"
+
+    def toggle_board_orientation(self) -> None:
+        self.board_orientation = "diamond" if self.board_orientation == "flat" else "flat"
 
 
 def load_position_text(text: str, *, core: GuiCore, on_success: Callable[[], None]) -> bool:
@@ -162,7 +166,9 @@ def run_gui(
     pygame.key.set_repeat(400, 33)
 
     flags = pygame.RESIZABLE
-    renderer = GuiRenderer(board, core, flags=flags)
+    renderer = GuiRenderer(
+        board, core, flags=flags, board_orientation=ui_prefs.board_orientation
+    )
     clock = pygame.time.Clock()
 
     scrap_ok = False
@@ -300,6 +306,9 @@ def run_gui(
             cycle_engine_profile(core, ui, engine_echo=engine_echo)
         elif ev.key == pygame.K_e:
             ui.prefs.show_elo = not ui.prefs.show_elo
+        elif ev.key == pygame.K_o and has_shift and not has_ctrl:
+            ui.prefs.toggle_board_orientation()
+            renderer.set_board_orientation(ui.prefs.board_orientation)
         elif ev.key == pygame.K_n and (mods & pygame.KMOD_SHIFT) and not has_ctrl:
             core.new_game()
         elif ev.key == pygame.K_v and has_ctrl:

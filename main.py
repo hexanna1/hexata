@@ -92,11 +92,19 @@ def _save_ui_prefs(config_local_path: str, prefs: UiPrefs, *, board_size: int) -
         parser.add_section("ui")
     parser.set("ui", "show_move_numbers", "true" if prefs.show_move_numbers else "false")
     parser.set("ui", "show_elo", "true" if prefs.show_elo else "false")
+    parser.set("ui", "board_orientation", prefs.board_orientation)
     if not parser.has_section("game"):
         parser.add_section("game")
     parser.set("game", "size", str(max(MIN_BOARD_SIZE, min(MAX_BOARD_SIZE, board_size))))
     with open(config_local_path, "w", encoding="utf-8") as f:
         parser.write(f)
+
+
+def _load_board_orientation(parser: configparser.ConfigParser, default: str) -> str:
+    value = parser.get("ui", "board_orientation", fallback=default).strip().lower()
+    if value not in ("flat", "diamond"):
+        raise ValueError("ui.board_orientation must be flat or diamond")
+    return value
 
 
 def _load_gui_runtime_config(parser: configparser.ConfigParser) -> tuple[int, UiPrefs]:
@@ -109,6 +117,9 @@ def _load_gui_runtime_config(parser: configparser.ConfigParser) -> tuple[int, Ui
                 "ui", "show_move_numbers", fallback=default_prefs.show_move_numbers
             ),
             show_elo=parser.getboolean("ui", "show_elo", fallback=default_prefs.show_elo),
+            board_orientation=_load_board_orientation(
+                parser, default_prefs.board_orientation
+            ),
         ),
     )
 

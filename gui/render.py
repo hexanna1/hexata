@@ -158,17 +158,36 @@ class BoardProjection:
         return -1, row - 1
 
 
-POINTY_PROJECTION = BoardProjection(
+def _rotate_screen_vec(v: Tuple[float, float], deg: float) -> Tuple[float, float]:
+    a = math.radians(deg)
+    x, y = v
+    return x * math.cos(a) + y * math.sin(a), -x * math.sin(a) + y * math.cos(a)
+
+
+FLAT_BORDER_SPECS = (
+    BorderSpec(Side.RED, ((2, 3), (3, 4)), lambda i, n: (i, 0)),
+    BorderSpec(Side.RED, ((5, 0), (0, 1)), lambda i, n: (i, n - 1)),
+    BorderSpec(Side.BLUE, ((4, 5), (5, 0)), lambda i, n: (0, i)),
+    BorderSpec(Side.BLUE, ((1, 2), (2, 3)), lambda i, n: (n - 1, i)),
+)
+
+FLAT_PROJECTION = BoardProjection(
     corner_degrees=POINTY_CORNER_DEG,
     col_unit=(SQ3, 0.0),
     row_unit=(SQ3 / 2, 1.5),
-    border_specs=(
-        BorderSpec(Side.RED, ((2, 3), (3, 4)), lambda i, n: (i, 0)),
-        BorderSpec(Side.RED, ((5, 0), (0, 1)), lambda i, n: (i, n - 1)),
-        BorderSpec(Side.BLUE, ((4, 5), (5, 0)), lambda i, n: (0, i)),
-        BorderSpec(Side.BLUE, ((1, 2), (2, 3)), lambda i, n: (n - 1, i)),
-    ),
+    border_specs=FLAT_BORDER_SPECS,
 )
+
+DIAMOND_PROJECTION = BoardProjection(
+    corner_degrees=tuple(deg - 30 for deg in POINTY_CORNER_DEG),
+    col_unit=_rotate_screen_vec((SQ3, 0.0), 30),
+    row_unit=_rotate_screen_vec((SQ3 / 2, 1.5), 30),
+    border_specs=FLAT_BORDER_SPECS,
+)
+
+
+def projection_for_orientation(orientation: str) -> BoardProjection:
+    return DIAMOND_PROJECTION if orientation == "diamond" else FLAT_PROJECTION
 
 
 @dataclass(slots=True)
@@ -301,12 +320,14 @@ def lerp_rgb(a: Tuple[int, int, int], b: Tuple[int, int, int], t: float) -> Tupl
 
 
 class GuiRenderer:
-    def __init__(self, board: HexBoard, core: GuiCore, *, flags: int) -> None:
+    def __init__(
+        self, board: HexBoard, core: GuiCore, *, flags: int, board_orientation: str = "flat"
+    ) -> None:
         self.board = board
         self.core = core
         self.app = core.app
         self.flags = flags
-        self.projection = POINTY_PROJECTION
+        self.projection = projection_for_orientation(board_orientation)
         self.screen = pygame.display.set_mode((DEFAULT_WIN_W, DEFAULT_WIN_H), flags)
         self.layout = LayoutState(
             r=BASE_R,
@@ -330,6 +351,13 @@ class GuiRenderer:
         self._frozen_pv_sig: Optional[Tuple[Optional[Tuple[int, int]], int]] = None
         self._frozen_pv: Optional[Tuple[Tuple[int, int], ...]] = None
         self.apply_window_size(DEFAULT_WIN_W, DEFAULT_WIN_H)
+
+    def set_board_orientation(self, orientation: str) -> None:
+        projection = projection_for_orientation(orientation)
+        if projection is self.projection:
+            return
+        self.projection = projection
+        self.apply_window_size(*pygame.display.get_window_size())
 
     def make_board_small(self, r: int) -> pygame.freetype.Font:
         t = clamp01((BASE_R - r) / (BASE_R - 8))
@@ -1097,7 +1125,7 @@ class GuiRenderer:
             ("header", "Display / analysis"),
             ("item", "space:analysis   t:priors   c:coords   m:moves   e:elo"),
             ("item", "[/]:set analysisWideRootNoise   shift+c:clear cache"),
-            ("item", "d:engine debug   shift+e:cycle engine"),
+            ("item", "d:engine debug   shift+e:cycle engine   shift+o:orient"),
             ("header", "Candidates / batch"),
             ("item", "right-click:toggle cand   right-drag:toggle cands"),
             ("item", "shift+x:clear cands   shift+b:fast batch   ctrl+shift+b:batch"),
