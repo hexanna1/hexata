@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import List, Optional, Protocol, Tuple
+from typing import Callable, List, Optional, Protocol, Tuple
 
 import pygame
 import pygame.freetype
@@ -59,7 +59,7 @@ DEFAULT_WIN_W = 1456
 DEFAULT_WIN_H = 808
 
 SQ3 = math.sqrt(3)
-CORNER_DEG = [90, 30, -30, -90, -150, 150]
+POINTY_CORNER_DEG = (90, 30, -30, -90, -150, 150)
 
 GRAPH_MIN_MOVES = 50
 GRAPH_MIN_HEIGHT = 40
@@ -89,11 +89,91 @@ class UiStateLike(Protocol):
     has_multiple_engines: bool
 
 
+@dataclass(frozen=True, slots=True)
+class BorderSpec:
+    side: Side
+    corner_pairs: Tuple[Tuple[int, int], ...]
+    edge_cell: Callable[[int, int], Tuple[int, int]]
+
+
+@dataclass(frozen=True, slots=True)
+class BoardProjection:
+    corner_degrees: Tuple[int, ...]
+    col_unit: Tuple[float, float]
+    row_unit: Tuple[float, float]
+    border_specs: Tuple[BorderSpec, ...]
+
+    def center(
+        self, origin_x: float, origin_y: float, r: int, ax: int, ay: int
+    ) -> Tuple[float, float]:
+        return (
+            origin_x + r * (self.col_unit[0] * ax + self.row_unit[0] * ay),
+            origin_y + r * (self.col_unit[1] * ax + self.row_unit[1] * ay),
+        )
+
+    def corner(
+        self, origin_x: float, origin_y: float, r: int, ax: int, ay: int, i: int
+    ) -> Tuple[int, int]:
+        cx, cy = self.center(origin_x, origin_y, r, ax, ay)
+        a = math.radians(self.corner_degrees[i % 6])
+        return round(cx + r * math.cos(a)), round(cy + r * math.sin(a))
+
+    def poly(
+        self, origin_x: float, origin_y: float, r: int, ax: int, ay: int
+    ) -> List[Tuple[int, int]]:
+        return [self.corner(origin_x, origin_y, r, ax, ay, i) for i in range(6)]
+
+    def board_bounds(self, n: int, r: int) -> Tuple[float, float, float, float]:
+        xs: List[float] = []
+        ys: List[float] = []
+        for ay in (0, n - 1):
+            for ax in (0, n - 1):
+                cx, cy = self.center(0.0, 0.0, r, ax, ay)
+                for deg in self.corner_degrees:
+                    a = math.radians(deg)
+                    xs.append(cx + r * math.cos(a))
+                    ys.append(cy + r * math.sin(a))
+        return min(xs), min(ys), max(xs), max(ys)
+
+    def board_size(self, n: int, r: int) -> Tuple[float, float]:
+        left, top, right, bottom = self.board_bounds(n, r)
+        return right - left, bottom - top
+
+    def layout_size(self, n: int, r: int) -> Tuple[float, float]:
+        board_w, board_h = self.board_size(n, r)
+        label_pad = LABEL_PAD_K * r
+        return board_w + label_pad, board_h + label_pad
+
+    def origin_for_board(self, left: float, top: float, n: int, r: int) -> Tuple[float, float]:
+        bounds_left, bounds_top, _right, _bottom = self.board_bounds(n, r)
+        return left - bounds_left, top - bounds_top
+
+    def border_sides(self) -> Tuple[BorderSpec, ...]:
+        return self.border_specs
+
+    def col_label_anchor(self, col: int) -> Tuple[int, int]:
+        return col - 1, -1
+
+    def row_label_anchor(self, row: int) -> Tuple[int, int]:
+        return -1, row - 1
+
+
+POINTY_PROJECTION = BoardProjection(
+    corner_degrees=POINTY_CORNER_DEG,
+    col_unit=(SQ3, 0.0),
+    row_unit=(SQ3 / 2, 1.5),
+    border_specs=(
+        BorderSpec(Side.RED, ((2, 3), (3, 4)), lambda i, n: (i, 0)),
+        BorderSpec(Side.RED, ((5, 0), (0, 1)), lambda i, n: (i, n - 1)),
+        BorderSpec(Side.BLUE, ((4, 5), (5, 0)), lambda i, n: (0, i)),
+        BorderSpec(Side.BLUE, ((1, 2), (2, 3)), lambda i, n: (n - 1, i)),
+    ),
+)
+
+
 @dataclass(slots=True)
 class LayoutState:
     r: int
-    wstep: float
-    hstep: float
     origin_x: float
     origin_y: float
     board_px_w: int
@@ -226,11 +306,10 @@ class GuiRenderer:
         self.core = core
         self.app = core.app
         self.flags = flags
+        self.projection = POINTY_PROJECTION
         self.screen = pygame.display.set_mode((DEFAULT_WIN_W, DEFAULT_WIN_H), flags)
         self.layout = LayoutState(
             r=BASE_R,
-            wstep=SQ3 * BASE_R,
-            hstep=1.5 * BASE_R,
             origin_x=0.0,
             origin_y=0.0,
             board_px_w=DEFAULT_WIN_W - PANEL_W,
@@ -259,12 +338,9 @@ class GuiRenderer:
         return pygame.freetype.Font(None, small_sz)
 
     def min_window_size(self, n: int) -> Tuple[int, int]:
-        span = 1.5 * (n - 1)
-        board_w = SQ3 * MIN_R * (span + 1)
-        board_h = MIN_R * (span + 2)
-        label_pad = LABEL_PAD_K * MIN_R
-        win_w = int(board_w + label_pad + PANEL_W + 2 * BOARD_PAD)
-        win_h = int(board_h + label_pad + HUD_H + 2 * BOARD_PAD)
+        layout_w, layout_h = self.projection.layout_size(n, MIN_R)
+        win_w = int(layout_w + PANEL_W + 2 * BOARD_PAD)
+        win_h = int(layout_h + HUD_H + 2 * BOARD_PAD)
         return win_w, win_h
 
     def apply_window_size(self, win_w: int, win_h: int) -> Tuple[int, int]:
@@ -279,26 +355,20 @@ class GuiRenderer:
         usable_w0 = max(0.0, self.layout.board_px_w - 2 * BOARD_PAD)
         usable_h0 = max(0.0, self.layout.board_px_h - HUD_H - 2 * BOARD_PAD)
 
-        span = 1.5 * (self.board.n - 1)
-        denom_w = SQ3 * (span + 1)
-        denom_h = span + 2
-        pad_k = LABEL_PAD_K
-        r_w = usable_w0 / (denom_w + pad_k) if denom_w > 0 else MIN_R
-        r_h = usable_h0 / (denom_h + pad_k) if denom_h > 0 else MIN_R
+        denom_w, denom_h = self.projection.layout_size(self.board.n, 1)
+        r_w = usable_w0 / denom_w if denom_w > 0 else MIN_R
+        r_h = usable_h0 / denom_h if denom_h > 0 else MIN_R
         self.layout.r = int(max(MIN_R, min(r_w, r_h, MAX_R)))
 
-        self.layout.wstep = SQ3 * self.layout.r
-        self.layout.hstep = 1.5 * self.layout.r
-        label_pad = pad_k * self.layout.r
-        usable_w = max(0.0, usable_w0 - label_pad)
-        usable_h = max(0.0, usable_h0 - label_pad)
-
-        board_w = SQ3 * self.layout.r * (span + 1)
-        board_h = self.layout.r * (span + 2)
-        extra_w = max(0.0, usable_w - board_w)
-        extra_h = max(0.0, usable_h - board_h)
-        self.layout.origin_x = BOARD_PAD + label_pad + extra_w / 2 + (SQ3 * self.layout.r) / 2
-        self.layout.origin_y = HUD_H + BOARD_PAD + label_pad + extra_h / 2 + self.layout.r
+        label_pad = LABEL_PAD_K * self.layout.r
+        layout_w, layout_h = self.projection.layout_size(self.board.n, self.layout.r)
+        extra_w = max(0.0, usable_w0 - layout_w)
+        extra_h = max(0.0, usable_h0 - layout_h)
+        board_left = BOARD_PAD + label_pad + extra_w / 2
+        board_top = HUD_H + BOARD_PAD + label_pad + extra_h / 2
+        self.layout.origin_x, self.layout.origin_y = self.projection.origin_for_board(
+            board_left, board_top, self.board.n, self.layout.r
+        )
 
         self.fonts.board_small = self.make_board_small(self.layout.r)
         self.text.update_board_small(self.fonts.board_small)
@@ -320,17 +390,19 @@ class GuiRenderer:
         return (int(pos[0] * scale_x), int(pos[1] * scale_y))
 
     def center(self, ax: int, ay: int) -> Tuple[float, float]:
-        cx = self.layout.origin_x + self.layout.wstep * (ax + ay / 2)
-        cy = self.layout.origin_y + self.layout.hstep * ay
-        return cx, cy
+        return self.projection.center(
+            self.layout.origin_x, self.layout.origin_y, self.layout.r, ax, ay
+        )
 
     def corner(self, ax: int, ay: int, i: int) -> Tuple[int, int]:
-        cx, cy = self.center(ax, ay)
-        a = math.radians(CORNER_DEG[i % 6])
-        return round(cx + self.layout.r * math.cos(a)), round(cy + self.layout.r * math.sin(a))
+        return self.projection.corner(
+            self.layout.origin_x, self.layout.origin_y, self.layout.r, ax, ay, i
+        )
 
     def poly(self, ax: int, ay: int) -> List[Tuple[int, int]]:
-        return [self.corner(ax, ay, i) for i in range(6)]
+        return self.projection.poly(
+            self.layout.origin_x, self.layout.origin_y, self.layout.r, ax, ay
+        )
 
     def pixel_to_cell(self, mx: int, my: int) -> Optional[Tuple[int, int]]:
         if my < HUD_H:
@@ -534,30 +606,29 @@ class GuiRenderer:
 
     def draw_borders(self) -> None:
         thickness = 4
-        sides = [
-            {"color": RED, "segs": [(2, 3), (3, 4)], "coord": lambda i: (i, 0)},
-            {"color": RED, "segs": [(5, 0), (0, 1)], "coord": lambda i: (i, self.board.n - 1)},
-            {"color": BLUE, "segs": [(4, 5), (5, 0)], "coord": lambda i: (0, i)},
-            {"color": BLUE, "segs": [(1, 2), (2, 3)], "coord": lambda i: (self.board.n - 1, i)},
-        ]
-        for side in sides:
+        for border in self.projection.border_sides():
+            color = RED if border.side == Side.RED else BLUE
             for i in range(self.board.n):
-                ax, ay = side["coord"](i)
-                for c1, c2 in side["segs"]:
+                ax, ay = border.edge_cell(i, self.board.n)
+                for c1, c2 in border.corner_pairs:
                     pygame.draw.line(
-                        self.screen, side["color"], self.corner(ax, ay, c1), self.corner(ax, ay, c2), thickness
+                        self.screen,
+                        color,
+                        self.corner(ax, ay, c1),
+                        self.corner(ax, ay, c2),
+                        thickness,
                     )
 
     def draw_side_coords(self) -> None:
         col_color = TEXT_MUTED
         row_color = TEXT_MUTED
         for col in range(1, self.board.n + 1):
-            ax, ay = col - 1, -1
+            ax, ay = self.projection.col_label_anchor(col)
             cx, cy = self.center(ax, ay)
             txt = col_to_human_letters(col)
             self.text.board.blit_center(txt, col_color, cx, cy)
         for row in range(1, self.board.n + 1):
-            ax, ay = -1, row - 1
+            ax, ay = self.projection.row_label_anchor(row)
             cx, cy = self.center(ax, ay)
             txt = str(row)
             self.text.board.blit_center(txt, row_color, cx, cy)
