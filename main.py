@@ -11,7 +11,7 @@ import shlex
 from board import DEFAULT_BOARD_SIZE, MAX_BOARD_SIZE, MIN_BOARD_SIZE, HexBoard
 from cli import add_cli_arguments, run_cli
 from engine import KataHexEngine
-from gui import EngineProfile, UiPrefs, run_gui
+from gui.app import EngineProfile, UiPrefs, run_gui
 
 
 def _expand_cmd(cmd_str: str) -> list[str]:
@@ -161,7 +161,7 @@ def main() -> int:
         return _emit_config_error(exc, json_mode=(args.mode == "cli"))
 
     if args.mode == "cli":
-        logging.getLogger("gui_core").setLevel(logging.WARNING)
+        logging.getLogger("gui.core").setLevel(logging.WARNING)
         if args.cli_cmd == "match":
             return run_cli(
                 args,

@@ -11,9 +11,9 @@ from typing import Iterator, Optional
 
 from board import DEFAULT_BOARD_SIZE, MAX_BOARD_SIZE, MIN_BOARD_SIZE, HexBoard, MoveKind, Side, coord_to_human
 from engine import AnalysisMove, KataHexEngine, RawNNResult
-from gui_core import GuiCore
-import hexworld
-from hexworld import cell_to_col_row
+from gui.core import GuiCore
+from formats import hexworld
+from formats.hexworld import cell_to_col_row
 
 STARTUP_TIMEOUT_SECONDS = 30.0
 POLL_SECONDS = 0.02

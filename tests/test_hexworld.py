@@ -1,7 +1,7 @@
 import unittest
 
 from board import Move, MoveKind, Side
-from hexworld import build_hexworld_url, parse_hexworld_position, parse_hexworld_state
+from formats.hexworld import build_hexworld_url, parse_hexworld_position, parse_hexworld_state
 
 
 class HexWorldSwapTests(unittest.TestCase):

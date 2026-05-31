@@ -29,20 +29,22 @@ A lightweight, keyboard-first GUI and CLI for analyzing Hex with the [KataHex](h
 - Right-click or drag to toggle candidates
 
 ## Files at a glance
-- `main.py`: App entry point; creates the board, engine, and GUI.
-- `config.ini`: Local engine launch configuration.
-- `cli.py`: CLI for root analysis, candidate analysis, batch line analysis, and engine matches.
-- `cli-output-schema.md`: Reference for emitted CLI output shapes.
-- `gui.py`: Pygame app loop, input handling, and UI flow.
-- `gui_render.py`: Pygame rendering, layout, HUD, and panels.
-- `gui_core.py`: Game state, move history, import/export, and engine coordination.
-- `gui_core_analysis.py`: Analysis/candidate-search state and cache management.
-- `history_tree.py`: Tree model for move history, branching, and cursor navigation.
+- `board.py`: Hex board model, linear history, and move rules.
+- `history_tree.py`: Move-tree model for branching history and cursor navigation.
 - `engine.py`: Engine process wrapper, GTP-ish parsing, and analysis I/O.
-- `hexata_format.py`: Parser/serializer for Hexata move-tree format.
-- `flexible_move_format.py`: Import-only parser for flexible move text.
-- `board.py`: Hex board model, history, and move rules.
-- `hexworld.py`: HexWorld import/export parsing utilities.
+- `main.py`: Program entry point; loads config and dispatches GUI or CLI mode.
+- `cli.py`: CLI for root analysis, candidate analysis, batch line analysis, and engine matches.
+- `gui/`: GUI implementation.
+  - `app.py`: Pygame app loop, input handling, and UI flow.
+  - `core.py`: Game state, move history, import/export, and engine coordination.
+  - `analysis.py`: Analysis/candidate-search state and cache management.
+  - `render.py`: Pygame rendering, layout, HUD, and panels.
+- `formats/`: Position format parsing and serialization.
+  - `hexworld.py`: HexWorld import/export parsing utilities.
+  - `hexata.py`: Parser/serializer for Hexata move-tree format.
+  - `flexible_moves.py`: Import-only parser for flexible move text.
+- `cli-output-schema.md`: Reference for emitted CLI output shapes.
+- `config.ini`: Engine launch configuration.
 
 ## Notes on tricky parts
 A few implementation details were tricky to get right and are useful background for understanding the design:

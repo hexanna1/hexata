@@ -5,11 +5,9 @@ from typing import Callable, NoReturn, Optional, Sequence, Tuple
 
 from board import MAX_BOARD_SIZE, MIN_BOARD_SIZE, HexBoard, Move, MoveKind, Side, coord_to_human
 from engine import KataHexEngine
-from gui_core_analysis import AnalysisModeTag, AppState, CandidateState, GuiCoreAnalysisMixin
+from gui.analysis import AnalysisModeTag, AppState, CandidateState, GuiCoreAnalysisMixin
 from history_tree import HistoryNode, MoveTree
-import hexata_format
-import hexworld
-import flexible_move_format
+from formats import flexible_moves, hexata, hexworld
 
 DEFAULT_ANALYZE_INTERVAL_CS = 15
 
@@ -395,7 +393,7 @@ class GuiCore(GuiCoreAnalysisMixin):
         )
 
     def build_hexata_format(self) -> str:
-        return hexata_format.build_hexata_format(self.board.n, self.tree)
+        return hexata.build_hexata_format(self.board.n, self.tree)
 
     def load_hexata_format(self, text: str) -> Optional[str]:
         prefixed_size = self._parse_hexata_size_prefix(text)
@@ -404,7 +402,7 @@ class GuiCore(GuiCoreAnalysisMixin):
             if prefixed_error is not None:
                 return prefixed_error
         try:
-            size, tree = hexata_format.parse_hexata_format(text)
+            size, tree = hexata.parse_hexata_format(text)
         except ValueError as exc:
             return f"Hexata format parse failed: {exc}"
 
@@ -417,7 +415,7 @@ class GuiCore(GuiCoreAnalysisMixin):
 
     def load_flexible_move_format(self, text: str) -> Optional[str]:
         try:
-            moves = flexible_move_format.parse_flexible_move_format(text, board_size=self.board.n)
+            moves = flexible_moves.parse_flexible_move_format(text, board_size=self.board.n)
         except ValueError as exc:
             return f"Flexible move format parse failed: {exc}"
 

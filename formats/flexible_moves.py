@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 
 from board import HexBoard, Move, MoveKind, Side
-from hexworld import cell_to_col_row
+from formats.hexworld import cell_to_col_row
 
 _MOVE_TOKEN_RE = re.compile(r"swap(?![0-9])|pass(?![0-9])|[a-z]+[0-9]+", re.IGNORECASE)
 _MOVE_NUMBER_RE = re.compile(r"[0-9]+(?:\.\s*|\s+|$)")

@@ -4,9 +4,9 @@ from unittest import mock
 
 from board import HexBoard, Move, MoveKind, Side
 from engine import AnalysisMove
-from gui_core import GuiCore
-from gui_core_analysis import AnalysisModeTag
-import hexata_format
+from gui.core import GuiCore
+from gui.analysis import AnalysisModeTag
+from formats import hexata
 
 
 class FakeEngine:
@@ -907,14 +907,14 @@ class GuiCoreTests(unittest.TestCase):
                 self.assertEqual(engine.calls, before_calls)
 
     def test_parse_hexata_format_maps_recursion_error_to_value_error(self):
-        with mock.patch("hexata_format._Parser.parse", side_effect=RecursionError("boom")):
+        with mock.patch("formats.hexata._Parser.parse", side_effect=RecursionError("boom")):
             with self.assertRaises(ValueError):
-                hexata_format.parse_hexata_format("5,a1")
+                hexata.parse_hexata_format("5,a1")
 
     def test_load_hexata_format_out_of_range_rejected_before_full_parse(self):
         core, _engine = self._mk_core()
         with mock.patch(
-            "gui_core.hexata_format.parse_hexata_format",
+            "gui.core.hexata.parse_hexata_format",
             side_effect=AssertionError("parse should not run"),
         ):
             self.assertIsNotNone(core.load_hexata_format("2000,a1"))

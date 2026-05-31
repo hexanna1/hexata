@@ -2,7 +2,7 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-import gui
+from gui import app as gui
 
 
 class GuiModuleTests(unittest.TestCase):
@@ -37,7 +37,7 @@ class GuiModuleTests(unittest.TestCase):
                     or err,
                 )
 
-                with mock.patch("gui.logger.info") as info:
+                with mock.patch("gui.app.logger.info") as info:
                     ok = gui.load_position_text(
                         text,
                         core=core,
@@ -76,7 +76,7 @@ class GuiModuleTests(unittest.TestCase):
             speed_vps=20.0,
         )
 
-        with mock.patch("gui.KataHexEngine", return_value=new_engine) as ctor:
+        with mock.patch("gui.app.KataHexEngine", return_value=new_engine) as ctor:
             ok = gui.cycle_engine_profile(core, ui, engine_echo=True)
 
         self.assertTrue(ok)
@@ -118,8 +118,8 @@ class GuiModuleTests(unittest.TestCase):
         )
 
         with (
-            mock.patch("gui.KataHexEngine", side_effect=RuntimeError("bad model")),
-            mock.patch("gui.logger.warning") as warning,
+            mock.patch("gui.app.KataHexEngine", side_effect=RuntimeError("bad model")),
+            mock.patch("gui.app.logger.warning") as warning,
         ):
             ok = gui.cycle_engine_profile(core, ui, engine_echo=False)
 
@@ -158,8 +158,8 @@ class GuiModuleTests(unittest.TestCase):
         )
 
         with (
-            mock.patch("gui.KataHexEngine", side_effect=[RuntimeError("bad model"), new_engine]) as ctor,
-            mock.patch("gui.logger.warning") as warning,
+            mock.patch("gui.app.KataHexEngine", side_effect=[RuntimeError("bad model"), new_engine]) as ctor,
+            mock.patch("gui.app.logger.warning") as warning,
         ):
             ok = gui.cycle_engine_profile(core, ui, engine_echo=False)
 

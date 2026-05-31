@@ -21,8 +21,8 @@ import pygame
 
 from board import MAX_BOARD_SIZE, MIN_BOARD_SIZE, HexBoard
 from engine import KataHexEngine
-from gui_core import DEFAULT_ANALYZE_INTERVAL_CS, GuiCore
-from gui_render import GuiRenderer
+from gui.core import DEFAULT_ANALYZE_INTERVAL_CS, GuiCore
+from gui.render import GuiRenderer
 
 logger = logging.getLogger(__name__)
 
@@ -221,7 +221,7 @@ def run_gui(
         return False
 
     def save_screenshot() -> Optional[str]:
-        base_dir = os.path.dirname(os.path.abspath(__file__))
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         shots_dir = os.path.join(base_dir, "screenshots")
         os.makedirs(shots_dir, exist_ok=True)
         # Filenames use second-level timestamps, so repeated saves in the same

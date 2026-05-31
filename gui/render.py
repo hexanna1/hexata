@@ -9,7 +9,7 @@ import pygame.freetype
 
 from board import HexBoard, Move, MoveKind, Side, col_to_human_letters, coord_to_human
 from engine import AnalysisMove
-from gui_core import GuiCore
+from gui.core import GuiCore
 
 RED = (220, 60, 60)
 BLUE = (40, 100, 220)
