@@ -76,7 +76,7 @@ def _select_engine_profile(
     raise ValueError(f"Unknown engine.default_engine in config.ini: {target_name}")
 
 
-def _emit_config_error(exc: Exception, *, json_mode: bool) -> int:
+def _emit_engine_config_error(exc: Exception, *, json_mode: bool) -> int:
     msg = f"Engine config error: {exc}"
     print(json.dumps({"ok": False, "error": msg}) if json_mode else msg)
     if not json_mode:
@@ -169,7 +169,7 @@ def main() -> int:
             selected_engine_a = None
             selected_engine_b = None
     except (FileNotFoundError, ValueError, configparser.Error) as exc:
-        return _emit_config_error(exc, json_mode=(args.mode == "cli"))
+        return _emit_engine_config_error(exc, json_mode=(args.mode == "cli"))
 
     if args.mode == "cli":
         logging.getLogger("gui.core").setLevel(logging.WARNING)
@@ -184,7 +184,8 @@ def main() -> int:
     try:
         size, ui_prefs = _load_gui_runtime_config(parser)
     except ValueError as exc:
-        return _emit_config_error(exc, json_mode=False)
+        print(f"Config error: {exc}")
+        return 1
 
     board = HexBoard(size)
     exit_code = 0
