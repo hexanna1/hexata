@@ -79,8 +79,13 @@ def load_position_text(text: str, *, core: GuiCore, on_success: Callable[[], Non
     if hexata_error is None:
         on_success()
         return True
+    flexible_error = core.load_flexible_move_format(text)
+    if flexible_error is None:
+        on_success()
+        return True
     logger.info("%s", hexworld_error)
     logger.info("%s", hexata_error)
+    logger.info("%s", flexible_error)
     return False
 
 
@@ -334,10 +339,7 @@ def run_gui(
         elif ev.key in (pygame.K_DELETE, pygame.K_BACKSPACE):
             core.delete_tail()
         elif ev.key == pygame.K_x and (ev.mod & pygame.KMOD_SHIFT):
-            had = bool(app.candidate_state.candidates)
-            core.clear_candidates()
-            if had and app.analysis_enabled:
-                core.resume_analysis()
+            core.clear_candidates(resume_analysis=True)
         elif ch == ",":
             pv = renderer.get_display_pv(current_hover_cell())
             if renderer.should_show_pv(pv):

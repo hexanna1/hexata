@@ -7,10 +7,25 @@ import gui
 
 class GuiModuleTests(unittest.TestCase):
     def test_load_position_text_parser_order_and_relayout(self):
-        for text, hexworld_error, hexata_error, expected_ok, expected_attempts in (
-            ("hexworld", None, "hexata fail", True, [("hexworld", "hexworld")]),
-            ("hexata", "hexworld fail", None, True, [("hexworld", "hexata"), ("hexata", "hexata")]),
-            ("bad", "hexworld fail", "hexata fail", False, [("hexworld", "bad"), ("hexata", "bad")]),
+        for text, hexworld_error, hexata_error, flexible_error, expected_ok, expected_attempts in (
+            ("hexworld", None, "hexata fail", "flexible fail", True, [("hexworld", "hexworld")]),
+            ("hexata", "hexworld fail", None, "flexible fail", True, [("hexworld", "hexata"), ("hexata", "hexata")]),
+            (
+                "flexible",
+                "hexworld fail",
+                "hexata fail",
+                None,
+                True,
+                [("hexworld", "flexible"), ("hexata", "flexible"), ("flexible", "flexible")],
+            ),
+            (
+                "bad",
+                "hexworld fail",
+                "hexata fail",
+                "flexible fail",
+                False,
+                [("hexworld", "bad"), ("hexata", "bad"), ("flexible", "bad")],
+            ),
         ):
             with self.subTest(text=text):
                 attempts = []
@@ -18,6 +33,8 @@ class GuiModuleTests(unittest.TestCase):
                 core = SimpleNamespace(
                     load_hexworld_text=lambda value, err=hexworld_error: attempts.append(("hexworld", value)) or err,
                     load_hexata_format=lambda value, err=hexata_error: attempts.append(("hexata", value)) or err,
+                    load_flexible_move_format=lambda value, err=flexible_error: attempts.append(("flexible", value))
+                    or err,
                 )
 
                 with mock.patch("gui.logger.info") as info:
@@ -33,7 +50,7 @@ class GuiModuleTests(unittest.TestCase):
                 if expected_ok:
                     info.assert_not_called()
                 else:
-                    self.assertEqual(info.call_count, 2)
+                    self.assertEqual(info.call_count, 3)
 
     def test_cycle_engine_profile_success_swaps_engine_and_resumes_analysis(self):
         old_engine = SimpleNamespace(close=mock.Mock())

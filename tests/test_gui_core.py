@@ -1016,6 +1016,29 @@ class GuiCoreTests(unittest.TestCase):
         self.assertEqual(core.board.get(2, 3), int(Side.BLUE))  # swapped opening stone
         self.assertEqual(core.board.get(3, 2), int(Side.RED))  # legal reuse of c2 after swap
 
+    def test_load_flexible_move_format_accepts_coord_lists_only_at_current_size(self):
+        for text in ("1. c2 d5\n3. e1", "1 c2 2 D5 3 e1", "c2d5e1"):
+            with self.subTest(text=text):
+                core, _engine = self._mk_core()
+
+                error = core.load_flexible_move_format(text)
+
+                self.assertIsNone(error)
+                self.assertEqual(self._history_coords(core), [(3, 2), (4, 5), (5, 1)])
+                self.assertEqual([mv.side for mv in core.board.history], [Side.RED, Side.BLUE, Side.RED])
+
+        core, _engine = self._mk_core()
+        error = core.load_flexible_move_format("d5SWAPd5PASS")
+        self.assertIsNone(error)
+        self.assertEqual([mv.kind for mv in core.board.history], [MoveKind.PLACE, MoveKind.SWAP, MoveKind.PLACE, MoveKind.PASS])
+        self.assertEqual(self._history_coords(core), [(5, 4), None, (4, 5), None])
+
+        core, engine = self._mk_core()
+        self._assert_failed_load_preserves_state(core, engine, core.load_flexible_move_format, "c22.d5")
+        self._assert_failed_load_preserves_state(core, engine, core.load_flexible_move_format, "1 c2 2")
+        self._assert_failed_load_preserves_state(core, engine, core.load_flexible_move_format, "1 2 c2")
+        self._assert_failed_load_preserves_state(core, engine, core.load_flexible_move_format, "1 c2 2d5")
+
     def test_swap_branch_uses_distinct_cache_key(self):
         core, _engine = self._mk_core()
 

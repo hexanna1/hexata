@@ -10,7 +10,7 @@ A lightweight, keyboard-first GUI and CLI for analyzing Hex with the [KataHex](h
 - Dedicated candidate search and batch analysis modes.
 - Move list panel with undo/redo, navigation ([HexWorld](https://hexworld.org/board/#14c1)-style shortcuts), and eval graph (winrate or Elo).
 - Native handling for pass and swap moves.
-- Clipboard import/export to HexWorld and Hexata format.
+- Clipboard import/export to HexWorld and Hexata format, plus flexible move-text import.
 - Adjustable board size, analysis noise, and multi-engine support.
 - Fast, responsive feel with low engine and UI latency.
 
@@ -40,6 +40,7 @@ A lightweight, keyboard-first GUI and CLI for analyzing Hex with the [KataHex](h
 - `history_tree.py`: Tree model for move history, branching, and cursor navigation.
 - `engine.py`: Engine process wrapper, GTP-ish parsing, and analysis I/O.
 - `hexata_format.py`: Parser/serializer for Hexata move-tree format.
+- `flexible_move_format.py`: Import-only parser for flexible move text.
 - `board.py`: Hex board model, history, and move rules.
 - `hexworld.py`: HexWorld import/export parsing utilities.
 

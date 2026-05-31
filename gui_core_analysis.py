@@ -526,9 +526,12 @@ class GuiCoreAnalysisMixin:
     def remove_candidate(self, col: int, row: int) -> None:
         self._update_candidate_selection((col, row), selected=False)
 
-    def clear_candidates(self) -> None:
+    def clear_candidates(self, *, resume_analysis: bool = False) -> None:
+        had_candidates = bool(self.app.candidate_state.candidates)
         self._clear_candidate_progress(reset_results=True)
         self._clear_candidate_selection()
+        if resume_analysis and had_candidates and self.app.analysis_enabled and not self.is_batch_analysis_active():
+            self.resume_analysis()
 
     def check_candidate_root(self) -> bool:
         return self._invalidate_candidate_root()

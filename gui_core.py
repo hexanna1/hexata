@@ -9,6 +9,8 @@ from gui_core_analysis import AnalysisModeTag, AppState, CandidateState, GuiCore
 from history_tree import HistoryNode, MoveTree
 import hexata_format
 import hexworld
+import flexible_move_format
+
 DEFAULT_ANALYZE_INTERVAL_CS = 15
 
 EditSnapshot = tuple[
@@ -411,6 +413,17 @@ class GuiCore(GuiCoreAnalysisMixin):
             return size_error
 
         self._install_imported_tree(size, tree)
+        return None
+
+    def load_flexible_move_format(self, text: str) -> Optional[str]:
+        try:
+            moves = flexible_move_format.parse_flexible_move_format(text, board_size=self.board.n)
+        except ValueError as exc:
+            return f"Flexible move format parse failed: {exc}"
+
+        tree = MoveTree()
+        tree.rebuild_from_line(moves, [])
+        self._install_imported_tree(self.board.n, tree)
         return None
 
     # -------------------- move navigation and editing --------------------
