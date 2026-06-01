@@ -5,7 +5,7 @@ import re
 from board import HexBoard, Move, MoveKind, Side
 from formats.hexworld import cell_to_col_row
 
-_MOVE_TOKEN_RE = re.compile(r"swap(?![0-9])|pass(?![0-9])|[a-z]+[0-9]+", re.IGNORECASE)
+_MOVE_TOKEN_RE = re.compile(r"resign(?![0-9])|swap(?![0-9])|pass(?![0-9])|[a-z]+[0-9]+", re.IGNORECASE)
 _MOVE_NUMBER_RE = re.compile(r"[0-9]+(?:\.\s*|\s+|$)")
 
 
@@ -51,6 +51,8 @@ def parse_flexible_move_format(text: str, *, board_size: int) -> list[Move]:
     board = HexBoard(board_size)
     side = Side.RED
     for tok in tokens:
+        if tok == "resign":
+            continue
         if tok == "pass":
             mv = Move.pass_(side=side)
         elif tok == "swap":

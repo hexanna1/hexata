@@ -65,6 +65,7 @@ GRAPH_MIN_MOVES = 50
 GRAPH_MIN_HEIGHT = 40
 GRAPH_LINE_WIDTH = 2
 GRAPH_DOT_RADIUS = 3
+GRAPH_HIT_RADIUS = 10
 GRAPH_LABEL_PAD = 6
 GRAPH_EDGE_PAD = 2
 GRAPH_PAD = 0
@@ -417,6 +418,90 @@ class GuiRenderer:
         scale_y = sy / wy
         return (int(pos[0] * scale_x), int(pos[1] * scale_y))
 
+    def _eval_graph_best_reply_winrate(self, key: bytes) -> Optional[float]:
+        recs = self.app.analysis_cache.get(key)
+        # Prefer ordered move analysis; candidate cache entries have no order.
+        best = None
+        if recs:
+            for r in recs:
+                if r.order is None or r.winrate is None:
+                    continue
+                if best is None or r.order < best.order:
+                    best = r
+        if best is not None and best.winrate is not None:
+            return best.winrate
+        return self.app.root_eval_cache.get(key)
+
+    @staticmethod
+    def _eval_graph_x_for_ply(rect: pygame.Rect, n_moves: int, ply: int) -> int:
+        denom = max(1, max(GRAPH_MIN_MOVES, n_moves) - 1)
+        return rect.left + int(round((ply - 1) * (rect.width - 1) / denom))
+
+    @staticmethod
+    def _eval_graph_winrate_to_elo(v: float) -> float:
+        if v <= 0.0:
+            return -GRAPH_ELO_CLAMP
+        if v >= 1.0:
+            return GRAPH_ELO_CLAMP
+        elo = 400.0 * math.log10(v / (1.0 - v))
+        if elo > GRAPH_ELO_CLAMP:
+            return GRAPH_ELO_CLAMP
+        if elo < -GRAPH_ELO_CLAMP:
+            return -GRAPH_ELO_CLAMP
+        return elo
+
+    @classmethod
+    def _eval_graph_y_for_value(cls, rect: pygame.Rect, value: float, show_elo: bool) -> int:
+        if show_elo:
+            value = cls._eval_graph_winrate_to_elo(value)
+            t = (value + GRAPH_ELO_CLAMP) / (2.0 * GRAPH_ELO_CLAMP)
+        else:
+            t = 0.0 if value < 0.0 else 1.0 if value > 1.0 else value
+        t = clamp01(t)
+        return rect.top + int(round((1.0 - t) * (rect.height - 1)))
+
+    def _eval_graph_points(
+        self,
+        rect: pygame.Rect,
+        moves: Tuple[Move, ...],
+        prefix_keys: Tuple[bytes, ...],
+        show_elo: bool,
+    ) -> list[tuple[int, int, int, float]]:
+        points: list[tuple[int, int, int, float]] = []
+        for ply, key in enumerate(prefix_keys, start=1):
+            side_to_play = self.core.flip_side(moves[ply - 1].side)
+            best_wr = self._eval_graph_best_reply_winrate(key)
+            if best_wr is None:
+                continue
+            # Red-perspective winrate for the current position.
+            red_wr = best_wr if side_to_play == Side.RED else 1.0 - best_wr
+            points.append(
+                (
+                    ply,
+                    self._eval_graph_x_for_ply(rect, len(moves), ply),
+                    self._eval_graph_y_for_value(rect, red_wr, show_elo),
+                    red_wr,
+                )
+            )
+        return points
+
+    @staticmethod
+    def _eval_graph_hit_ply(
+        mx: int,
+        my: int,
+        points: list[tuple[int, int, int, float]],
+    ) -> Optional[int]:
+        radius2 = GRAPH_HIT_RADIUS * GRAPH_HIT_RADIUS
+        nearby_points = (point for point in points if abs(point[1] - mx) <= GRAPH_HIT_RADIUS)
+        closest = min(
+            nearby_points,
+            key=lambda point: ((point[1] - mx) ** 2 + (point[2] - my) ** 2, abs(point[1] - mx)),
+            default=None,
+        )
+        if closest is not None and (closest[1] - mx) ** 2 + (closest[2] - my) ** 2 <= radius2:
+            return closest[0]
+        return None
+
     def center(self, ax: int, ay: int) -> Tuple[float, float]:
         return self.projection.center(
             self.layout.origin_x, self.layout.origin_y, self.layout.r, ax, ay
@@ -767,68 +852,16 @@ class GuiRenderer:
         if rect.width <= 1 or rect.height <= 1:
             return
 
-        def best_reply_winrate(key: bytes) -> Optional[float]:
-            recs = self.app.analysis_cache.get(key)
-            # Prefer ordered move analysis; candidate cache entries have no order.
-            best = None
-            if recs:
-                for r in recs:
-                    if r.order is None or r.winrate is None:
-                        continue
-                    if best is None or r.order < best.order:
-                        best = r
-            if best is not None and best.winrate is not None:
-                return best.winrate
-            return self.app.root_eval_cache.get(key)
-
-        def x_for_move(m: int) -> int:
-            return rect.left + int(round((m - 1) * (rect.width - 1) / denom))
-
-        def winrate_to_elo(v: float) -> float:
-            if v <= 0.0:
-                return -GRAPH_ELO_CLAMP
-            if v >= 1.0:
-                return GRAPH_ELO_CLAMP
-            elo = 400.0 * math.log10(v / (1.0 - v))
-            if elo > GRAPH_ELO_CLAMP:
-                return GRAPH_ELO_CLAMP
-            if elo < -GRAPH_ELO_CLAMP:
-                return -GRAPH_ELO_CLAMP
-            return elo
-
-        def y_for_plot(v: float) -> int:
-            if show_elo:
-                v = winrate_to_elo(v)
-                t = (v + GRAPH_ELO_CLAMP) / (2.0 * GRAPH_ELO_CLAMP)
-            else:
-                t = 0.0 if v < 0.0 else 1.0 if v > 1.0 else v
-            t = clamp01(t)
-            return rect.top + int(round((1.0 - t) * (rect.height - 1)))
-
-        mid_y = y_for_plot(0.5)
+        mid_y = self._eval_graph_y_for_value(rect, 0.5, show_elo)
         pygame.draw.line(self.screen, LINE, (rect.left, mid_y), (rect.right, mid_y), 1)
 
         if n_moves <= 0:
             return
 
-        values: dict[int, float] = {}
-        max_analyzed = 0
-        for m, key in enumerate(prefix_keys, start=1):
-            side_to_play = self.core.flip_side(moves[m - 1].side)
-            best_wr = best_reply_winrate(key)
-            if best_wr is None:
-                continue
-            # Red-perspective winrate for the current position.
-            red_wr = best_wr if side_to_play == Side.RED else 1.0 - best_wr
-            values[m] = red_wr
-            if m > max_analyzed:
-                max_analyzed = m
-
-        if max_analyzed <= 0:
+        graph_points = self._eval_graph_points(rect, moves, prefix_keys, show_elo)
+        if not graph_points:
             return
-
-        max_moves = max(GRAPH_MIN_MOVES, max_analyzed)
-        denom = max(1, max_moves - 1)
+        values = {point[0]: point for point in graph_points}
 
         def draw_segment(points: List[Tuple[int, int]]) -> None:
             if len(points) >= 2:
@@ -839,29 +872,27 @@ class GuiRenderer:
 
         points: List[Tuple[int, int]] = []
         for m in range(1, n_moves + 1):
-            val = values.get(m)
-            if val is None:
+            point = values.get(m)
+            if point is None:
                 draw_segment(points)
                 points = []
                 continue
-            points.append((x_for_move(m), y_for_plot(val)))
+            points.append((point[1], point[2]))
         draw_segment(points)
 
         if 1 <= cursor_ply <= n_moves:
-            m = cursor_ply
-            val = values.get(m)
-            if val is None and self.core.is_batch_analysis_active():
+            point = values.get(cursor_ply)
+            if point is None and self.core.is_batch_analysis_active():
                 for probe in range(min(cursor_ply - 1, n_moves), 0, -1):
-                    val = values.get(probe)
-                    if val is not None:
-                        m = probe
+                    point = values.get(probe)
+                    if point is not None:
                         break
-            if val is not None:
-                cx = x_for_move(m)
-                cy = y_for_plot(val)
+            if point is not None:
+                cx = point[1]
+                cy = point[2]
                 pygame.draw.circle(self.screen, RED, (cx, cy), GRAPH_DOT_RADIUS, 0)
 
-                label = fmt_wr_or_elo(val, show_elo)
+                label = fmt_wr_or_elo(point[3], show_elo)
                 label_rect = self.text.hud_small.font.get_rect(label)
                 line_h = self.text.hud_small.font.get_sized_height()
                 lx = cx + GRAPH_LABEL_PAD
@@ -873,6 +904,37 @@ class GuiRenderer:
                 if ly + line_h > rect.bottom - GRAPH_EDGE_PAD:
                     ly = rect.bottom - line_h - GRAPH_EDGE_PAD
                 self.text.hud_small.blit_line(label, RED, lx, ly)
+
+    def eval_graph_rect(self, ui: UiStateLike) -> Optional[pygame.Rect]:
+        if ui.show_engine_debug:
+            return None
+        x0 = self.layout.board_px_w
+        graph_y = 10 + 26
+        graph_h = max(0, min(PANEL_W, self.screen.get_height() - graph_y))
+        if graph_h < GRAPH_MIN_HEIGHT:
+            return None
+        graph_top = self.screen.get_height() - graph_h - GRAPH_PAD
+        return pygame.Rect(x0, graph_top, PANEL_W, self.screen.get_height() - graph_top)
+
+    def eval_graph_ply_at(self, mx: int, my: int, ui: UiStateLike) -> Optional[int]:
+        rect = self.eval_graph_rect(ui)
+        if rect is None or not rect.collidepoint(mx, my):
+            return None
+        moves, prefix_keys = self.get_eval_graph_data()
+        if not moves or rect.width <= 1:
+            return None
+        denom = max(1, max(GRAPH_MIN_MOVES, len(moves)) - 1)
+        fallback = 1 + int(round((mx - rect.left) * denom / (rect.width - 1)))
+        fallback = max(1, min(len(moves), fallback))
+
+        hit_ply = self._eval_graph_hit_ply(
+            mx,
+            my,
+            self._eval_graph_points(rect, moves, prefix_keys, ui.prefs.show_elo),
+        )
+        if hit_ply is not None:
+            return hit_ply
+        return fallback
 
     def get_eval_graph_data(self) -> tuple[tuple[Move, ...], tuple[bytes, ...]]:
         sig = (self.board.n, self.board.rev, tuple(self.core.mainline_tail_moves()))
@@ -940,11 +1002,8 @@ class GuiRenderer:
         io_line_h = self.text.line_io + 2
         io_max_lines = 30
         io_panel_h = (io_line_h * io_max_lines) + 10
-        graph_h = 0
-        if not ui.show_engine_debug:
-            avail = self.screen.get_height() - y
-            graph_h = max(0, min(PANEL_W, avail))
-        graph_top = self.screen.get_height() - graph_h - GRAPH_PAD
+        graph_rect = self.eval_graph_rect(ui)
+        graph_top = self.screen.get_height() if graph_rect is None else graph_rect.top
         io_top = max(y, self.screen.get_height() - io_panel_h) if ui.show_engine_debug else graph_top
         max_lines = max(0, (io_top - y - 6) // line_h)
 
@@ -992,14 +1051,8 @@ class GuiRenderer:
                     line = f"{prefix} {msg}"
                 self.text.io.blit_line(line, TEXT_ON_LIGHT, x0 + pad, io_y)
                 io_y += io_line_h
-        elif graph_h >= GRAPH_MIN_HEIGHT:
+        elif graph_rect is not None:
             moves, prefix_keys = self.get_eval_graph_data()
-            graph_rect = pygame.Rect(
-                x0,
-                graph_top,
-                PANEL_W,
-                self.screen.get_height() - graph_top,
-            )
             self.draw_eval_graph(
                 graph_rect,
                 moves,

@@ -516,6 +516,16 @@ class GuiCore(GuiCoreAnalysisMixin):
     def go_last(self) -> bool:
         return self.step_forward_n(len(self.mainline_tail_moves()))
 
+    def go_to_ply(self, ply: int, *, resume_after: bool = True) -> bool:
+        max_ply = len(self.visible_line_moves())
+        target = max(0, min(ply, max_ply))
+        current = self.current_ply()
+        if target < current:
+            return self.step_back_n(current - target, resume_after=resume_after)
+        if target > current:
+            return self.step_forward_n(target - current, resume_after=resume_after)
+        return False
+
     def _delete_current_leaf(self) -> bool:
         moves = self.current_path_moves()
         if not moves:

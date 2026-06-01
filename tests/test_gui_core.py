@@ -1033,6 +1033,12 @@ class GuiCoreTests(unittest.TestCase):
         self.assertEqual([mv.kind for mv in core.board.history], [MoveKind.PLACE, MoveKind.SWAP, MoveKind.PLACE, MoveKind.PASS])
         self.assertEqual(self._history_coords(core), [(5, 4), None, (4, 5), None])
 
+        core, _engine = self._mk_core()
+        error = core.load_flexible_move_format("1.c2 2.resign")
+        self.assertIsNone(error)
+        self.assertEqual(self._history_coords(core), [(3, 2)])
+        self.assertEqual([mv.side for mv in core.board.history], [Side.RED])
+
         core, engine = self._mk_core()
         self._assert_failed_load_preserves_state(core, engine, core.load_flexible_move_format, "c22.d5")
         self._assert_failed_load_preserves_state(core, engine, core.load_flexible_move_format, "1 c2 2")

@@ -3,9 +3,21 @@ from types import SimpleNamespace
 from unittest import mock
 
 from gui import app as gui
+from gui.render import GuiRenderer
 
 
 class GuiModuleTests(unittest.TestCase):
+    def test_eval_graph_hit_ply_snaps_only_to_nearby_points(self):
+        points = [
+            (3, 50, 40, 0.6),
+            (4, 61, 43, 0.7),
+            (20, 200, 42, 0.4),
+        ]
+
+        self.assertEqual(GuiRenderer._eval_graph_hit_ply(59, 43, points), 4)
+        self.assertIsNone(GuiRenderer._eval_graph_hit_ply(59, 80, points))
+        self.assertIsNone(GuiRenderer._eval_graph_hit_ply(150, 42, points))
+
     def test_load_position_text_parser_order_and_relayout(self):
         for text, hexworld_error, hexata_error, flexible_error, expected_ok, expected_attempts in (
             ("hexworld", None, "hexata fail", "flexible fail", True, [("hexworld", "hexworld")]),

@@ -373,6 +373,10 @@ def run_gui(
     def handle_mouse_down(ev: pygame.event.Event, ui: UiState) -> None:
         if ev.button == 1:
             mx, my = renderer.window_to_surface_pos(ev.pos)
+            graph_ply = renderer.eval_graph_ply_at(mx, my, ui)
+            if graph_ply is not None:
+                core.go_to_ply(graph_ply)
+                return
             cell = renderer.pixel_to_cell(mx, my)
             ui.swap_click_candidate = False
             if cell is None:
