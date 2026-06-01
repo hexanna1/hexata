@@ -306,7 +306,7 @@ def _run_cli_candidate(core: GuiCore, args: argparse.Namespace) -> tuple[bool, d
         if status != "completed":
             core.clear_candidates()
             return False, {"error": _search_failure_error(status, move=coord_to_human(col, row))}
-        winrate, visits = core.app.candidate_state.results.get((col, row), (None, None))
+        winrate, visits = core.candidate_result((col, row))
         moves.append(
             {
                 "move": coord_to_human(col, row),

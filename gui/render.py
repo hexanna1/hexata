@@ -600,7 +600,7 @@ class GuiRenderer:
                 prior_map[(r.col, r.row)] = r.prior
         if self.app.candidate_state.candidates:
             for key in self.app.candidate_state.candidates:
-                candidate_wr_map[key] = self.app.candidate_state.results.get(key, (None, None))[0]
+                candidate_wr_map[key] = self.core.candidate_result(key)[0]
         cand_count = len(self.app.candidate_state.candidates) if self.app.candidate_state.candidates else 0
 
         denom = math.log(max(2, top_visits))

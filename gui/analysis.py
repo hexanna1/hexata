@@ -279,6 +279,19 @@ class GuiCoreAnalysisMixin:
         self.app.analysis_cache[cache_key] = merged
         self.cache_reset_sig()
 
+    def _cached_analysis_result(self, key: Tuple[int, int]) -> Tuple[Optional[float], Optional[int]]:
+        for r in self.app.analysis_cache.get(self.cache_key(), []):
+            if r.col == key[0] and r.row == key[1]:
+                return r.winrate, r.visits
+        return None, None
+
+    def candidate_result(self, key: Tuple[int, int]) -> Tuple[Optional[float], Optional[int]]:
+        result = self.app.candidate_state.results.get(key, (None, None))
+        cached = self._cached_analysis_result(key)
+        if self._visits(result[1]) >= self._visits(cached[1]):
+            return result
+        return cached
+
     def _cache_root_eval(self, blue_win: float) -> None:
         side_to_play = self.current_side()
         synthetic_wr = (1.0 - blue_win) if side_to_play == Side.RED else blue_win
@@ -569,7 +582,7 @@ class GuiCoreAnalysisMixin:
             winrate, visits = self.aggregate_child_analysis(child)
             run = state.run
             key = run.key
-            prev_best = self._visits(state.results.get(key, (None, None))[1])
+            prev_best = self._visits(self.candidate_result(key)[1])
             if visits > prev_best:
                 state.results[key] = (winrate, visits)
                 if winrate is not None and visits > 0:
@@ -598,7 +611,7 @@ class GuiCoreAnalysisMixin:
         state = self.app.candidate_state
         rows: List[Tuple[Tuple[int, int], Optional[float], Optional[int]]] = []
         for key in state.candidates:
-            wr, visits = state.results.get(key, (None, None))
+            wr, visits = self.candidate_result(key)
             rows.append((key, wr, visits))
 
         def sort_key(
@@ -629,13 +642,11 @@ class GuiCoreAnalysisMixin:
         return out
 
     def sorted_candidates_by_visits(self) -> List[Tuple[int, int]]:
-        state = self.app.candidate_state
-
         def visit_key(key: Tuple[int, int]) -> Tuple[int, int, int]:
-            _wr, visits = state.results.get(key, (None, None))
+            _wr, visits = self.candidate_result(key)
             return (self._visits(visits), key[0], key[1])
 
-        return sorted(state.candidates, key=visit_key)
+        return sorted(self.app.candidate_state.candidates, key=visit_key)
 
     def _clear_candidate_selection(self) -> None:
         state = self.app.candidate_state
@@ -689,7 +700,7 @@ class GuiCoreAnalysisMixin:
         self.play_engine_mapped(self.current_side(), col, row)
         # Candidate search is a pseudo-root search; suppress root noise.
         self._start_analysis(self.flip_side(self.current_side()), is_candidate=True)
-        prev_visits = state.results.get(key, (None, None))[1]
+        prev_visits = self.candidate_result(key)[1]
         base_visits = self._visits(prev_visits)
         state.run = CandidateRun(
             key=key,

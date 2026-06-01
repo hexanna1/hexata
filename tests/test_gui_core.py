@@ -1605,6 +1605,20 @@ class GuiCoreTests(unittest.TestCase):
         self.assertEqual(undo_before, undo_after)
         self.assertEqual(core.app.candidate_state.run.key, (1, 1))
 
+    def test_candidate_scheduler_counts_cached_live_visits(self):
+        core, _engine = self._mk_core()
+
+        core.app.analysis_cache[core.cache_key()] = [
+            AnalysisMove("b1", order=0, col=2, row=1, winrate=0.6, visits=10000, prior=0.2, pv=None)
+        ]
+        core.add_candidate(1, 1)
+        core.add_candidate(2, 1)
+        core._apply_analysis_enabled_transition(True)
+        self.assertEqual(core.sorted_candidates_by_visits(), [(1, 1), (2, 1)])
+
+        core.step_candidate_search(now=0.0)
+        self.assertEqual(core.app.candidate_state.run.key, (1, 1))
+
     def test_delete_tail_undoes_candidate_and_history(self):
         core, engine = self._mk_core()
 
