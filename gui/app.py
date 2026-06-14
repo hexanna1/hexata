@@ -47,7 +47,6 @@ class UiState:
     drag_move_idx: Optional[int] = None
     show_help: bool = False
     show_engine_debug: bool = False
-    last_cand_display: Optional[Tuple[int, int]] = None
     speed_last_t: Optional[float] = None
     speed_last_total: Optional[int] = None
     speed_vps: Optional[float] = None
@@ -134,7 +133,6 @@ def cycle_engine_profile(core: GuiCore, ui: UiState, *, engine_echo: bool) -> bo
     core.clear_all_cached_analysis()
     old_engine.close()
     ui.current_engine_idx = next_idx
-    ui.last_cand_display = None
     ui.speed_last_t = None
     ui.speed_last_total = None
     ui.speed_vps = None
@@ -484,9 +482,6 @@ def run_gui(
     def update_frame_state(now: float, ui: UiState) -> Tuple[bool, bool, Optional[Tuple[int, int]], int]:
         # Snapshot live analysis for this position so undo/redo can instantly display cached overlays.
         core.tick(now)
-        if app.candidate_state.run is not None:
-            ui.last_cand_display = app.candidate_state.run.key
-
         pressed = pygame.key.get_pressed()
         show_prior = bool(pressed[pygame.K_t])
         mods = pygame.key.get_mods()

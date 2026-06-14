@@ -45,7 +45,6 @@ ANALYSIS_BEST = (175, 235, 240)
 CANDIDATE_LOW = _bg_relative_color((-2, -9, 18))
 CANDIDATE_HIGH = (170, 125, 210)
 CANDIDATE_UNKNOWN = _bg_relative_color((-18, -27, 13))
-CANDIDATE_ACTIVE = (250, 196, 92)
 
 HUD_H = 48
 BOARD_PAD = 16
@@ -84,7 +83,6 @@ class UiStateLike(Protocol):
     show_help: bool
     prefs: UiPrefsLike
     show_engine_debug: bool
-    last_cand_display: Optional[Tuple[int, int]]
     speed_vps: Optional[float]
     current_engine_name: Optional[str]
     has_multiple_engines: bool
@@ -420,7 +418,7 @@ class GuiRenderer:
 
     def _eval_graph_best_reply_winrate(self, key: bytes) -> Optional[float]:
         recs = self.app.analysis_cache.get(key)
-        # Prefer ordered move analysis; candidate cache entries have no order.
+        # Prefer full-root ordered analysis; filtered candidate rows are partial.
         best = None
         if recs:
             for r in recs:
@@ -599,9 +597,11 @@ class GuiRenderer:
             if r.prior is not None:
                 prior_map[(r.col, r.row)] = r.prior
         if self.app.candidate_state.candidates:
-            for key in self.app.candidate_state.candidates:
-                candidate_wr_map[key] = self.core.candidate_result(key)[0]
-        cand_count = len(self.app.candidate_state.candidates) if self.app.candidate_state.candidates else 0
+            candidate_wr_map = {
+                (r.col, r.row): r.winrate
+                for r in self.core.get_candidate_analysis()
+                if r.col is not None and r.row is not None
+            }
 
         denom = math.log(max(2, top_visits))
         max_prior = max(prior_map.values()) if prior_map else None
@@ -619,12 +619,6 @@ class GuiRenderer:
                         else:
                             t = clamp01(cand_wr) ** 0.9
                             fill = lerp_rgb(CANDIDATE_LOW, CANDIDATE_HIGH, t)
-                        if (
-                            cand_count > 1
-                            and self.app.candidate_state.run is not None
-                            and self.app.candidate_state.run.key == (col, row)
-                        ):
-                            fill = CANDIDATE_ACTIVE
                     elif show_prior:
                         pr = prior_map.get((col, row))
                         if pr is None:
@@ -1063,25 +1057,20 @@ class GuiRenderer:
 
         pygame.draw.line(self.screen, LINE, (x0, 0), (x0, self.screen.get_height()), 1)
 
-    def _hud_candidate_key(self, ui: UiStateLike) -> Optional[Tuple[int, int]]:
-        cand_key = (
-            self.app.candidate_state.run.key
-            if self.app.candidate_state.run is not None
-            else ui.last_cand_display
-        )
-        if cand_key is not None and cand_key not in self.app.candidate_state.candidates:
-            cand_key = None
-        if cand_key is None:
-            next_keys = self.core.sorted_candidates_by_visits()
-            cand_key = next_keys[0] if next_keys else None
-        return cand_key
-
     def _hud_best_analysis(self) -> Optional[AnalysisMove]:
         display: Optional[AnalysisMove] = None
-        for r in self.core.get_active_analysis():
+        candidate_mode = bool(self.app.candidate_state.candidates)
+        recs = (
+            self.core.get_candidate_analysis()
+            if candidate_mode
+            else self.core.get_active_analysis()
+        )
+        for r in recs:
             if r.col is None or r.row is None:
                 continue
             if r.order is None:
+                continue
+            if candidate_mode and not self.core.has_candidate_result(r):
                 continue
             if not self.board.is_empty(r.col, r.row):
                 continue
@@ -1112,27 +1101,21 @@ class GuiRenderer:
             ("Analysis: ", analysis_color),
             (analysis_txt, analysis_color),
         ]
-        if self.app.candidate_state.candidates:
-            cand_key = self._hud_candidate_key(ui)
-            parts += [("   |   ", TEXT_ON_LIGHT), ("Cand: ", TEXT_ON_LIGHT)]
-            if cand_key is not None:
-                parts += [(coord_to_human(*cand_key), turn_color)]
-        else:
-            display = self._hud_best_analysis()
-            if display is not None:
-                best_label = "Batch: " if self.core.is_batch_analysis_active() else "Best: "
-                parts += [("   |   ", TEXT_ON_LIGHT), (best_label, TEXT_ON_LIGHT)]
-                coord = coord_to_human(display.col, display.row)
-                parts += [(coord, turn_color)]
-                wr = fmt_wr_or_elo(display.winrate, ui.prefs.show_elo)
-                if wr:
-                    if ui.prefs.show_elo:
-                        parts += [(" ", TEXT_ON_LIGHT), (wr, TEXT_ON_LIGHT)]
-                    else:
-                        parts += [(" ", TEXT_ON_LIGHT), (f"{wr}%", TEXT_ON_LIGHT)]
-                vv = fmt_visits(display.visits)
-                if vv:
-                    parts += [(" ", TEXT_ON_LIGHT), (f"({vv})", TEXT_ON_LIGHT)]
+        display = self._hud_best_analysis()
+        if display is not None:
+            best_label = "Batch: " if self.core.is_batch_analysis_active() else "Best: "
+            parts += [("   |   ", TEXT_ON_LIGHT), (best_label, TEXT_ON_LIGHT)]
+            coord = coord_to_human(display.col, display.row)
+            parts += [(coord, turn_color)]
+            wr = fmt_wr_or_elo(display.winrate, ui.prefs.show_elo)
+            if wr:
+                if ui.prefs.show_elo:
+                    parts += [(" ", TEXT_ON_LIGHT), (wr, TEXT_ON_LIGHT)]
+                else:
+                    parts += [(" ", TEXT_ON_LIGHT), (f"{wr}%", TEXT_ON_LIGHT)]
+            vv = fmt_visits(display.visits)
+            if vv:
+                parts += [(" ", TEXT_ON_LIGHT), (f"({vv})", TEXT_ON_LIGHT)]
         return parts
 
     def draw_hud(self, ui: UiStateLike) -> None:
@@ -1145,7 +1128,7 @@ class GuiRenderer:
 
     def draw_top_right_status(self, ui: UiStateLike) -> None:
         awrn = f"{self.app.analysis_wide_root_noise:.2f}".rstrip("0").rstrip(".")
-        awrn_text = "AWRN –" if self.app.candidate_state.candidates else f"AWRN {awrn}"
+        awrn_text = f"AWRN {awrn}"
         awrn_w = self.fonts.hud_small.get_rect(awrn_text).width
         awrn_x = max(12, self.layout.board_px_w - awrn_w - 12)
         self.text.hud_small.blit_line(awrn_text, TEXT_MUTED, awrn_x, 10)

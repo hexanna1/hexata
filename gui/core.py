@@ -14,8 +14,6 @@ DEFAULT_ANALYZE_INTERVAL_CS = 15
 EditSnapshot = tuple[
     MoveTree,
     tuple[Tuple[int, int], ...],
-    dict[Tuple[int, int], tuple[Optional[float], Optional[int]]],
-    int,
 ]
 
 
@@ -78,14 +76,10 @@ class GuiCore(GuiCoreAnalysisMixin):
             pending_size=board.n,
             candidate_state=CandidateState(
                 candidates=set(),
-                results={},
-                run=None,
-                ratio=1.6,
                 root_key=None,
             ),
             analysis_cache={},
             root_eval_cache={},
-            analysis_cache_generation=0,
             last_cache_sig=None,
             analysis_wide_root_noise=0.04,
         )
@@ -123,8 +117,6 @@ class GuiCore(GuiCoreAnalysisMixin):
         return (
             self.tree.clone(),
             tuple(sorted(state.candidates)),
-            dict(state.results),
-            self.app.analysis_cache_generation,
         )
 
     def _clear_edit_history(self) -> None:
@@ -160,17 +152,13 @@ class GuiCore(GuiCoreAnalysisMixin):
         self.rebuild_engine_from_applied_history()
 
     def _restore_edit_state(self, snap: EditSnapshot) -> None:
-        tree, candidates, results, cache_generation = snap
+        tree, candidates = snap
 
         def mutate() -> None:
             self.tree = tree.clone()
             state = self.app.candidate_state
             state.candidates.clear()
             state.candidates.update(candidates)
-            state.results.clear()
-            if cache_generation == self.app.analysis_cache_generation:
-                state.results.update(results)
-            state.run = None
             self._rebuild_position_from_tree()
             state.root_key = self.cache_key() if state.candidates else None
             if self.app.analysis_mode != AnalysisModeTag.OFF:
@@ -291,7 +279,6 @@ class GuiCore(GuiCoreAnalysisMixin):
         tree_sig_before = self.tree.signature() if was_batch and resume_after else None
         if was_running:
             if keep_engine_synced:
-                self.stop_candidate_run()
                 self.engine.cancel_reply_capture()
                 self.engine.clear_analysis()
             else:
@@ -571,6 +558,8 @@ class GuiCore(GuiCoreAnalysisMixin):
 
     def try_play_moves(self, moves: Sequence[Tuple[int, int]]) -> bool:
         if not moves:
+            return False
+        if not self.board.is_empty(*moves[0]):
             return False
 
         def mutate() -> None:

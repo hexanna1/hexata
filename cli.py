@@ -257,7 +257,6 @@ def _run_cli_analyze(core: GuiCore, args: argparse.Namespace) -> tuple[bool, dic
 
 
 def _run_cli_candidate(core: GuiCore, args: argparse.Namespace) -> tuple[bool, dict]:
-    core.set_analysis_wide_root_noise(0.0)
     try:
         requested_moves = _parse_candidates(args.moves)
     except Exception as exc:

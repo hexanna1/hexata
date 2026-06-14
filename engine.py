@@ -8,7 +8,7 @@ import subprocess
 import math
 import time
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Tuple, Union
+from typing import Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 from board import Side
 
@@ -43,6 +43,16 @@ def gtp_letters_to_int_skipI(s: str) -> int:
     return v
 
 
+def int_to_gtp_letters_skipI(v: int) -> Optional[str]:
+    if v <= 0:
+        return None
+    out: List[str] = []
+    while v:
+        v, rem = divmod(v - 1, 25)
+        out.append(_GTP_ALPH[rem])
+    return "".join(reversed(out))
+
+
 def parse_analysis_move_token(tok: str, board_n: int) -> Optional[Tuple[int, int]]:
     t = tok.strip()
     if t.lower() in ("pass", "resign"):
@@ -53,7 +63,7 @@ def parse_analysis_move_token(tok: str, board_n: int) -> Optional[Tuple[int, int
 
     p = gtp_letters_to_int_skipI(m.group(1))
     num = int(m.group(2))
-    if p <= 0 or num <= 0:
+    if p <= 0 or num <= 0 or num % 2:
         return None
 
     row_from_bottom = num // 2
@@ -67,6 +77,16 @@ def parse_analysis_move_token(tok: str, board_n: int) -> Optional[Tuple[int, int
     if not (1 <= col <= board_n and 1 <= row <= board_n):
         return None
     return (col, row)
+
+
+def to_analysis_token(col: int, row: int, board_n: int) -> Optional[str]:
+    if not (1 <= col <= board_n and 1 <= row <= board_n):
+        return None
+    letters = int_to_gtp_letters_skipI(2 * col + row - 1)
+    if letters is None:
+        return None
+    row_from_bottom = (board_n + 1) - row
+    return f"{letters}{2 * row_from_bottom}"
 
 
 # -------------------- parse kata-analyze output (minimal fields) --------------------
@@ -334,9 +354,27 @@ class KataHexEngine:
         self._param_cache[name] = value
         self._send(f"kata-set-param {name} {value}")
 
-    def start_analysis(self, side_to_analyze: Side, interval_cs: int) -> None:
-        eng = "B" if side_to_analyze == Side.RED else "W"
-        self._send(f"kata-analyze {eng} {interval_cs}")
+    @staticmethod
+    def _engine_side(side: Side) -> str:
+        return "B" if side == Side.RED else "W"
+
+    def start_analysis(
+        self,
+        side_to_analyze: Side,
+        interval_cs: int,
+        allow_filters: Sequence[Tuple[Side, Sequence[Tuple[int, int]]]] = (),
+    ) -> None:
+        parts = ["kata-analyze", self._engine_side(side_to_analyze), str(interval_cs)]
+        for side, moves in allow_filters:
+            tokens: List[str] = []
+            for col, row in moves:
+                tok = to_analysis_token(col, row, self.board_n)
+                if tok is None:
+                    raise ValueError(f"Invalid analysis move: {(col, row)!r}")
+                tokens.append(tok)
+            if tokens:
+                parts.extend(["allow", self._engine_side(side), ",".join(tokens), "1"])
+        self._send(" ".join(parts))
         # Activate analysis and mute until we see the response header.
         self._analysis_active = True
         self._analysis_mute_until_sync = True
