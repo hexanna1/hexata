@@ -20,10 +20,11 @@ Successful CLI records emit:
 
 ## `analyze`
 
-Example command:
+Example commands:
 
 ```bash
 python3 main.py cli analyze 'https://hexworld.org/board/#14c1,a14'
+python3 main.py cli analyze 'https://hexworld.org/board/#14c1,a14::e4k4j11' --search-seconds 1
 ```
 
 Raw-NN:

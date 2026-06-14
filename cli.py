@@ -5,6 +5,7 @@ import argparse
 import json
 import math
 import random
+import re
 import sys
 import time
 from typing import Iterator, Optional
@@ -17,6 +18,7 @@ from formats.hexworld import cell_to_col_row
 
 STARTUP_TIMEOUT_SECONDS = 30.0
 POLL_SECONDS = 0.02
+_FILTER_MOVE_RE = re.compile(r"[a-z]+[0-9]+")
 
 
 def _emit(payload: dict) -> None:
@@ -45,6 +47,31 @@ def _side_winrate_to_red(winrate: Optional[float], side: Side) -> Optional[float
     if winrate is None:
         return None
     return _round6(winrate if side == Side.RED else (1.0 - winrate))
+
+
+def _parse_filter_move_stream(raw: str) -> tuple[tuple[int, int], ...]:
+    if raw == "":
+        raise ValueError("Move filter must include at least one move")
+    toks = [m.group(0) for m in _FILTER_MOVE_RE.finditer(raw)]
+    if "".join(toks) != raw:
+        raise ValueError(f"Invalid move filter: {raw!r}")
+
+    seen: set[tuple[int, int]] = set()
+    out: list[tuple[int, int]] = []
+    for tok in toks:
+        key = cell_to_col_row(tok)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return tuple(out)
+
+
+def _parse_analyze_position_spec(raw: str) -> tuple[str, tuple[tuple[int, int], ...]]:
+    if "::" not in raw:
+        return raw, ()
+    position, moves = raw.rsplit("::", 1)
+    return position, _parse_filter_move_stream(moves)
 
 
 def _to_output_row(r: AnalysisMove, *, side_to_play: Side) -> dict:
@@ -213,30 +240,69 @@ def _search_analyze_payload(
     }
 
 
-def _run_search_for_cli(core: GuiCore, seconds: float) -> tuple[bool, list[AnalysisMove] | dict]:
+def _run_search_for_cli(
+    core: GuiCore,
+    seconds: float,
+    *,
+    candidate_only: bool = False,
+) -> tuple[bool, list[AnalysisMove] | dict]:
     core.toggle_analysis()
     try:
         status = _run_for_seconds_from_first_update(core, seconds)
         if status != "completed":
             return False, {"error": _search_failure_error(status)}
-        return True, core.get_active_analysis()
+        recs = core.get_candidate_analysis() if candidate_only else core.get_active_analysis()
+        return True, recs
     finally:
         if core.app.analysis_enabled:
             core.toggle_analysis()
 
 
-def _run_cli_analyze(core: GuiCore, args: argparse.Namespace) -> tuple[bool, dict]:
+def _validate_filter_moves(core: GuiCore, filter_moves: tuple[tuple[int, int], ...]) -> Optional[str]:
+    for col, row in filter_moves:
+        move = coord_to_human(col, row)
+        if not core.board.in_bounds(col, row):
+            return f"Filtered move out of bounds: {move}"
+        if not core.board.is_empty(col, row):
+            return f"Filtered move not empty: {move}"
+    return None
+
+
+def _run_cli_analyze(
+    core: GuiCore,
+    args: argparse.Namespace,
+    *,
+    filter_moves: tuple[tuple[int, int], ...] = (),
+) -> tuple[bool, dict]:
     if args.search_seconds is None:
+        if filter_moves:
+            return False, {"error": "Filtered analyze requires --search-seconds"}
         raw = _run_kata_raw_nn_once(core.engine)
         if raw is None:
             return False, {"error": "No raw-NN reply received from engine"}
         return True, {"analyze": _raw_analyze_payload(core, raw, top_n=args.top_n)}
 
+    filter_error = _validate_filter_moves(core, filter_moves)
+    if filter_error is not None:
+        return False, {"error": filter_error}
+
     side_to_play = core.current_side()
-    ok, recs_or_error = _run_search_for_cli(core, args.search_seconds)
-    if not ok:
-        return False, recs_or_error
-    return True, {"analyze": _search_analyze_payload(recs_or_error, side_to_play=side_to_play, top_n=args.top_n)}
+    for col, row in filter_moves:
+        core.add_candidate(col, row)
+    try:
+        ok, recs_or_error = _run_search_for_cli(core, args.search_seconds, candidate_only=bool(filter_moves))
+        if not ok:
+            return False, recs_or_error
+        return True, {
+            "analyze": _search_analyze_payload(
+                recs_or_error,
+                side_to_play=side_to_play,
+                top_n=args.top_n,
+            )
+        }
+    finally:
+        if filter_moves:
+            core.clear_candidates()
 
 
 def _run_cli_batch(core: GuiCore, args: argparse.Namespace) -> tuple[bool, dict]:
@@ -704,7 +770,7 @@ def add_cli_arguments(ap: argparse.ArgumentParser) -> None:
     analyze_ap.add_argument(
         "position",
         nargs="+",
-        help="HexWorld URL(s), hash(es), or '-' to read one per line from stdin",
+        help="HexWorld URL(s), hash(es), optional search-only ::moves filter, or '-' for stdin",
     )
     analyze_ap.add_argument("--top-n", type=int, default=None, help="Limit number of returned moves")
     analyze_ap.add_argument(
@@ -829,12 +895,20 @@ def run_cli(
             awrn = getattr(args, "analysis_wide_root_noise", None)
             if awrn is not None:
                 core.set_analysis_wide_root_noise(awrn)
-            for i, position_input in enumerate(_iter_analyze_positions(args.position)):
+            for i, position_spec in enumerate(_iter_analyze_positions(args.position)):
                 if i > 0:
                     engine.clear_cache()
 
                 started_at = time.monotonic()
-                position_error = core.load_hexworld_text(position_input)
+                try:
+                    position_input, filter_moves = _parse_analyze_position_spec(position_spec)
+                    spec_error = None
+                except ValueError as exc:
+                    position_input = position_spec.rsplit("::", 1)[0]
+                    filter_moves = ()
+                    spec_error = f"Analyze position spec failed: {exc}"
+
+                position_error = spec_error or core.load_hexworld_text(position_input)
                 record = {
                     "hexworld": _input_hexworld_url(position_input),
                     "ok": False,
@@ -842,7 +916,7 @@ def run_cli(
                 }
                 if position_error is None:
                     position_hexworld = core.build_hexworld_url()
-                    ok, payload = _run_cli_analyze(core, args)
+                    ok, payload = _run_cli_analyze(core, args, filter_moves=filter_moves)
                     record.update(
                         {
                             "hexworld": position_hexworld,
