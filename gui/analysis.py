@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import struct
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import List, Optional, Sequence, Tuple
 
@@ -196,22 +196,19 @@ class GuiCoreAnalysisMixin:
                 self.resume_analysis()
 
     def _merge_analysis(self, primary: AnalysisMove, secondary: Optional[AnalysisMove]) -> AnalysisMove:
-        """Primary supplies order/prior; deeper visits supplies winrate/visits."""
+        """Primary supplies display order; deeper visits supplies eval metadata."""
         if secondary is None:
             return primary
         best = primary if self._visits(primary.visits) >= self._visits(secondary.visits) else secondary
         order = primary.order if primary.order is not None else secondary.order
-        prior = primary.prior if primary.prior is not None else secondary.prior
-        pv = primary.pv if primary.pv is not None else secondary.pv
-        return AnalysisMove(
-            move=primary.move,
+        # Keep eval metadata from the same source row as the displayed visits/winrate.
+        return replace(
+            primary,
             order=order,
-            col=primary.col,
-            row=primary.row,
             winrate=best.winrate,
             visits=best.visits,
-            prior=prior,
-            pv=pv,
+            prior=best.prior,
+            pv=best.pv,
         )
 
     def _merge_analysis_lists(
@@ -241,16 +238,15 @@ class GuiCoreAnalysisMixin:
             self.cache_reset_sig()
             return
 
-        # Primary = live; cache only upgrades winrate/visits.
         merged = self._merge_analysis_lists(live, existing)
         self.app.analysis_cache[cache_key] = merged
         self.cache_reset_sig()
 
-    def _cached_analysis_result(self, key: Tuple[int, int]) -> Tuple[Optional[float], Optional[int]]:
+    def _cached_analysis_row(self, key: Tuple[int, int]) -> Optional[AnalysisMove]:
         for r in self.app.analysis_cache.get(self.cache_key(), []):
             if r.col == key[0] and r.row == key[1]:
-                return r.winrate, r.visits
-        return None, None
+                return r
+        return None
 
     def _candidate_cache_rows(self, live: List[AnalysisMove]) -> List[AnalysisMove]:
         selected = self.app.candidate_state.candidates
@@ -260,32 +256,29 @@ class GuiCoreAnalysisMixin:
                 continue
             if not self.has_candidate_result(r):
                 continue
-            out.append(
-                AnalysisMove(
-                    move=coord_to_human(r.col, r.row),
-                    order=None,
-                    col=r.col,
-                    row=r.row,
-                    winrate=r.winrate,
-                    visits=r.visits,
-                    prior=None,
-                    pv=None,
-                )
-            )
+            out.append(replace(r, move=coord_to_human(r.col, r.row), order=None))
         return out
 
     def candidate_result(self, key: Tuple[int, int]) -> Tuple[Optional[float], Optional[int]]:
-        live = self._live_analysis_result(key)
-        cached = self._cached_analysis_result(key)
-        if self._visits(live[1]) >= self._visits(cached[1]):
-            return live
-        return cached
+        row = self._analysis_row_for_key(key)
+        if row is None:
+            return None, None
+        return row.winrate, row.visits
 
-    def _live_analysis_result(self, key: Tuple[int, int]) -> Tuple[Optional[float], Optional[int]]:
+    def _live_analysis_row(self, key: Tuple[int, int]) -> Optional[AnalysisMove]:
         for r in self.get_engine_analysis():
             if r.col == key[0] and r.row == key[1]:
-                return r.winrate, r.visits
-        return None, None
+                return r
+        return None
+
+    def _analysis_row_for_key(self, key: Tuple[int, int]) -> Optional[AnalysisMove]:
+        live = self._live_analysis_row(key)
+        cached = self._cached_analysis_row(key)
+        if live is None:
+            return cached
+        if cached is None:
+            return live
+        return self._merge_analysis(live, cached)
 
     def _cache_root_eval(self, blue_win: float) -> None:
         side_to_play = self.current_side()
@@ -568,36 +561,35 @@ class GuiCoreAnalysisMixin:
 
     def get_candidate_analysis(self) -> List[AnalysisMove]:
         state = self.app.candidate_state
-        rows: List[Tuple[Tuple[int, int], Optional[float], Optional[int]]] = []
+        rows: List[Tuple[Tuple[int, int], AnalysisMove]] = []
         for key in state.candidates:
-            wr, visits = self.candidate_result(key)
-            rows.append((key, wr, visits))
+            source = self._analysis_row_for_key(key)
+            if source is None:
+                col, row = key
+                source = AnalysisMove(
+                    move=coord_to_human(col, row),
+                    order=None,
+                    col=col,
+                    row=row,
+                    winrate=None,
+                    visits=None,
+                    prior=None,
+                    pv=None,
+                )
+            rows.append((key, source))
 
-        def sort_key(
-            row: Tuple[Tuple[int, int], Optional[float], Optional[int]]
-        ) -> Tuple[int, float, int, int, int]:
-            key, wr, visits = row
+        def sort_key(item: Tuple[Tuple[int, int], AnalysisMove]) -> Tuple[int, float, int, int, int]:
+            key, source = item
             col, row_ = key
-            if wr is None:
-                return (1, 0.0, -self._visits(visits), col, row_)
-            return (0, -wr, -self._visits(visits), col, row_)
+            if source.winrate is None:
+                return (1, 0.0, -self._visits(source.visits), col, row_)
+            return (0, -source.winrate, -self._visits(source.visits), col, row_)
 
         rows.sort(key=sort_key)
 
         out: List[AnalysisMove] = []
-        for order, ((col, row), wr, visits) in enumerate(rows):
-            out.append(
-                AnalysisMove(
-                    move=coord_to_human(col, row),
-                    order=order,
-                    col=col,
-                    row=row,
-                    winrate=wr,
-                    visits=visits,
-                    prior=None,
-                    pv=None,
-                )
-            )
+        for order, ((col, row), source) in enumerate(rows):
+            out.append(replace(source, move=coord_to_human(col, row), order=order, col=col, row=row))
         return out
 
     def _clear_candidate_selection(self) -> None:

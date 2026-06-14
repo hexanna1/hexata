@@ -424,20 +424,22 @@ class GuiCoreTests(unittest.TestCase):
         self.assertEqual(core.app.candidate_state.candidates, set())
         self.assertIsNone(core.app.candidate_state.root_key)
 
-    def test_merge_analysis_lists_prefers_primary_order_prior(self):
+    def test_merge_analysis_lists_keeps_order_and_uses_deeper_eval_metadata(self):
         core, _engine = self._mk_core()
+        old_pv = ((1, 1), (2, 1))
+        new_pv = ((1, 1), (3, 1))
 
-        primary = [
-            AnalysisMove("a1", order=1, col=1, row=1, winrate=0.4, visits=10, prior=0.2, pv=None),
-        ]
-        secondary = [
-            AnalysisMove("a1", order=9, col=1, row=1, winrate=0.7, visits=50, prior=0.9, pv=None),
-        ]
+        def row(order, winrate, visits, prior, pv):
+            return AnalysisMove("a1", order, 1, 1, winrate, visits, prior, pv)
+
+        primary = [row(1, 0.4, 10, 0.2, old_pv)]
+        secondary = [row(9, 0.7, 50, 0.9, new_pv)]
 
         merged = core._merge_analysis_lists(primary, secondary)
         self.assertEqual(len(merged), 1)
         self.assertEqual(merged[0].order, 1)
-        self.assertEqual(merged[0].prior, 0.2)
+        self.assertEqual(merged[0].prior, 0.9)
+        self.assertEqual(merged[0].pv, new_pv)
         self.assertEqual(merged[0].winrate, 0.7)
         self.assertEqual(merged[0].visits, 50)
 
@@ -1601,12 +1603,15 @@ class GuiCoreTests(unittest.TestCase):
         self.assertEqual(engine.params["analysisWideRootNoise"], core.app.analysis_wide_root_noise)
         self.assertEqual(core.get_top_move(), (None, 0))
 
+        pv = ((1, 1), (3, 1))
         engine.analysis = [
-            AnalysisMove("a1", order=0, col=1, row=1, winrate=0.7, visits=40, prior=0.8, pv=None),
+            AnalysisMove("a1", order=0, col=1, row=1, winrate=0.7, visits=40, prior=0.8, pv=pv),
         ]
         core.maybe_update_analysis_cache()
 
         self.assertEqual(core.get_top_move(), ((1, 1), 40))
+        candidate = core.get_candidate_analysis()[0]
+        self.assertEqual((candidate.prior, candidate.pv), (0.8, pv))
         core.clear_candidates()
         self.assertEqual(core.get_top_move(), ((2, 2), 20))
 

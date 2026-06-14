@@ -544,11 +544,7 @@ class GuiRenderer:
         hover_cell: Optional[Tuple[int, int]],
     ) -> Optional[Tuple[Tuple[int, int], ...]]:
         cell = hover_cell
-        if (
-            cell is None
-            or self.app.candidate_state.candidates
-            or (not self.board.is_empty(cell[0], cell[1]))
-        ):
+        if cell is None or (not self.board.is_empty(cell[0], cell[1])):
             cell = None
 
         sig = (cell, self.board.rev)
@@ -558,16 +554,14 @@ class GuiRenderer:
             return self._frozen_pv
         self._frozen_pv_sig = sig
 
-        if cell is None:
-            self._frozen_pv = None
-            return None
-
-        col, row = cell
         pv = None
-        for r in self.core.get_active_analysis():
-            if r.col == col and r.row == row and r.pv:
-                pv = r.pv
-                break
+        if cell is not None:
+            col, row = cell
+            for r in self.core.get_active_analysis():
+                if r.col == col and r.row == row and r.pv:
+                    pv = r.pv
+                    break
+
         self._frozen_pv = pv
         return pv
 
@@ -612,14 +606,7 @@ class GuiRenderer:
                 occ = self.board.get(col, row)
 
                 if occ < 0:
-                    if (col, row) in self.app.candidate_state.candidates:
-                        cand_wr = candidate_wr_map.get((col, row))
-                        if cand_wr is None:
-                            fill = CANDIDATE_UNKNOWN
-                        else:
-                            t = clamp01(cand_wr) ** 0.9
-                            fill = lerp_rgb(CANDIDATE_LOW, CANDIDATE_HIGH, t)
-                    elif show_prior:
+                    if show_prior:
                         pr = prior_map.get((col, row))
                         if pr is None:
                             fill = BOARD_EMPTY
@@ -628,6 +615,13 @@ class GuiRenderer:
                             fill = lerp_rgb(ANALYSIS_LOW, ANALYSIS_HIGH, t)
                             if max_prior is not None and pr >= max_prior - 0.001:
                                 fill = ANALYSIS_BEST
+                    elif (col, row) in self.app.candidate_state.candidates:
+                        cand_wr = candidate_wr_map.get((col, row))
+                        if cand_wr is None:
+                            fill = CANDIDATE_UNKNOWN
+                        else:
+                            t = clamp01(cand_wr) ** 0.9
+                            fill = lerp_rgb(CANDIDATE_LOW, CANDIDATE_HIGH, t)
                     else:
                         v = visits_map.get((col, row))
                         wr = winrate_map.get((col, row))
