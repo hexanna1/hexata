@@ -33,7 +33,7 @@ A lightweight, keyboard-first GUI and CLI for analyzing Hex with the [KataHex](h
 - `history_tree.py`: Move-tree model for branching history and cursor navigation.
 - `engine.py`: Engine process wrapper, GTP-ish parsing, and analysis I/O.
 - `main.py`: Program entry point; loads config and dispatches GUI or CLI mode.
-- `cli.py`: CLI for root analysis, candidate analysis, batch line analysis, and engine matches.
+- `cli.py`: CLI for root analysis, batch line analysis, and engine matches.
 - `gui/`: GUI implementation.
   - `app.py`: Pygame app loop, input handling, and UI flow.
   - `core.py`: Game state, move history, import/export, and engine coordination.

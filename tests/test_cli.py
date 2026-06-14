@@ -15,9 +15,6 @@ class _AlwaysEmptyBoard:
     def is_empty(self, col: int, row: int) -> bool:
         return True
 
-    def in_bounds(self, col: int, row: int) -> bool:
-        return 1 <= col <= self.n and 1 <= row <= self.n
-
 
 class CliTests(unittest.TestCase):
     def test_raw_winrate_helpers_handle_swap_perspective(self):
@@ -63,50 +60,6 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("visits", payload["analyze"]["moves"][0])
         raw_once.assert_called_once_with(core.engine)
         run_search.assert_not_called()
-
-    def test_run_cli_candidate_raw_nn_uses_undo_on_success_and_failure(self):
-        board = _AlwaysEmptyBoard(3)
-        engine = SimpleNamespace(undo=Mock())
-        play_engine_mapped = Mock()
-        core = SimpleNamespace(
-            board=board,
-            engine=engine,
-            app=SimpleNamespace(analysis_enabled=False),
-            set_analysis_wide_root_noise=Mock(),
-            current_side=lambda: Side.RED,
-            _map_side_to_engine=lambda side: side,
-            play_engine_mapped=play_engine_mapped,
-        )
-
-        success_args = SimpleNamespace(search_seconds=None, moves="a1,b1")
-        raw1 = RawNNResult(white_win=0.2, policy_rows=(), policy_pass=None)
-        raw2 = RawNNResult(white_win=0.8, policy_rows=(), policy_pass=None)
-        with patch("cli._run_kata_raw_nn_once", side_effect=[raw1, raw2]) as raw_once, patch(
-            "cli._run_for_seconds_from_first_update", side_effect=AssertionError("search path used")
-        ) as run_search:
-            ok, payload = cli._run_cli_candidate(core, success_args)
-
-        self.assertTrue(ok)
-        self.assertEqual(payload["candidate"]["method"], "raw_nn")
-        self.assertNotIn("best", payload["candidate"])
-        self.assertEqual([row["move"] for row in payload["candidate"]["moves"]], ["a1", "b1"])
-        self.assertEqual([row["red_winrate"] for row in payload["candidate"]["moves"]], [0.8, 0.2])
-        self.assertNotIn("visits", payload["candidate"]["moves"][0])
-        self.assertEqual(engine.undo.call_count, 2)
-        self.assertEqual(play_engine_mapped.call_count, 2)
-        self.assertEqual(raw_once.call_count, 2)
-        run_search.assert_not_called()
-
-        engine.undo.reset_mock()
-        play_engine_mapped.reset_mock()
-        fail_args = SimpleNamespace(search_seconds=None, moves="a1")
-        with patch("cli._run_kata_raw_nn_once", return_value=None):
-            ok, payload = cli._run_cli_candidate(core, fail_args)
-
-        self.assertFalse(ok)
-        self.assertIn("No raw-NN reply received", payload["error"])
-        self.assertEqual(engine.undo.call_count, 1)
-        self.assertEqual(play_engine_mapped.call_count, 1)
 
     def test_run_cli_analyze_streams_one_result_per_position_and_clears_cache_between(self):
         engine = SimpleNamespace(clear_cache=Mock(), close=Mock())

@@ -47,21 +47,6 @@ def _side_winrate_to_red(winrate: Optional[float], side: Side) -> Optional[float
     return _round6(winrate if side == Side.RED else (1.0 - winrate))
 
 
-def _parse_candidates(raw: str) -> list[tuple[int, int]]:
-    seen: set[tuple[int, int]] = set()
-    out: list[tuple[int, int]] = []
-    for tok in raw.split(","):
-        tok = tok.strip()
-        if not tok:
-            continue
-        key = cell_to_col_row(tok)
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(key)
-    return out
-
-
 def _to_output_row(r: AnalysisMove, *, side_to_play: Side) -> dict:
     move = r.move.lower()
     if r.col is not None and r.row is not None:
@@ -176,12 +161,10 @@ def _input_hexworld_url(text: str) -> str:
     return f"https://hexworld.org/board/#{hexworld.extract_hash(text)}"
 
 
-def _search_failure_error(status: str, *, move: Optional[str] = None) -> str:
+def _search_failure_error(status: str) -> str:
     if status == "engine_exited":
-        base = "Engine exited before analysis completed"
-    else:
-        base = "No analysis update received from engine"
-    return f"{base} for {move}" if move is not None else base
+        return "Engine exited before analysis completed"
+    return "No analysis update received from engine"
 
 
 def _raw_analyze_payload(core: GuiCore, raw: RawNNResult, *, top_n: Optional[int]) -> dict:
@@ -254,69 +237,6 @@ def _run_cli_analyze(core: GuiCore, args: argparse.Namespace) -> tuple[bool, dic
     if not ok:
         return False, recs_or_error
     return True, {"analyze": _search_analyze_payload(recs_or_error, side_to_play=side_to_play, top_n=args.top_n)}
-
-
-def _run_cli_candidate(core: GuiCore, args: argparse.Namespace) -> tuple[bool, dict]:
-    try:
-        requested_moves = _parse_candidates(args.moves)
-    except Exception as exc:
-        return False, {"error": f"Invalid --moves: {exc}"}
-    if not requested_moves:
-        return False, {"error": "--moves must include at least one coordinate"}
-
-    board = core.board
-    for col, row in requested_moves:
-        if not board.in_bounds(col, row):
-            return False, {"error": f"Move out of bounds: {coord_to_human(col, row)}"}
-        if not board.is_empty(col, row):
-            return False, {"error": f"Move not empty: {coord_to_human(col, row)}"}
-
-    side_to_move = core.current_side()
-    if args.search_seconds is None:
-        moves = []
-        for col, row in requested_moves:
-            core.play_engine_mapped(side_to_move, col, row)
-            try:
-                raw = _run_kata_raw_nn_once(core.engine)
-            finally:
-                core.engine.undo()
-            if raw is None:
-                return False, {
-                    "error": f"No raw-NN reply received from engine for {coord_to_human(col, row)}"
-                }
-            moves.append(
-                {
-                    "move": coord_to_human(col, row),
-                    "red_winrate": _raw_red_winrate(core, raw),
-                }
-            )
-        return True, {
-            "candidate": {"method": "raw_nn", "moves": moves},
-        }
-
-    moves = []
-    for i, (col, row) in enumerate(requested_moves):
-        if i > 0:
-            core.clear_candidates()
-        core.add_candidate(col, row)
-        if not core.app.analysis_enabled:
-            core.toggle_analysis()
-        status = _run_for_seconds_from_first_update(core, args.search_seconds)
-        if status != "completed":
-            core.clear_candidates()
-            return False, {"error": _search_failure_error(status, move=coord_to_human(col, row))}
-        winrate, visits = core.candidate_result((col, row))
-        moves.append(
-            {
-                "move": coord_to_human(col, row),
-                "red_winrate": _side_winrate_to_red(winrate, side_to_move),
-                "visits": visits,
-            }
-        )
-    core.clear_candidates()
-    return True, {
-        "candidate": {"method": "search", "moves": moves},
-    }
 
 
 def _run_cli_batch(core: GuiCore, args: argparse.Namespace) -> tuple[bool, dict]:
@@ -802,21 +722,6 @@ def add_cli_arguments(ap: argparse.ArgumentParser) -> None:
         help="analysisWideRootNoise",
     )
 
-    candidate_ap = sub.add_parser("candidate", help="Analyze specified candidate moves")
-    _add_cli_engine_argument(candidate_ap)
-    _add_cli_position_argument(candidate_ap)
-    candidate_ap.add_argument(
-        "--moves",
-        required=True,
-        help="Comma-separated candidate coordinates, e.g. c3,d4,e5",
-    )
-    candidate_ap.add_argument(
-        "--search-seconds",
-        type=float,
-        default=None,
-        help="Search time per candidate (omit for raw-NN)",
-    )
-
     batch_ap = sub.add_parser("batch", help="Analyze the full main line with per-ply search")
     _add_cli_engine_argument(batch_ap)
     _add_cli_position_argument(batch_ap)
@@ -871,6 +776,8 @@ def add_cli_arguments(ap: argparse.ArgumentParser) -> None:
         default=0.01,
         help="Resign when side-to-play estimated winrate drops below this",
     )
+
+
 def run_cli(
     args: argparse.Namespace,
     *,
@@ -895,12 +802,13 @@ def run_cli(
             return _fail("--top-n must be >= 1")
         if not _is_nonnegative_finite(args.search_seconds):
             return _fail("--search-seconds must be finite and >= 0")
-    elif args.cli_cmd == "candidate":
-        if not _is_nonnegative_finite(args.search_seconds):
-            return _fail("--search-seconds must be finite and >= 0")
+        if args.search_seconds is None and args.analysis_wide_root_noise is not None:
+            return _fail("--analysis-wide-root-noise requires --search-seconds")
     elif args.cli_cmd == "batch":
         if not _is_nonnegative_finite(getattr(args, "search_seconds", None)):
             return _fail("--search-seconds must be finite and >= 0")
+    else:
+        return _fail(f"Unknown cli command: {args.cli_cmd}")
 
     board = HexBoard(DEFAULT_BOARD_SIZE)
     try:
@@ -952,12 +860,7 @@ def run_cli(
 
         started_at = time.monotonic()
         position_hexworld = core.build_hexworld_url()
-        if args.cli_cmd == "candidate":
-            ok, payload = _run_cli_candidate(core, args)
-        elif args.cli_cmd == "batch":
-            ok, payload = _run_cli_batch(core, args)
-        else:
-            return _fail(f"Unknown cli command: {args.cli_cmd}")
+        ok, payload = _run_cli_batch(core, args)
         if not ok:
             return _fail(payload["error"])
         _emit(

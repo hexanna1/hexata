@@ -11,7 +11,7 @@ Successful CLI records emit:
   "hexworld": "https://hexworld.org/board/#14c1,...",
   "ok": true,
   "error": null,
-  "<analyze | candidate | batch | match>": {},
+  "<analyze | batch | match>": {},
   "meta": {
     "elapsed_ms": 12
   }
@@ -51,40 +51,6 @@ Search:
     "total_visits": 240,
     "moves": [
       {"move": "g5", "rank": 1, "red_winrate": 0.61, "visits": 120, "prior": 0.2}
-    ]
-  }
-}
-```
-
-## `candidate`
-
-Example command:
-
-```bash
-python3 main.py cli candidate 'https://hexworld.org/board/#14c1,a14' --moves e4,k4,j11
-```
-
-Raw-NN:
-
-```json
-{
-  "candidate": {
-    "method": "raw_nn",
-    "moves": [
-      {"move": "g5", "red_winrate": 0.61}
-    ]
-  }
-}
-```
-
-Search:
-
-```json
-{
-  "candidate": {
-    "method": "search",
-    "moves": [
-      {"move": "g5", "red_winrate": 0.61, "visits": 120}
     ]
   }
 }
