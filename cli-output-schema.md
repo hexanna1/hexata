@@ -68,6 +68,7 @@ python3 main.py cli batch 'https://hexworld.org/board/#14c1,a14k4d5d4e4d6c6e3f3c
 ```json
 {
   "batch": {
+    "result": "blue_resigned",
     "plies": [
       {
         "ply": 1,
@@ -92,7 +93,18 @@ python3 main.py cli batch 'https://hexworld.org/board/#14c1,a14k4d5d4e4d6c6e3f3c
           ]
         }
       }
-    ]
+    ],
+    "final": {
+      "side": "blue",
+      "analyze": {
+        "method": "search",
+        "best": {"move": "f6", "red_winrate": 0.61, "visits": 120},
+        "total_visits": 240,
+        "moves": [
+          {"move": "f6", "rank": 1, "red_winrate": 0.61, "visits": 120, "prior": 0.2}
+        ]
+      }
+    }
   }
 }
 ```
@@ -132,7 +144,18 @@ python3 main.py cli match --engine-a main --engine-b alt --size 14 --openings 'a
           ]
         }
       }
-    ]
+    ],
+    "final": {
+      "side": "red",
+      "analyze": {
+        "method": "search",
+        "best": {"move": "c1", "red_winrate": 0.01, "visits": 120},
+        "total_visits": 240,
+        "moves": [
+          {"move": "c1", "rank": 1, "red_winrate": 0.01, "visits": 120, "prior": 0.2}
+        ]
+      }
+    }
   }
 }
 ```

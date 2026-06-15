@@ -240,6 +240,13 @@ def _search_analyze_payload(
     }
 
 
+def _final_analysis_payload(*, side: Side, analyze: dict) -> dict:
+    return {
+        "side": _side_to_text(side),
+        "analyze": analyze,
+    }
+
+
 def _run_search_for_cli(
     core: GuiCore,
     seconds: float,
@@ -305,7 +312,7 @@ def _run_cli_analyze(
             core.clear_candidates()
 
 
-def _run_cli_batch(core: GuiCore, args: argparse.Namespace) -> tuple[bool, dict]:
+def _run_cli_batch(core: GuiCore, args: argparse.Namespace, *, result: Optional[str] = None) -> tuple[bool, dict]:
     if core.current_ply() and not core.go_first():
         return False, {"error": "Failed to rewind to start for batch analysis"}
 
@@ -338,6 +345,20 @@ def _run_cli_batch(core: GuiCore, args: argparse.Namespace) -> tuple[bool, dict]
             return False, {"error": "Failed to step forward during batch analysis"}
 
     batch = {"plies": plies}
+    final_side = core.current_side()
+    ok, recs_or_error = _run_search_for_cli(core, args.search_seconds)
+    if not ok:
+        return False, recs_or_error
+    batch["final"] = _final_analysis_payload(
+        side=final_side,
+        analyze=_search_analyze_payload(
+            recs_or_error,
+            side_to_play=final_side,
+            top_n=None,
+        ),
+    )
+    if result is not None:
+        batch["result"] = result
     return True, {"batch": batch}
 
 
@@ -457,6 +478,7 @@ def _match_payload(
     game_plies: list[dict],
     winner: Optional[str] = None,
     result: Optional[str] = None,
+    final: Optional[dict] = None,
 ) -> dict:
     payload = {
         "round": round_num,
@@ -470,6 +492,8 @@ def _match_payload(
     if result is not None:
         payload["result"] = result
     payload["plies"] = game_plies
+    if final is not None:
+        payload["final"] = final
     return payload
 
 
@@ -664,6 +688,14 @@ def _run_cli_match(
                     if side_wr is not None and side_wr < args.resign_winrate:
                         winner_key = "engine_b" if actor_key == "engine_a" else "engine_a"
                         winner_name = args.engine_a if winner_key == "engine_a" else args.engine_b
+                        final = _final_analysis_payload(
+                            side=side,
+                            analyze=_search_analyze_payload(
+                                recs,
+                                side_to_play=side,
+                                top_n=None,
+                            ),
+                        )
                         _emit_match_record(
                             ok=True,
                             error=None,
@@ -678,10 +710,19 @@ def _run_cli_match(
                                 game_plies=game_plies,
                                 winner=winner_name,
                                 result="red_resigned" if side == Side.RED else "blue_resigned",
+                                final=final,
                             ),
                         )
                         break
                     if move is None:
+                        final = _final_analysis_payload(
+                            side=side,
+                            analyze=_search_analyze_payload(
+                                recs,
+                                side_to_play=side,
+                                top_n=None,
+                            ),
+                        )
                         _emit_match_record(
                             ok=True,
                             error=None,
@@ -694,8 +735,7 @@ def _run_cli_match(
                                 red_name=red_name,
                                 blue_name=blue_name,
                                 game_plies=game_plies,
-                                winner=None,
-                                result="no_resign",
+                                final=final,
                             ),
                         )
                         break
@@ -934,7 +974,8 @@ def run_cli(
 
         started_at = time.monotonic()
         position_hexworld = core.build_hexworld_url()
-        ok, payload = _run_cli_batch(core, args)
+        batch_result = hexworld.terminal_result_from_text(args.position)
+        ok, payload = _run_cli_batch(core, args, result=batch_result)
         if not ok:
             return _fail(payload["error"])
         _emit(

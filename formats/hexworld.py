@@ -8,6 +8,10 @@ from board import Move, MoveKind, Side, coord_to_human
 _MOVE_TOKEN_RE = re.compile(r":p|:s|:S|:rw|:rb|:fw|:fb|[a-z]+[0-9]+")
 _CELL_RE = re.compile(r"^([a-z]+)([0-9]+)$")
 _PREFIX_RE = re.compile(r"^([0-9]+)(?:x([0-9]+))?([a-z0-9]*)$")
+_RESULT_BY_TOKEN = {
+    ":rw": "blue_resigned",
+    ":rb": "red_resigned",
+}
 
 
 def extract_hash(s: str) -> str:
@@ -102,6 +106,16 @@ def build_hexworld_url(
         return f"{base},{past}" if past else base
     future = moves_to_hexworld_stream(future_moves)
     return f"{base},{past},{future}"
+
+
+def terminal_result_from_text(s: str) -> Optional[str]:
+    h = extract_hash(s)
+    parts = h.split(",")
+    result: Optional[str] = None
+    for stream in parts[1:]:
+        for tok in _tokenize_moves(stream):
+            result = _RESULT_BY_TOKEN.get(tok, result)
+    return result
 
 
 def _parse_prefix(prefix: str) -> Tuple[int, int, Tuple[str, ...]]:
