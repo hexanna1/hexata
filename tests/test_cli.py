@@ -96,7 +96,7 @@ class CliTests(unittest.TestCase):
         ) as run_analyze, patch("cli._emit") as emit:
             exit_code = cli.run_cli(args, engine_cmd=["katahex"])
 
-        self.assertEqual(exit_code, 0)
+        self.assertEqual(exit_code, 1)
         self.assertEqual(emit.call_count, 3)
         self.assertEqual(
             [(call.args[0]["hexworld"], call.args[0]["ok"]) for call in emit.call_args_list],
@@ -108,10 +108,10 @@ class CliTests(unittest.TestCase):
         )
         engine.close.assert_called_once_with()
 
-    def test_iter_analyze_positions_expands_stdin_sentinel_in_position_order(self):
+    def test_iter_cli_positions_expands_stdin_sentinel_in_position_order(self):
         with patch("cli.sys.stdin", io.StringIO("\nstdin-1\nstdin-2\n\n")):
             self.assertEqual(
-                list(cli._iter_analyze_positions(["good-1", "-", "good-2"])),
+                list(cli._iter_cli_positions(["good-1", "-", "good-2"])),
                 ["good-1", "stdin-1", "stdin-2", "good-2"],
             )
 

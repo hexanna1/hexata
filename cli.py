@@ -779,7 +779,7 @@ def _run_cli_match(
             engine_b.close()
 
 
-def _iter_analyze_positions(positions: list[str]) -> Iterator[str]:
+def _iter_cli_positions(positions: list[str]) -> Iterator[str]:
     for position in positions:
         if position != "-":
             yield position
@@ -788,10 +788,6 @@ def _iter_analyze_positions(positions: list[str]) -> Iterator[str]:
             position = line.strip()
             if position:
                 yield position
-
-
-def _add_cli_position_argument(ap: argparse.ArgumentParser) -> None:
-    ap.add_argument("position", help="HexWorld URL or hash")
 
 
 def _add_cli_engine_argument(ap: argparse.ArgumentParser) -> None:
@@ -830,7 +826,11 @@ def add_cli_arguments(ap: argparse.ArgumentParser) -> None:
 
     batch_ap = sub.add_parser("batch", help="Analyze the full main line with per-ply search")
     _add_cli_engine_argument(batch_ap)
-    _add_cli_position_argument(batch_ap)
+    batch_ap.add_argument(
+        "position",
+        nargs="+",
+        help="HexWorld URL(s), hash(es), or '-' for stdin",
+    )
     batch_ap.add_argument(
         "--search-seconds",
         type=float,
@@ -935,7 +935,8 @@ def run_cli(
             awrn = getattr(args, "analysis_wide_root_noise", None)
             if awrn is not None:
                 core.set_analysis_wide_root_noise(awrn)
-            for i, position_spec in enumerate(_iter_analyze_positions(args.position)):
+            had_error = False
+            for i, position_spec in enumerate(_iter_cli_positions(args.position)):
                 if i > 0:
                     engine.clear_cache()
 
@@ -965,28 +966,37 @@ def run_cli(
                             **({} if not ok else payload),
                         }
                     )
+                had_error = had_error or not record["ok"]
                 record["meta"] = {"elapsed_ms": int(round((time.monotonic() - started_at) * 1000))}
                 _emit(record)
-            return 0
-        position_error = core.load_hexworld_text(args.position)
-        if position_error is not None:
-            return _fail(position_error)
+            return 1 if had_error else 0
+        had_error = False
+        for i, position_input in enumerate(_iter_cli_positions(args.position)):
+            if i > 0:
+                engine.clear_cache()
 
-        started_at = time.monotonic()
-        position_hexworld = core.build_hexworld_url()
-        batch_result = hexworld.terminal_result_from_text(args.position)
-        ok, payload = _run_cli_batch(core, args, result=batch_result)
-        if not ok:
-            return _fail(payload["error"])
-        _emit(
-            {
-                "hexworld": position_hexworld,
-                "ok": True,
-                "error": None,
-                **payload,
-                "meta": {"elapsed_ms": int(round((time.monotonic() - started_at) * 1000))},
+            started_at = time.monotonic()
+            position_error = core.load_hexworld_text(position_input)
+            record = {
+                "hexworld": _input_hexworld_url(position_input),
+                "ok": False,
+                "error": position_error,
             }
-        )
-        return 0
+            if position_error is None:
+                position_hexworld = core.build_hexworld_url()
+                batch_result = hexworld.terminal_result_from_text(position_input)
+                ok, payload = _run_cli_batch(core, args, result=batch_result)
+                record.update(
+                    {
+                        "hexworld": position_hexworld,
+                        "ok": ok,
+                        "error": None if ok else payload["error"],
+                        **({} if not ok else payload),
+                    }
+                )
+            had_error = had_error or not record["ok"]
+            record["meta"] = {"elapsed_ms": int(round((time.monotonic() - started_at) * 1000))}
+            _emit(record)
+        return 1 if had_error else 0
     finally:
         engine.close()
