@@ -749,19 +749,13 @@ class GuiRenderer:
                 self.draw_ghost_cell(cell, side)
             side = self.core.flip_side(side)
 
-    def draw_pv_numbers(self, pv: Tuple[Tuple[int, int], ...], start_side: Side) -> None:
-        side = start_side
-        for idx, cell in enumerate(pv):
-            if idx == 0:
-                side = self.core.flip_side(side)
-                continue
+    def draw_pv_numbers(self, pv: Tuple[Tuple[int, int], ...]) -> None:
+        for idx, cell in enumerate(pv[1:], start=2):
             if not self.board.is_empty(*cell):
-                side = self.core.flip_side(side)
                 continue
             ax, ay = cell[0] - 1, cell[1] - 1
             cx, cy = self.center(ax, ay)
-            self.text.board.blit_center(str(idx + 1), TEXT_ON_DARK, cx, cy)
-            side = self.core.flip_side(side)
+            self.text.board.blit_center(str(idx), TEXT_ON_DARK, cx, cy)
 
     def draw_analysis_text(
         self,
@@ -1012,6 +1006,7 @@ class GuiRenderer:
         for row in rows[start:end]:
             ply_label = f"{row.ply}."
             ply_w = self.text.movelist.font.get_rect(ply_label).width
+            # Keep ply labels aligned with horizontally scrolled movelist rows.
             self.text.movelist.blit_line(ply_label, TEXT_ON_LIGHT, x0 + pad + gutter_w - ply_w - scroll_px, y)
             for cell in row.cells:
                 cx = content_x + (cell.column * space_w) - scroll_px
@@ -1230,7 +1225,7 @@ class GuiRenderer:
         self.draw_side_coords()
         self.draw_analysis_text(ui, show_prior, show_coords, suppress_cells=pv_cells)
         if not show_coords and show_pv and pv is not None:
-            self.draw_pv_numbers(pv, self.core.current_side())
+            self.draw_pv_numbers(pv)
         if not show_coords:
             self.draw_move_numbers(ui.prefs.show_move_numbers)
         self.draw_movelist_panel(ui)

@@ -413,6 +413,7 @@ def _sample_match_search_move(
     seen: set[tuple[int, int]] = set()
     for r in recs:
         if r.col is None or r.row is None:
+            # Match games sample placement moves only.
             continue
         key = (r.col, r.row)
         if key in seen or not board.is_empty(r.col, r.row):
@@ -715,6 +716,7 @@ def _run_cli_match(
                         )
                         break
                     if move is None:
+                        # Search exhaustion is reported without inferring a winner.
                         final = _final_analysis_payload(
                             side=side,
                             analyze=_search_analyze_payload(

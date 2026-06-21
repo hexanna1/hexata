@@ -256,6 +256,7 @@ class GuiCoreAnalysisMixin:
                 continue
             if not self.has_candidate_result(r):
                 continue
+            # Unordered candidate rows can inform display without becoming top moves.
             out.append(replace(r, move=coord_to_human(r.col, r.row), order=None))
         return out
 
@@ -488,6 +489,7 @@ class GuiCoreAnalysisMixin:
             return
         if now - run.first_update_at < SLOW_BATCH_SECONDS_PER_POS:
             return
+        self.maybe_update_analysis_cache()
         self._advance_batch_position(restart_analysis=True)
 
     def _advance_batch_position(self, *, restart_analysis: bool) -> None:

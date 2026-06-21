@@ -114,6 +114,7 @@ class GuiCore(GuiCoreAnalysisMixin):
     # -------------------- edit history --------------------
     def _capture_edit_state(self) -> EditSnapshot:
         state = self.app.candidate_state
+        # Candidates are position-local and undo/redo restores them with the board.
         return (
             self.tree.clone(),
             tuple(sorted(state.candidates)),

@@ -225,6 +225,8 @@ class MoveTree:
         stack: list[tuple[HistoryNode, HistoryNode, object | None]] = [(preferred, absorbed, None)]
         while stack:
             current_preferred, current_absorbed, child_iter = stack.pop()
+            if self.cursor is current_absorbed:
+                self.cursor = current_preferred
             if child_iter is None:
                 if current_preferred.move != current_absorbed.move:
                     raise AssertionError("Cannot merge subtrees with different moves")

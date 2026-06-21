@@ -114,6 +114,7 @@ def cycle_engine_profile(core: GuiCore, ui: UiState, *, engine_echo: bool) -> bo
     if new_engine is None:
         return False
 
+    # Engine cycling intentionally restarts any batch run as live analysis.
     was_running = core.app.analysis_enabled
     if was_running:
         core.toggle_analysis()
