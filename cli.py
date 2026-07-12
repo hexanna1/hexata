@@ -261,7 +261,7 @@ def _run_search_for_cli(
         recs = core.get_candidate_analysis() if candidate_only else core.get_active_analysis()
         return True, recs
     finally:
-        if core.app.analysis_enabled:
+        if core.session.analysis_enabled:
             core.toggle_analysis()
 
 

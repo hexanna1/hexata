@@ -10,6 +10,7 @@ import pygame.freetype
 from board import HexBoard, Move, MoveKind, Side, col_to_human_letters, coord_to_human
 from engine import AnalysisMove
 from gui.core import GuiCore
+from gui.state import SessionState
 
 RED = (220, 60, 60)
 BLUE = (40, 100, 220)
@@ -320,11 +321,9 @@ def lerp_rgb(a: Tuple[int, int, int], b: Tuple[int, int, int], t: float) -> Tupl
 
 class GuiRenderer:
     def __init__(
-        self, board: HexBoard, core: GuiCore, *, flags: int, board_orientation: str = "flat"
+        self, core: GuiCore, *, flags: int, board_orientation: str = "flat"
     ) -> None:
-        self.board = board
         self.core = core
-        self.app = core.app
         self.flags = flags
         self.projection = projection_for_orientation(board_orientation)
         self.screen = pygame.display.set_mode((DEFAULT_WIN_W, DEFAULT_WIN_H), flags)
@@ -350,6 +349,14 @@ class GuiRenderer:
         self._frozen_pv_sig: Optional[Tuple[Optional[Tuple[int, int]], int]] = None
         self._frozen_pv: Optional[Tuple[Tuple[int, int], ...]] = None
         self.apply_window_size(DEFAULT_WIN_W, DEFAULT_WIN_H)
+
+    @property
+    def board(self) -> HexBoard:
+        return self.core.board
+
+    @property
+    def session(self) -> SessionState:
+        return self.core.session
 
     def set_board_orientation(self, orientation: str) -> None:
         projection = projection_for_orientation(orientation)
@@ -417,7 +424,7 @@ class GuiRenderer:
         return (int(pos[0] * scale_x), int(pos[1] * scale_y))
 
     def _eval_graph_best_reply_winrate(self, key: bytes) -> Optional[float]:
-        recs = self.app.analysis_cache.get(key)
+        recs = self.session.analysis_cache.get(key)
         # Prefer full-root ordered analysis; filtered candidate rows are partial.
         best = None
         if recs:
@@ -428,7 +435,7 @@ class GuiRenderer:
                     best = r
         if best is not None and best.winrate is not None:
             return best.winrate
-        return self.app.root_eval_cache.get(key)
+        return self.session.root_eval_cache.get(key)
 
     @staticmethod
     def _eval_graph_x_for_ply(rect: pygame.Rect, n_moves: int, ply: int) -> int:
@@ -590,7 +597,7 @@ class GuiRenderer:
                 winrate_map[(r.col, r.row)] = r.winrate
             if r.prior is not None:
                 prior_map[(r.col, r.row)] = r.prior
-        if self.app.candidate_state.candidates:
+        if self.session.candidate_selection.candidates:
             candidate_wr_map = {
                 (r.col, r.row): r.winrate
                 for r in self.core.get_candidate_analysis()
@@ -615,7 +622,7 @@ class GuiRenderer:
                             fill = lerp_rgb(ANALYSIS_LOW, ANALYSIS_HIGH, t)
                             if max_prior is not None and pr >= max_prior - 0.001:
                                 fill = ANALYSIS_BEST
-                    elif (col, row) in self.app.candidate_state.candidates:
+                    elif (col, row) in self.session.candidate_selection.candidates:
                         cand_wr = candidate_wr_map.get((col, row))
                         if cand_wr is None:
                             fill = CANDIDATE_UNKNOWN
@@ -927,7 +934,7 @@ class GuiRenderer:
         return self._eval_graph_data
 
     def get_movelist_view(self):
-        sig = self.core.tree.signature()
+        sig = self.core.session.tree.signature()
         if self._movelist_sig != sig or self._movelist_view is None:
             self._movelist_sig = sig
             self._movelist_view = self.core.build_movelist_view()
@@ -1048,7 +1055,7 @@ class GuiRenderer:
 
     def _hud_best_analysis(self) -> Optional[AnalysisMove]:
         display: Optional[AnalysisMove] = None
-        candidate_mode = bool(self.app.candidate_state.candidates)
+        candidate_mode = bool(self.session.candidate_selection.candidates)
         recs = (
             self.core.get_candidate_analysis()
             if candidate_mode
@@ -1071,16 +1078,16 @@ class GuiRenderer:
         turn_side = self.core.current_side()
         turn_color = RED if turn_side == Side.RED else BLUE
         turn_name = "Red" if turn_side == Side.RED else "Blue"
-        analysis_txt = "ON" if self.app.analysis_enabled else "OFF"
-        analysis_color = TEXT_ON_LIGHT if self.app.analysis_enabled else TEXT_MUTED
+        analysis_txt = "ON" if self.session.analysis_enabled else "OFF"
+        analysis_color = TEXT_ON_LIGHT if self.session.analysis_enabled else TEXT_MUTED
         parts: List[Tuple[str, Tuple[int, int, int]]] = [
             ("Size: ", TEXT_ON_LIGHT),
             (f"{self.board.n}", TEXT_ON_LIGHT),
         ]
-        if self.app.pending_size != self.board.n:
+        if self.session.pending_size != self.board.n:
             parts += [
                 ("  (pending ", TEXT_ON_LIGHT),
-                (f"{self.app.pending_size}", TEXT_ON_LIGHT),
+                (f"{self.session.pending_size}", TEXT_ON_LIGHT),
                 (")", TEXT_ON_LIGHT),
             ]
         parts += [
@@ -1116,7 +1123,7 @@ class GuiRenderer:
         self.text.hud_small.blit_line(help_line, TEXT_ON_LIGHT, 12, 32)
 
     def draw_top_right_status(self, ui: UiStateLike) -> None:
-        awrn = f"{self.app.analysis_wide_root_noise:.2f}".rstrip("0").rstrip(".")
+        awrn = f"{self.session.analysis_wide_root_noise:.2f}".rstrip("0").rstrip(".")
         awrn_text = f"AWRN {awrn}"
         awrn_w = self.fonts.hud_small.get_rect(awrn_text).width
         awrn_x = max(12, self.layout.board_px_w - awrn_w - 12)

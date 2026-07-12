@@ -19,7 +19,7 @@ warnings.filterwarnings(
 
 import pygame
 
-from board import MAX_BOARD_SIZE, MIN_BOARD_SIZE, HexBoard
+from board import HexBoard
 from engine import KataHexEngine
 from gui.core import DEFAULT_ANALYZE_INTERVAL_CS, GuiCore
 from gui.render import GuiRenderer
@@ -148,7 +148,6 @@ def run_gui(
     os.environ.setdefault("SDL_VIDEO_CENTERED", "1")
 
     core = GuiCore(board, engine, analyze_interval_cs=analyze_interval_cs)
-    app = core.app
 
     pygame.init()
     pygame.freetype.init()
@@ -156,7 +155,7 @@ def run_gui(
 
     flags = pygame.RESIZABLE
     renderer = GuiRenderer(
-        board, core, flags=flags, board_orientation=ui_prefs.board_orientation
+        core, flags=flags, board_orientation=ui_prefs.board_orientation
     )
     clock = pygame.time.Clock()
 
@@ -264,7 +263,7 @@ def run_gui(
         is_undo_shortcut = has_ctrl and ev.key == pygame.K_z and not (mods & pygame.KMOD_SHIFT)
 
         def step_awrn(direction: int) -> None:
-            current = app.analysis_wide_root_noise
+            current = core.session.analysis_wide_root_noise
             idx = min(range(len(awrn_steps)), key=lambda i: abs(awrn_steps[i] - current))
             if direction < 0:
                 idx = max(0, idx - 1)
@@ -359,9 +358,9 @@ def run_gui(
                     col, row = top
                     core.try_play_move(col, row)
         elif ch in ("+", "="):
-            app.pending_size = min(MAX_BOARD_SIZE, app.pending_size + 1)
+            core.adjust_pending_size(1)
         elif ch in ("-", "_"):
-            app.pending_size = max(MIN_BOARD_SIZE, app.pending_size - 1)
+            core.adjust_pending_size(-1)
         elif ch == "[":
             step_awrn(-1)
         elif ch == "]":
@@ -382,7 +381,7 @@ def run_gui(
             if cell is None:
                 return
             col, row = cell
-            if board.is_empty(col, row):
+            if core.board.is_empty(col, row):
                 core.try_play_move(col, row)
                 return
             idx = core.find_applied_move_index(col, row)
@@ -402,7 +401,7 @@ def run_gui(
             ui.drag_select = True
             ui.drag_added = False
             ui.drag_last_cell = None
-            ui.drag_start_candidates = set(app.candidate_state.candidates)
+            ui.drag_start_candidates = set(core.session.candidate_selection.candidates)
 
     def handle_mouse_up(ev: pygame.event.Event, ui: UiState) -> None:
         if ev.button == 1:
@@ -492,7 +491,7 @@ def run_gui(
         )
         top_cell, top_visits = core.get_top_move()
 
-        if app.analysis_enabled:
+        if core.session.analysis_enabled:
             total_visits = 0
             for r in core.get_engine_analysis():
                 if r.visits:
