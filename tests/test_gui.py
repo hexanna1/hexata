@@ -101,7 +101,6 @@ class GuiModuleTests(unittest.TestCase):
         self.assertIs(core.engine, new_engine)
         old_engine.close.assert_called_once_with()
         core.rebuild_engine_from_applied_history.assert_called_once_with()
-        core.clear_candidates.assert_called_once_with()
         core.clear_all_cached_analysis.assert_called_once_with()
         self.assertEqual(core.toggle_analysis.call_count, 2)
         self.assertEqual(ui.current_engine_name, "alt")

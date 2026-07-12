@@ -236,10 +236,10 @@ class GuiCore(GuiCoreAnalysisMixin):
                 return self.apply_swap_to_state()
         return self._assert_never(mv.kind)
 
-    def _follow_existing_tree_move(self, mv: Move, *, promote: bool) -> bool:
+    def _follow_existing_tree_move(self, mv: Move) -> bool:
         if not self.apply_move_to_state_from_move(mv):
             return False
-        if not self.tree.follow_child(mv, promote=promote):
+        if not self.tree.follow_child(mv):
             raise AssertionError("Tree follow_child failed for existing move")
         return True
 
@@ -468,6 +468,16 @@ class GuiCore(GuiCoreAnalysisMixin):
         self.with_analysis_keep_engine_synced(mutate, resume_after=resume_after)
         return did
 
+    def shift_branch(self, direction: int) -> bool:
+        before = self._capture_edit_state()
+        if not self.tree.shift_current_branch(direction):
+            return False
+        self.edit_undo.append(before)
+        self.edit_redo.clear()
+        if self.is_batch_analysis_active():
+            self.cancel_batch_analysis()
+        return True
+
     def step_back_n(self, count: int, *, resume_after: bool = True) -> bool:
         if count <= 0 or self.current_ply() <= 0:
             return False
@@ -551,10 +561,10 @@ class GuiCore(GuiCoreAnalysisMixin):
         if next_mv == mv:
             return self._step_forward_one()
         if self.tree.find_child(self.tree.cursor, mv) is not None:
-            return self._follow_existing_tree_move(mv, promote=False)
+            return self._follow_existing_tree_move(mv)
         if not self.apply_move_to_state_from_move(mv):
             return False
-        self.tree.add_or_select_child(mv, promote=False)
+        self.tree.add_or_select_child(mv)
         return True
 
     def try_play_moves(self, moves: Sequence[Tuple[int, int]]) -> bool:

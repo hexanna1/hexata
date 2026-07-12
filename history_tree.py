@@ -28,16 +28,6 @@ class HistoryNode:
         child.parent = None
         return True
 
-    def promote_child(self, child: "HistoryNode") -> bool:
-        try:
-            idx = self.children.index(child)
-        except ValueError:
-            return False
-        if idx > 0:
-            self.children.insert(0, self.children.pop(idx))
-        return True
-
-
 class MoveTree:
     def __init__(self) -> None:
         self.root = HistoryNode(id=0, move=None)
@@ -156,6 +146,22 @@ class MoveTree:
                 return node
         return None
 
+    def shift_current_branch(self, direction: int) -> bool:
+        if direction not in (-1, 1):
+            raise AssertionError(f"Invalid branch shift direction: {direction}")
+        node = self.cursor
+        while node.parent is not None:
+            siblings = node.parent.children
+            if len(siblings) > 1:
+                idx = siblings.index(node)
+                target_idx = idx + direction
+                if not 0 <= target_idx < len(siblings):
+                    return False
+                siblings[idx], siblings[target_idx] = siblings[target_idx], siblings[idx]
+                return True
+            node = node.parent
+        return False
+
     def find_child(self, parent: HistoryNode, move: Move) -> Optional[HistoryNode]:
         for child in parent.children:
             if child.move == move:
@@ -168,27 +174,19 @@ class MoveTree:
         parent.children.append(child)
         return child
 
-    def add_or_select_child(self, move: Move, *, promote: bool = True) -> tuple[HistoryNode, bool]:
+    def add_or_select_child(self, move: Move) -> tuple[HistoryNode, bool]:
         child = self.find_child(self.cursor, move)
         created = False
         if child is None:
             child = self.append_child(self.cursor, move)
-            if promote:
-                self.cursor.promote_child(child)
             created = True
-        elif promote:
-            if not self.cursor.promote_child(child):
-                raise AssertionError("Child missing during promotion")
         self.cursor = child
         return child, created
 
-    def follow_child(self, move: Move, *, promote: bool) -> bool:
+    def follow_child(self, move: Move) -> bool:
         child = self.find_child(self.cursor, move)
         if child is None:
             return False
-        if promote:
-            if not self.cursor.promote_child(child):
-                raise AssertionError("Child missing during promotion")
         self.cursor = child
         return True
 

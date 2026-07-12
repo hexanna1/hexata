@@ -92,14 +92,22 @@ def load_position_text(text: str, *, core: GuiCore, on_success: Callable[[], Non
     return False
 
 
-def cycle_engine_profile(core: GuiCore, ui: UiState, *, engine_echo: bool) -> bool:
+def cycle_engine_profile(
+    core: GuiCore,
+    ui: UiState,
+    *,
+    direction: int = 1,
+    engine_echo: bool,
+) -> bool:
     if len(ui.engine_profiles) <= 1:
         return False
+    if direction not in (-1, 1):
+        raise ValueError(f"Invalid engine cycle direction: {direction}")
 
     new_engine = None
     next_idx = ui.current_engine_idx
     for offset in range(1, len(ui.engine_profiles)):
-        next_idx = (ui.current_engine_idx + offset) % len(ui.engine_profiles)
+        next_idx = (ui.current_engine_idx + direction * offset) % len(ui.engine_profiles)
         profile = ui.engine_profiles[next_idx]
         try:
             new_engine = KataHexEngine(
@@ -130,7 +138,6 @@ def cycle_engine_profile(core: GuiCore, ui: UiState, *, engine_echo: bool) -> bo
             core.toggle_analysis()
         return False
 
-    core.clear_candidates()
     core.clear_all_cached_analysis()
     old_engine.close()
     ui.current_engine_idx = next_idx
@@ -301,8 +308,13 @@ def run_gui(
         elif ev.key == pygame.K_b and (mods & pygame.KMOD_SHIFT) and not has_ctrl:
             if not core.is_batch_analysis_active():
                 core.start_batch_analysis(fast=True)
-        elif ev.key == pygame.K_e and has_shift and not has_ctrl:
-            cycle_engine_profile(core, ui, engine_echo=engine_echo)
+        elif ev.key == pygame.K_e and has_shift:
+            cycle_engine_profile(
+                core,
+                ui,
+                direction=-1 if has_ctrl else 1,
+                engine_echo=engine_echo,
+            )
         elif ev.key == pygame.K_e:
             ui.prefs.show_elo = not ui.prefs.show_elo
         elif ev.key == pygame.K_o and has_shift and not has_ctrl:
@@ -337,9 +349,15 @@ def run_gui(
         elif ev.key in (pygame.K_n, pygame.K_DOWN):
             core.step_forward()
         elif ev.key == pygame.K_LEFT:
-            core.go_sibling(-1)
+            if has_shift:
+                core.shift_branch(-1)
+            else:
+                core.go_sibling(-1)
         elif ev.key == pygame.K_RIGHT:
-            core.go_sibling(1)
+            if has_shift:
+                core.shift_branch(1)
+            else:
+                core.go_sibling(1)
         elif ev.key == pygame.K_f:
             core.go_first()
         elif ev.key == pygame.K_l:

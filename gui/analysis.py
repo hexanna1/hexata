@@ -505,7 +505,7 @@ class GuiCoreAnalysisMixin:
 
         def mutate() -> None:
             nonlocal did
-            did = self._follow_existing_tree_move(mv, promote=False)
+            did = self._follow_existing_tree_move(mv)
 
         self.with_analysis_keep_engine_synced(mutate, resume_after=False)
         if not did:
