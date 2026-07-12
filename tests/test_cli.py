@@ -20,13 +20,13 @@ class CliTests(unittest.TestCase):
     def test_raw_winrate_helpers_handle_swap_perspective(self):
         raw = RawNNResult(white_win=0.7, policy_rows=(), policy_pass=None)
 
-        core_no_swap = SimpleNamespace(_map_side_to_engine=lambda side: side)
+        core_no_swap = SimpleNamespace(map_side_to_engine=lambda side: side)
         self.assertEqual(cli._raw_red_winrate(core_no_swap, raw), 0.3)
         self.assertEqual(cli._side_winrate_to_red(0.3, Side.RED), 0.3)
         self.assertEqual(cli._side_winrate_to_red(0.3, Side.BLUE), 0.7)
 
         core_swap = SimpleNamespace(
-            _map_side_to_engine=lambda side: (Side.BLUE if side == Side.RED else Side.RED)
+            map_side_to_engine=lambda side: (Side.BLUE if side == Side.RED else Side.RED)
         )
         self.assertEqual(cli._raw_red_winrate(core_swap, raw), 0.7)
         self.assertEqual(cli._side_winrate_to_red(0.7, Side.RED), 0.7)
@@ -36,8 +36,8 @@ class CliTests(unittest.TestCase):
         core = SimpleNamespace(
             engine=object(),
             board=_AlwaysEmptyBoard(2),
-            _map_coords_to_engine=lambda col, row: (col, row),
-            _map_side_to_engine=lambda side: side,
+            map_coords_to_engine=lambda col, row: (col, row),
+            map_side_to_engine=lambda side: side,
         )
         args = SimpleNamespace(search_seconds=None, top_n=3)
         raw = RawNNResult(

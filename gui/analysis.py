@@ -43,17 +43,17 @@ class GuiCoreAnalysisMixin:
         moves = self.current_path_moves()
         return len(moves) >= 2 and moves[1].kind == MoveKind.SWAP
 
-    def _map_side_to_engine(self, side: Side) -> Side:
+    def map_side_to_engine(self, side: Side) -> Side:
         if self.swap_active():
             return self.flip_side(side)
         return side
 
-    def _map_coords_to_engine(self, col: int, row: int) -> Tuple[int, int]:
+    def map_coords_to_engine(self, col: int, row: int) -> Tuple[int, int]:
         if self.swap_active():
             return (row, col)
         return (col, row)
 
-    def _map_coords_from_engine(self, col: int, row: int) -> Tuple[int, int]:
+    def map_coords_from_engine(self, col: int, row: int) -> Tuple[int, int]:
         if self.swap_active():
             return (row, col)
         return (col, row)
@@ -68,12 +68,12 @@ class GuiCoreAnalysisMixin:
             col, row = r.col, r.row
             move = r.move
             if col is not None and row is not None:
-                col, row = self._map_coords_from_engine(col, row)
+                col, row = self.map_coords_from_engine(col, row)
                 move = coord_to_human(col, row)
 
             pv = r.pv
             if pv is not None:
-                pv = tuple(self._map_coords_from_engine(c, rr) for c, rr in pv)
+                pv = tuple(self.map_coords_from_engine(c, rr) for c, rr in pv)
 
             out.append(
                 AnalysisMove(
@@ -401,8 +401,8 @@ class GuiCoreAnalysisMixin:
         self._start_analysis(request.side, allowed_moves=request.allowed_moves)
 
     def _start_analysis(self, side_to_analyze: Side, *, allowed_moves: Sequence[Tuple[int, int]] = ()) -> None:
-        mapped_side = self._map_side_to_engine(side_to_analyze)
-        mapped_moves = [self._map_coords_to_engine(col, row) for col, row in allowed_moves]
+        mapped_side = self.map_side_to_engine(side_to_analyze)
+        mapped_moves = [self.map_coords_to_engine(col, row) for col, row in allowed_moves]
         self.engine.kata_set_param("analysisWideRootNoise", self.session.analysis.wide_root_noise)
         allow_filters = ((mapped_side, mapped_moves),) if mapped_moves else ()
         self.engine.start_analysis(mapped_side, self.analyze_interval_cs, allow_filters)
@@ -466,7 +466,7 @@ class GuiCoreAnalysisMixin:
         run.raw_pending = False
         if raw is None or raw.white_win is None:
             return
-        if self._map_side_to_engine(Side.BLUE) == Side.BLUE:
+        if self.map_side_to_engine(Side.BLUE) == Side.BLUE:
             blue_win = raw.white_win
         else:
             blue_win = 1.0 - raw.white_win

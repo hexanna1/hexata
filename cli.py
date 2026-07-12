@@ -134,7 +134,7 @@ def _raw_policy_grid_value(raw: RawNNResult, col: int, row: int) -> Optional[flo
 def _raw_red_winrate(core: GuiCore, raw: RawNNResult) -> Optional[float]:
     if raw.white_win is None:
         return None
-    if core._map_side_to_engine(Side.BLUE) == Side.BLUE:
+    if core.map_side_to_engine(Side.BLUE) == Side.BLUE:
         blue_win = raw.white_win
     else:
         blue_win = 1.0 - raw.white_win
@@ -149,7 +149,7 @@ def _raw_policy_rows_cli(core: GuiCore, raw: RawNNResult) -> list[dict]:
         for col in range(1, board.n + 1):
             if not board.is_empty(col, row):
                 continue
-            eng_col, eng_row = core._map_coords_to_engine(col, row)
+            eng_col, eng_row = core.map_coords_to_engine(col, row)
             raw_v = _raw_policy_grid_value(raw, eng_col, eng_row)
             p = 0.0 if raw_v is None else max(0.0, raw_v)
             rows.append((coord_to_human(col, row), p))
@@ -427,6 +427,7 @@ def _sample_match_search_move(
 def _analysis_total_visits(recs: list[AnalysisMove]) -> int:
     return sum(0 if r.visits is None else max(0, r.visits) for r in recs)
 
+
 def _run_match_search_for_seconds(
     engine: KataHexEngine,
     side: Side,
@@ -517,73 +518,44 @@ def _emit_match_record(
     )
 
 
-def _run_cli_match(
+def _validate_match_args(
     args: argparse.Namespace,
-    *,
-    engine_a_cmd: list[str],
-    engine_b_cmd: list[str],
-) -> tuple[bool, dict]:
+) -> tuple[Optional[list[tuple[tuple[int, int], ...]]], Optional[str]]:
     if args.size < MIN_BOARD_SIZE or args.size > MAX_BOARD_SIZE:
-        return False, {"error": f"--size must be between {MIN_BOARD_SIZE} and {MAX_BOARD_SIZE}"}
+        return None, f"--size must be between {MIN_BOARD_SIZE} and {MAX_BOARD_SIZE}"
     if args.rounds < 1:
-        return False, {"error": "--rounds must be >= 1"}
+        return None, "--rounds must be >= 1"
     if not math.isfinite(args.visits_temp) or args.visits_temp < 0.0:
-        return False, {"error": "--visits-temp must be finite and >= 0"}
+        return None, "--visits-temp must be finite and >= 0"
     if not math.isfinite(args.visits_temp_decay) or args.visits_temp_decay < 0.0:
-        return False, {"error": "--visits-temp-decay must be finite and >= 0"}
+        return None, "--visits-temp-decay must be finite and >= 0"
     if not math.isfinite(args.resign_winrate) or not (0.0 <= args.resign_winrate <= 1.0):
-        return False, {"error": "--resign-winrate must be between 0 and 1"}
+        return None, "--resign-winrate must be between 0 and 1"
     if not math.isfinite(args.search_seconds) or args.search_seconds < 0.0:
-        return False, {"error": "--search-seconds must be finite and >= 0"}
+        return None, "--search-seconds must be finite and >= 0"
     try:
         openings = _parse_openings(args.openings)
     except Exception as exc:
-        return False, {"error": f"Invalid --openings: {exc}"}
+        return None, f"Invalid --openings: {exc}"
     if not openings:
-        return False, {"error": "--openings must include at least one coordinate"}
+        return None, "--openings must include at least one coordinate"
 
-    board_n = args.size
     for line in openings:
-        probe = HexBoard(board_n)
+        probe = HexBoard(args.size)
         side = Side.RED
         for col, row in line:
             if not probe.place(side, col, row):
-                return False, {"error": f"Illegal opening line: {_opening_line_to_text(line)}"}
+                return None, f"Illegal opening line: {_opening_line_to_text(line)}"
             side = Side.BLUE if side == Side.RED else Side.RED
+    return openings, None
 
-    rng = random.SystemRandom()
-    jobs = [(round_idx + 1, line) for round_idx in range(args.rounds) for line in openings]
 
-    def fail_game(
-        *,
-        game_index: int,
-        round_num: int,
-        opening: tuple[tuple[int, int], ...],
-        red_name: str,
-        blue_name: str,
-        error: str,
-        board: HexBoard,
-        game_plies: list[dict],
-        started_at: float,
-    ) -> tuple[bool, dict]:
-        _emit_match_record(
-            ok=False,
-            error=error,
-            board=board,
-            started_at=started_at,
-            match=_match_payload(
-                game_index=game_index,
-                round_num=round_num,
-                opening=opening,
-                red_name=red_name,
-                blue_name=blue_name,
-                game_plies=game_plies,
-            ),
-        )
-        return False, {"error": error, "already_emitted": True}
-
-    engine_a: KataHexEngine | None = None
-    engine_b: KataHexEngine | None = None
+def _start_match_engines(
+    board_n: int,
+    engine_a_cmd: list[str],
+    engine_b_cmd: list[str],
+) -> tuple[Optional[tuple[KataHexEngine, KataHexEngine]], Optional[str]]:
+    engine_a: Optional[KataHexEngine] = None
     try:
         engine_a = KataHexEngine(
             board_size=board_n,
@@ -600,185 +572,198 @@ def _run_cli_match(
     except OSError:
         if engine_a is not None:
             engine_a.close()
-        return False, {"error": "Engine executable not found"}
+        return None, "Engine executable not found"
     except RuntimeError as exc:
         if engine_a is not None:
             engine_a.close()
-        return False, {"error": str(exc)}
+        return None, str(exc)
+    return (engine_a, engine_b), None
 
+
+def _run_match_game(
+    args: argparse.Namespace,
+    *,
+    engine_a: KataHexEngine,
+    engine_b: KataHexEngine,
+    rng: random.Random,
+    game_index: int,
+    round_num: int,
+    opening: tuple[tuple[int, int], ...],
+    engine_a_is_red: bool,
+) -> Optional[str]:
+    started_at = time.monotonic()
+    board = HexBoard(args.size)
+    engine_a.clear_board()
+    engine_b.clear_board()
+    engine_a.clear_cache()
+    engine_b.clear_cache()
+    red_engine, blue_engine = (
+        (engine_a, engine_b) if engine_a_is_red else (engine_b, engine_a)
+    )
+    red_name, blue_name = (
+        (args.engine_a, args.engine_b) if engine_a_is_red else (args.engine_b, args.engine_a)
+    )
+    side = Side.RED
+    game_plies: list[dict] = []
+
+    def finish(
+        recs: list[AnalysisMove],
+        *,
+        winner: Optional[str] = None,
+        result: Optional[str] = None,
+    ) -> None:
+        _emit_match_record(
+            ok=True,
+            error=None,
+            board=board,
+            started_at=started_at,
+            match=_match_payload(
+                game_index=game_index,
+                round_num=round_num,
+                opening=opening,
+                red_name=red_name,
+                blue_name=blue_name,
+                game_plies=game_plies,
+                winner=winner,
+                result=result,
+                final=_final_analysis_payload(
+                    side=side,
+                    analyze=_search_analyze_payload(
+                        recs,
+                        side_to_play=side,
+                        top_n=None,
+                    ),
+                ),
+            ),
+        )
+
+    def fail(error: str) -> str:
+        _emit_match_record(
+            ok=False,
+            error=error,
+            board=board,
+            started_at=started_at,
+            match=_match_payload(
+                game_index=game_index,
+                round_num=round_num,
+                opening=opening,
+                red_name=red_name,
+                blue_name=blue_name,
+                game_plies=game_plies,
+            ),
+        )
+        return error
+
+    for col, row in opening:
+        if not board.place(side, col, row):
+            return fail(f"Failed to apply opening move: {coord_to_human(col, row)}")
+        game_plies.append(
+            {
+                "ply": len(board.history),
+                "side": _side_to_text(side),
+                "played": coord_to_human(col, row),
+            }
+        )
+        engine_a.play(side, col, row)
+        engine_b.play(side, col, row)
+        side = Side.BLUE if side == Side.RED else Side.RED
+
+    while True:
+        actor_engine = red_engine if side == Side.RED else blue_engine
+        actor_name = red_name if side == Side.RED else blue_name
+        visits_temp = _match_visits_temp(
+            base_visits_temp=args.visits_temp,
+            visits_temp_decay=args.visits_temp_decay,
+            opening_len=len(opening),
+            played_len=len(board.history),
+        )
+        status, recs = _run_match_search_for_seconds(
+            actor_engine,
+            side,
+            args.search_seconds,
+        )
+        if status != "completed":
+            return fail(_search_failure_error(status))
+        top = recs[0] if recs else None
+        side_wr = top.winrate if top is not None else None
+        move = _sample_match_search_move(
+            board,
+            recs,
+            temp=visits_temp,
+            rng=rng,
+        )
+        if side_wr is not None and side_wr < args.resign_winrate:
+            finish(
+                recs,
+                winner=blue_name if side == Side.RED else red_name,
+                result="red_resigned" if side == Side.RED else "blue_resigned",
+            )
+            return None
+        if move is None:
+            # Search exhaustion is reported without inferring a winner.
+            finish(recs)
+            return None
+        col, row = move
+        if not board.place(side, col, row):
+            return fail(f"Illegal sampled move: {coord_to_human(col, row)}")
+        game_plies.append(
+            {
+                "ply": len(board.history),
+                "side": _side_to_text(side),
+                "engine": actor_name,
+                "visits_temp": _round6(visits_temp),
+                "played": coord_to_human(col, row),
+                "analyze": _search_analyze_payload(
+                    recs,
+                    side_to_play=side,
+                    top_n=None,
+                ),
+            }
+        )
+        engine_a.play(side, col, row)
+        engine_b.play(side, col, row)
+        side = Side.BLUE if side == Side.RED else Side.RED
+
+
+def _run_cli_match(
+    args: argparse.Namespace,
+    *,
+    engine_a_cmd: list[str],
+    engine_b_cmd: list[str],
+) -> tuple[bool, dict]:
+    openings, error = _validate_match_args(args)
+    if error is not None or openings is None:
+        return False, {"error": error}
+    engines, error = _start_match_engines(args.size, engine_a_cmd, engine_b_cmd)
+    if error is not None or engines is None:
+        return False, {"error": error}
+    engine_a, engine_b = engines
+    rng = random.SystemRandom()
+    jobs = [(round_idx + 1, line) for round_idx in range(args.rounds) for line in openings]
     try:
         engine_a.kata_set_param("analysisWideRootNoise", 0.0)
         engine_b.kata_set_param("analysisWideRootNoise", 0.0)
         game_index = 0
         for round_num, opening in jobs:
-            for red_engine_key in ("engine_a", "engine_b"):
+            for engine_a_is_red in (True, False):
                 game_index += 1
-                started_at = time.monotonic()
-                board = HexBoard(board_n)
-                engine_a.clear_board()
-                engine_b.clear_board()
-                engine_a.clear_cache()
-                engine_b.clear_cache()
-                red_name = args.engine_a if red_engine_key == "engine_a" else args.engine_b
-                blue_name = args.engine_b if red_engine_key == "engine_a" else args.engine_a
-                side = Side.RED
-                game_plies: list[dict] = []
-                for col, row in opening:
-                    if not board.place(side, col, row):
-                        error = f"Failed to apply opening move: {coord_to_human(col, row)}"
-                        return fail_game(
-                            game_index=game_index,
-                            round_num=round_num,
-                            opening=opening,
-                            red_name=red_name,
-                            blue_name=blue_name,
-                            error=error,
-                            board=board,
-                            game_plies=game_plies,
-                            started_at=started_at,
-                        )
-                    game_plies.append(
-                        {
-                            "ply": len(board.history),
-                            "side": _side_to_text(side),
-                            "played": coord_to_human(col, row),
-                        }
-                    )
-                    engine_a.play(side, col, row)
-                    engine_b.play(side, col, row)
-                    side = Side.BLUE if side == Side.RED else Side.RED
-
-                red_actor = red_engine_key
-                blue_actor = "engine_b" if red_engine_key == "engine_a" else "engine_a"
-                while True:
-                    actor_key = red_actor if side == Side.RED else blue_actor
-                    actor_engine = engine_a if actor_key == "engine_a" else engine_b
-                    actor_name = args.engine_a if actor_key == "engine_a" else args.engine_b
-                    visits_temp = _match_visits_temp(
-                        base_visits_temp=args.visits_temp,
-                        visits_temp_decay=args.visits_temp_decay,
-                        opening_len=len(opening),
-                        played_len=len(board.history),
-                    )
-                    status, recs = _run_match_search_for_seconds(
-                        actor_engine,
-                        side,
-                        args.search_seconds,
-                    )
-                    if status != "completed":
-                        error = _search_failure_error(status)
-                        return fail_game(
-                            game_index=game_index,
-                            round_num=round_num,
-                            opening=opening,
-                            red_name=red_name,
-                            blue_name=blue_name,
-                            error=error,
-                            board=board,
-                            game_plies=game_plies,
-                            started_at=started_at,
-                        )
-                    top = recs[0] if recs else None
-                    side_wr = top.winrate if top is not None else None
-                    move = _sample_match_search_move(
-                        board,
-                        recs,
-                        temp=visits_temp,
-                        rng=rng,
-                    )
-                    if side_wr is not None and side_wr < args.resign_winrate:
-                        winner_key = "engine_b" if actor_key == "engine_a" else "engine_a"
-                        winner_name = args.engine_a if winner_key == "engine_a" else args.engine_b
-                        final = _final_analysis_payload(
-                            side=side,
-                            analyze=_search_analyze_payload(
-                                recs,
-                                side_to_play=side,
-                                top_n=None,
-                            ),
-                        )
-                        _emit_match_record(
-                            ok=True,
-                            error=None,
-                            board=board,
-                            started_at=started_at,
-                            match=_match_payload(
-                                game_index=game_index,
-                                round_num=round_num,
-                                opening=opening,
-                                red_name=red_name,
-                                blue_name=blue_name,
-                                game_plies=game_plies,
-                                winner=winner_name,
-                                result="red_resigned" if side == Side.RED else "blue_resigned",
-                                final=final,
-                            ),
-                        )
-                        break
-                    if move is None:
-                        # Search exhaustion is reported without inferring a winner.
-                        final = _final_analysis_payload(
-                            side=side,
-                            analyze=_search_analyze_payload(
-                                recs,
-                                side_to_play=side,
-                                top_n=None,
-                            ),
-                        )
-                        _emit_match_record(
-                            ok=True,
-                            error=None,
-                            board=board,
-                            started_at=started_at,
-                            match=_match_payload(
-                                game_index=game_index,
-                                round_num=round_num,
-                                opening=opening,
-                                red_name=red_name,
-                                blue_name=blue_name,
-                                game_plies=game_plies,
-                                final=final,
-                            ),
-                        )
-                        break
-                    col, row = move
-                    if not board.place(side, col, row):
-                        error = f"Illegal sampled move: {coord_to_human(col, row)}"
-                        return fail_game(
-                            game_index=game_index,
-                            round_num=round_num,
-                            opening=opening,
-                            red_name=red_name,
-                            blue_name=blue_name,
-                            error=error,
-                            board=board,
-                            game_plies=game_plies,
-                            started_at=started_at,
-                        )
-                    game_plies.append(
-                        {
-                            "ply": len(board.history),
-                            "side": _side_to_text(side),
-                            "engine": actor_name,
-                            "visits_temp": _round6(visits_temp),
-                            "played": coord_to_human(col, row),
-                            "analyze": _search_analyze_payload(
-                                recs,
-                                side_to_play=side,
-                                top_n=None,
-                            ),
-                        }
-                    )
-                    engine_a.play(side, col, row)
-                    engine_b.play(side, col, row)
-                    side = Side.BLUE if side == Side.RED else Side.RED
+                error = _run_match_game(
+                    args,
+                    engine_a=engine_a,
+                    engine_b=engine_b,
+                    rng=rng,
+                    game_index=game_index,
+                    round_num=round_num,
+                    opening=opening,
+                    engine_a_is_red=engine_a_is_red,
+                )
+                if error is not None:
+                    return False, {"error": error, "already_emitted": True}
 
         return True, {}
     finally:
-        if engine_a is not None:
-            engine_a.close()
-        if engine_b is not None:
-            engine_b.close()
+        engine_a.close()
+        engine_b.close()
 
 
 def _iter_cli_positions(positions: list[str]) -> Iterator[str]:
@@ -886,6 +871,86 @@ def add_cli_arguments(ap: argparse.ArgumentParser) -> None:
     )
 
 
+def _run_analyze_positions(
+    core: GuiCore,
+    engine: KataHexEngine,
+    args: argparse.Namespace,
+) -> int:
+    awrn = getattr(args, "analysis_wide_root_noise", None)
+    if awrn is not None:
+        core.set_analysis_wide_root_noise(awrn)
+    had_error = False
+    for i, position_spec in enumerate(_iter_cli_positions(args.position)):
+        if i > 0:
+            engine.clear_cache()
+
+        started_at = time.monotonic()
+        try:
+            position_input, filter_moves = _parse_analyze_position_spec(position_spec)
+            spec_error = None
+        except ValueError as exc:
+            position_input = position_spec.rsplit("::", 1)[0]
+            filter_moves = ()
+            spec_error = f"Analyze position spec failed: {exc}"
+
+        position_error = spec_error or core.load_hexworld_text(position_input)
+        record = {
+            "hexworld": _input_hexworld_url(position_input),
+            "ok": False,
+            "error": position_error,
+        }
+        if position_error is None:
+            position_hexworld = core.build_hexworld_url()
+            ok, payload = _run_cli_analyze(core, args, filter_moves=filter_moves)
+            record.update(
+                {
+                    "hexworld": position_hexworld,
+                    "ok": ok,
+                    "error": None if ok else payload["error"],
+                    **({} if not ok else payload),
+                }
+            )
+        had_error = had_error or not record["ok"]
+        record["meta"] = {"elapsed_ms": int(round((time.monotonic() - started_at) * 1000))}
+        _emit(record)
+    return 1 if had_error else 0
+
+
+def _run_batch_positions(
+    core: GuiCore,
+    engine: KataHexEngine,
+    args: argparse.Namespace,
+) -> int:
+    had_error = False
+    for i, position_input in enumerate(_iter_cli_positions(args.position)):
+        if i > 0:
+            engine.clear_cache()
+
+        started_at = time.monotonic()
+        position_error = core.load_hexworld_text(position_input)
+        record = {
+            "hexworld": _input_hexworld_url(position_input),
+            "ok": False,
+            "error": position_error,
+        }
+        if position_error is None:
+            position_hexworld = core.build_hexworld_url()
+            batch_result = hexworld.terminal_result_from_text(position_input)
+            ok, payload = _run_cli_batch(core, args, result=batch_result)
+            record.update(
+                {
+                    "hexworld": position_hexworld,
+                    "ok": ok,
+                    "error": None if ok else payload["error"],
+                    **({} if not ok else payload),
+                }
+            )
+        had_error = had_error or not record["ok"]
+        record["meta"] = {"elapsed_ms": int(round((time.monotonic() - started_at) * 1000))}
+        _emit(record)
+    return 1 if had_error else 0
+
+
 def run_cli(
     args: argparse.Namespace,
     *,
@@ -934,71 +999,7 @@ def run_cli(
     core = GuiCore(board, engine)
     try:
         if args.cli_cmd == "analyze":
-            awrn = getattr(args, "analysis_wide_root_noise", None)
-            if awrn is not None:
-                core.set_analysis_wide_root_noise(awrn)
-            had_error = False
-            for i, position_spec in enumerate(_iter_cli_positions(args.position)):
-                if i > 0:
-                    engine.clear_cache()
-
-                started_at = time.monotonic()
-                try:
-                    position_input, filter_moves = _parse_analyze_position_spec(position_spec)
-                    spec_error = None
-                except ValueError as exc:
-                    position_input = position_spec.rsplit("::", 1)[0]
-                    filter_moves = ()
-                    spec_error = f"Analyze position spec failed: {exc}"
-
-                position_error = spec_error or core.load_hexworld_text(position_input)
-                record = {
-                    "hexworld": _input_hexworld_url(position_input),
-                    "ok": False,
-                    "error": position_error,
-                }
-                if position_error is None:
-                    position_hexworld = core.build_hexworld_url()
-                    ok, payload = _run_cli_analyze(core, args, filter_moves=filter_moves)
-                    record.update(
-                        {
-                            "hexworld": position_hexworld,
-                            "ok": ok,
-                            "error": None if ok else payload["error"],
-                            **({} if not ok else payload),
-                        }
-                    )
-                had_error = had_error or not record["ok"]
-                record["meta"] = {"elapsed_ms": int(round((time.monotonic() - started_at) * 1000))}
-                _emit(record)
-            return 1 if had_error else 0
-        had_error = False
-        for i, position_input in enumerate(_iter_cli_positions(args.position)):
-            if i > 0:
-                engine.clear_cache()
-
-            started_at = time.monotonic()
-            position_error = core.load_hexworld_text(position_input)
-            record = {
-                "hexworld": _input_hexworld_url(position_input),
-                "ok": False,
-                "error": position_error,
-            }
-            if position_error is None:
-                position_hexworld = core.build_hexworld_url()
-                batch_result = hexworld.terminal_result_from_text(position_input)
-                ok, payload = _run_cli_batch(core, args, result=batch_result)
-                record.update(
-                    {
-                        "hexworld": position_hexworld,
-                        "ok": ok,
-                        "error": None if ok else payload["error"],
-                        **({} if not ok else payload),
-                    }
-                )
-            had_error = had_error or not record["ok"]
-            record["meta"] = {"elapsed_ms": int(round((time.monotonic() - started_at) * 1000))}
-            _emit(record)
-        return 1 if had_error else 0
+            return _run_analyze_positions(core, engine, args)
+        return _run_batch_positions(core, engine, args)
     finally:
         engine.close()

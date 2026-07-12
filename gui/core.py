@@ -313,11 +313,11 @@ class GuiCore(GuiCoreAnalysisMixin):
     def _engine_move(self, mv: Move) -> Optional[Tuple[Side, Optional[int], Optional[int]]]:
         match mv.kind:
             case MoveKind.PLACE:
-                side = self._map_side_to_engine(mv.side)
-                col, row = self._map_coords_to_engine(mv.col, mv.row)
+                side = self.map_side_to_engine(mv.side)
+                col, row = self.map_coords_to_engine(mv.col, mv.row)
                 return side, col, row
             case MoveKind.PASS:
-                return self._map_side_to_engine(mv.side), None, None
+                return self.map_side_to_engine(mv.side), None, None
             case MoveKind.SWAP:
                 # Swap changes the GUI's interpretation, not the engine position.
                 return None
