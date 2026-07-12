@@ -64,17 +64,11 @@ class GuiModuleTests(unittest.TestCase):
                 else:
                     self.assertEqual(info.call_count, 3)
 
-    def test_cycle_engine_profile_success_swaps_engine_and_resumes_analysis(self):
-        old_engine = SimpleNamespace(close=mock.Mock())
+    def test_cycle_engine_profile_delegates_replacement(self):
         new_engine = SimpleNamespace(close=mock.Mock())
         core = SimpleNamespace(
             board=SimpleNamespace(n=11),
-            engine=old_engine,
-            app=SimpleNamespace(analysis_enabled=True),
-            toggle_analysis=mock.Mock(),
-            clear_candidates=mock.Mock(),
-            clear_all_cached_analysis=mock.Mock(),
-            rebuild_engine_from_applied_history=mock.Mock(),
+            replace_engine=mock.Mock(return_value=True),
         )
         ui = gui.UiState(
             prefs=gui.UiPrefs(),
@@ -98,11 +92,7 @@ class GuiModuleTests(unittest.TestCase):
             engine_echo=True,
             suppress_stderr=True,
         )
-        self.assertIs(core.engine, new_engine)
-        old_engine.close.assert_called_once_with()
-        core.rebuild_engine_from_applied_history.assert_called_once_with()
-        core.clear_all_cached_analysis.assert_called_once_with()
-        self.assertEqual(core.toggle_analysis.call_count, 2)
+        core.replace_engine.assert_called_once_with(new_engine)
         self.assertEqual(ui.current_engine_name, "alt")
         self.assertIsNone(ui.speed_last_t)
         self.assertIsNone(ui.speed_last_total)
@@ -113,11 +103,7 @@ class GuiModuleTests(unittest.TestCase):
         core = SimpleNamespace(
             board=SimpleNamespace(n=11),
             engine=old_engine,
-            app=SimpleNamespace(analysis_enabled=True),
-            toggle_analysis=mock.Mock(),
-            clear_candidates=mock.Mock(),
-            clear_all_cached_analysis=mock.Mock(),
-            rebuild_engine_from_applied_history=mock.Mock(),
+            replace_engine=mock.Mock(return_value=True),
         )
         ui = gui.UiState(
             prefs=gui.UiPrefs(),
@@ -140,23 +126,14 @@ class GuiModuleTests(unittest.TestCase):
         self.assertEqual(str(warning.call_args.args[2]), "bad model")
         self.assertIs(core.engine, old_engine)
         old_engine.close.assert_not_called()
-        core.toggle_analysis.assert_not_called()
-        core.clear_candidates.assert_not_called()
-        core.clear_all_cached_analysis.assert_not_called()
-        core.rebuild_engine_from_applied_history.assert_not_called()
+        core.replace_engine.assert_not_called()
         self.assertEqual(ui.current_engine_name, "main")
 
     def test_cycle_engine_profile_skips_bad_profile_and_wraps(self):
-        old_engine = SimpleNamespace(close=mock.Mock())
         new_engine = SimpleNamespace(close=mock.Mock())
         core = SimpleNamespace(
             board=SimpleNamespace(n=11),
-            engine=old_engine,
-            app=SimpleNamespace(analysis_enabled=False),
-            toggle_analysis=mock.Mock(),
-            clear_candidates=mock.Mock(),
-            clear_all_cached_analysis=mock.Mock(),
-            rebuild_engine_from_applied_history=mock.Mock(),
+            replace_engine=mock.Mock(return_value=True),
         )
         ui = gui.UiState(
             prefs=gui.UiPrefs(),
@@ -195,9 +172,7 @@ class GuiModuleTests(unittest.TestCase):
         warning.assert_called_once()
         self.assertEqual(warning.call_args.args[:2], ("Engine switch to %s failed: %s", "bad"))
         self.assertEqual(str(warning.call_args.args[2]), "bad model")
-        self.assertIs(core.engine, new_engine)
-        old_engine.close.assert_called_once_with()
-        core.toggle_analysis.assert_not_called()
+        core.replace_engine.assert_called_once_with(new_engine)
         self.assertEqual(ui.current_engine_name, "alt")
 
 

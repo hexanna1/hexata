@@ -44,6 +44,11 @@ class FakeEngine:
 
     def undo(self):
         self.calls.append(("undo",))
+        if self.played:
+            self.played.pop()
+
+    def close(self):
+        self.calls.append(("close",))
 
     def clear_board(self):
         self.calls.append(("clear_board",))
@@ -87,7 +92,7 @@ class GuiCoreTests(unittest.TestCase):
 
     def _start_candidate_filter(self, core: GuiCore, col: int, row: int):
         core.add_candidate(col, row)
-        core._apply_analysis_enabled_transition(True)
+        core.set_analysis_enabled(True)
 
     def _play_two_moves(self, core: GuiCore) -> None:
         core.try_play_move(1, 1)
@@ -98,12 +103,6 @@ class GuiCoreTests(unittest.TestCase):
 
     def _index_of(self, calls, predicate):
         return next(i for i, call in enumerate(calls) if predicate(call))
-
-    def _assert_has_undo(self, calls):
-        self.assertTrue(any(call[0] == "undo" for call in calls))
-
-    def _assert_no_undo(self, calls):
-        self.assertFalse(any(call[0] == "undo" for call in calls))
 
     def _history_coords(self, core: GuiCore):
         return [core.move_coords(mv) for mv in core.applied_history()]
@@ -132,6 +131,11 @@ class GuiCoreTests(unittest.TestCase):
         return rows, view.focus_row
 
     def _assert_tree_state(self, core: GuiCore, *, history=None, future=None, variations=None):
+        probe = HexBoard(core.board.n)
+        for mv in core.current_path_moves():
+            self.assertTrue(probe.apply_move(mv))
+        self.assertEqual(probe.history, list(core.applied_history()))
+        self.assertEqual(probe.occ, core.board.occ)
         if history is not None:
             self.assertEqual(self._history_coords(core), history)
         if future is not None:
@@ -396,6 +400,43 @@ class GuiCoreTests(unittest.TestCase):
         ]
         self.assertEqual(engine.calls, expected)
 
+    def test_replace_engine_reconciles_position_and_analysis(self):
+        core, old_engine = self._mk_core()
+        core.try_play_move(1, 1)
+        core.add_candidate(2, 2)
+        core.set_analysis_enabled(True)
+        core.app.analysis_cache[core.cache_key()] = ["cached"]
+        new_engine = FakeEngine()
+
+        self.assertTrue(core.replace_engine(new_engine))
+
+        self.assertIs(core.engine, new_engine)
+        self.assertIn(("close",), old_engine.calls)
+        self.assertEqual(new_engine.played, [(Side.RED, 1, 1)])
+        self.assertEqual(core.app.candidate_state.candidates, {(2, 2)})
+        self.assertFalse(core.app.analysis_cache)
+        self.assertTrue(any(call[0] == "start_analysis" and len(call) == 4 for call in new_engine.calls))
+
+    def test_replace_engine_failure_restores_old_engine(self):
+        core, old_engine = self._mk_core()
+        new_engine = FakeEngine()
+        new_engine.clear_board = mock.Mock(side_effect=RuntimeError("failed"))
+        new_engine.close = mock.Mock()
+
+        self.assertFalse(core.replace_engine(new_engine))
+
+        self.assertIs(core.engine, old_engine)
+        new_engine.close.assert_called_once_with()
+
+    def test_replace_engine_same_instance_is_noop(self):
+        core, engine = self._mk_core()
+        before_calls = list(engine.calls)
+
+        self.assertFalse(core.replace_engine(engine))
+
+        self.assertIs(core.engine, engine)
+        self.assertEqual(engine.calls, before_calls)
+
     def test_candidate_root_key_invalidation(self):
         core, _engine = self._mk_core()
         board = core.board
@@ -442,17 +483,6 @@ class GuiCoreTests(unittest.TestCase):
         self.assertEqual(merged[0].pv, new_pv)
         self.assertEqual(merged[0].winrate, 0.7)
         self.assertEqual(merged[0].visits, 50)
-
-    def test_with_analysis_keep_engine_synced_restarts_candidate_analysis(self):
-        core, engine = self._mk_core()
-        self._start_candidate_filter(core, 1, 1)
-        self.assertTrue(any(call[0] == "start_analysis" and len(call) == 4 for call in engine.calls))
-
-        core.with_analysis_keep_engine_synced(lambda: None)
-
-        self.assertIn(("clear_analysis",), engine.calls)
-        # Analysis should resume (candidates exist), which restarts the allow-filtered search.
-        self.assertTrue(any(call[0] == "start_analysis" and len(call) == 4 for call in engine.calls))
 
     def test_step_back_clears_buffered_engine_analysis(self):
         core, engine = self._mk_core()
@@ -1142,7 +1172,7 @@ class GuiCoreTests(unittest.TestCase):
 
         core.add_candidate(1, 1)
         core.add_candidate(2, 2)
-        core._apply_analysis_enabled_transition(True)
+        core.set_analysis_enabled(True)
 
         core.app.analysis_cache[core.cache_key_for_moves([])] = ["x"]
 
@@ -1280,13 +1310,13 @@ class GuiCoreTests(unittest.TestCase):
         self.assertEqual((active[0].col, active[0].row), (1, 1))
 
         core.clear_candidates()
-        core._apply_analysis_enabled_transition(True)
+        core.set_analysis_enabled(True)
         engine.analysis = [
             AnalysisMove("b2", order=1, col=2, row=2, winrate=0.6, visits=8, prior=None, pv=None)
         ]
         self.assertEqual(core.get_active_analysis(), engine.analysis)
 
-        core._apply_analysis_enabled_transition(False)
+        core.set_analysis_enabled(False)
         self.assertEqual(core.get_active_analysis(), [])
 
     def test_start_batch_analysis_clears_candidates_and_starts_live(self):
@@ -1295,7 +1325,7 @@ class GuiCoreTests(unittest.TestCase):
         core.try_play_move(1, 1)
         core.step_back()
         core.add_candidate(2, 2)
-        core._apply_analysis_enabled_transition(True)
+        core.set_analysis_enabled(True)
 
         before = len(engine.calls)
         core.start_batch_analysis()
@@ -1522,15 +1552,17 @@ class GuiCoreTests(unittest.TestCase):
         self.assertEqual(engine.analysis, [])
         self.assertNotIn(core.cache_key(), core.app.analysis_cache)
 
-    def test_enable_analysis_mode_transitions(self):
+    def test_analysis_enabled_transitions_are_idempotent(self):
         for with_candidates in (False, True):
             with self.subTest(with_candidates=with_candidates):
                 core, engine = self._mk_core()
                 if with_candidates:
                     core.add_candidate(1, 1)
 
+                core.set_analysis_enabled(False)
+                self.assertFalse(engine.calls)
                 before = len(engine.calls)
-                core._apply_analysis_enabled_transition(True)
+                core.set_analysis_enabled(True)
                 new_calls = self._new_calls(engine, before)
 
                 self.assertTrue(core.app.analysis_enabled)
@@ -1541,6 +1573,9 @@ class GuiCoreTests(unittest.TestCase):
                 else:
                     self.assertEqual(core.app.candidate_state.candidates, set())
                     self.assertTrue(any(call[0] == "start_analysis" for call in new_calls))
+                before = len(engine.calls)
+                core.set_analysis_enabled(True)
+                self.assertFalse(self._new_calls(engine, before))
 
     def test_toggle_analysis_off_exits_batch_mode(self):
         core, engine = self._mk_core()
@@ -1556,7 +1591,7 @@ class GuiCoreTests(unittest.TestCase):
         with self.subTest(case="candidate root change clears candidates and resumes live"):
             core, engine = self._mk_core()
             core.add_candidate(1, 1)
-            core._apply_analysis_enabled_transition(True)
+            core.set_analysis_enabled(True)
 
             before = len(engine.calls)
 
@@ -1575,16 +1610,16 @@ class GuiCoreTests(unittest.TestCase):
             before = len(engine.calls)
             core.try_play_move(2, 2)
             new_calls = self._new_calls(engine, before)
-            clear_idx = self._index_of(new_calls, lambda call: call[0] == "clear_analysis")
+            stop_idx = self._index_of(new_calls, lambda call: call[0] == "stop_analysis")
             play_idx = self._index_of(
                 new_calls,
                 lambda call: call[0] == "play" and call[1] == Side.RED and call[2:] == (2, 2),
             )
-            self.assertLess(clear_idx, play_idx)
+            self.assertLess(stop_idx, play_idx)
 
     def test_candidates_use_root_allow_filter(self):
         core, engine = self._mk_core()
-        core._apply_analysis_enabled_transition(True)
+        core.set_analysis_enabled(True)
         engine.analysis = [
             AnalysisMove("b2", order=1, col=2, row=2, winrate=0.6, visits=20, prior=0.4, pv=None),
             AnalysisMove("c3", order=2, col=3, row=3, winrate=0.4, visits=10, prior=0.2, pv=None),
@@ -1633,7 +1668,7 @@ class GuiCoreTests(unittest.TestCase):
         self.assertEqual(engine.params["analysisWideRootNoise"], 0.12)
         self.assertEqual(core.candidate_result((1, 1)), (0.7, 40))
 
-    def test_delete_tail_undoes_candidate_and_history(self):
+    def test_delete_tail_syncs_candidate_position(self):
         core, engine = self._mk_core()
 
         core.try_play_move(1, 1)
@@ -1642,9 +1677,7 @@ class GuiCoreTests(unittest.TestCase):
         before = len(engine.calls)
         core.delete_tail()
         new_calls = self._new_calls(engine, before)
-        undo_calls = [call for call in new_calls if call[0] == "undo"]
-
-        self.assertEqual(len(undo_calls), 1)
+        self.assertEqual(new_calls.count(("undo",)), 1)
 
     def test_removing_last_candidate_resumes_live_analysis(self):
         for remover in (GuiCore.toggle_candidate, GuiCore.remove_candidate):
@@ -1688,10 +1721,10 @@ class GuiCoreTests(unittest.TestCase):
                 new_calls = self._new_calls(engine, before)
                 if at_end:
                     self.assertEqual(len(core.board.history), history_len - 1)
-                    self._assert_has_undo(new_calls)
+                    self.assertIn(("undo",), new_calls)
                 else:
                     self.assertEqual(len(core.board.history), history_len)
-                    self._assert_no_undo(new_calls)
+                    self.assertNotIn(("undo",), new_calls)
                 self.assertEqual(core.mainline_tail_moves(), [])
 
     def test_delete_tail_keeps_future_cache_when_truncating(self):

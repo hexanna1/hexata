@@ -5,7 +5,7 @@ from typing import Callable, NoReturn, Optional, Sequence, Tuple
 
 from board import MAX_BOARD_SIZE, MIN_BOARD_SIZE, HexBoard, Move, MoveKind, Side, coord_to_human
 from engine import KataHexEngine
-from gui.analysis import AnalysisModeTag, AppState, CandidateState, GuiCoreAnalysisMixin
+from gui.analysis import AppState, CandidateState, GuiCoreAnalysisMixin
 from history_tree import HistoryNode, MoveTree
 from formats import flexible_moves, hexata, hexworld
 
@@ -124,24 +124,6 @@ class GuiCore(GuiCoreAnalysisMixin):
         self.edit_undo.clear()
         self.edit_redo.clear()
 
-    def _edit_state_sig(self) -> tuple[tuple, tuple[Tuple[int, int], ...]]:
-        return (self.tree.signature(), tuple(sorted(self.app.candidate_state.candidates)))
-
-    def _run_tracked_edit(
-        self,
-        mutate: Callable[[], None],
-        *,
-        resume_after: bool = True,
-    ) -> bool:
-        before = self._capture_edit_state()
-        before_sig = self._edit_state_sig()
-        self.with_analysis_keep_engine_synced(mutate, resume_after=resume_after)
-        if self._edit_state_sig() == before_sig:
-            return False
-        self.edit_undo.append(before)
-        self.edit_redo.clear()
-        return True
-
     def _rebuild_board_from_moves(self, moves: Sequence[Move]) -> None:
         self.board.clear()
         for mv in moves:
@@ -152,20 +134,85 @@ class GuiCore(GuiCoreAnalysisMixin):
         self._rebuild_board_from_moves(self.current_path_moves())
         self.rebuild_engine_from_applied_history()
 
+    def _run_position_change(
+        self,
+        mutate: Callable[[], bool],
+        *,
+        track_edit: bool = False,
+        resume_after: bool = True,
+        exit_batch: bool = True,
+    ) -> bool:
+        # Tree/cursor mutations happen first; board and engine are projections of
+        # the selected path and are reconciled together only after a real change.
+        before = self._capture_edit_state() if track_edit else None
+        old_path = tuple(self.current_path_moves())
+        old_engine_moves = self._engine_position_moves()
+        old_candidates = frozenset(self.app.candidate_state.candidates)
+        was_running = self.app.analysis_enabled
+        was_batch = self.is_batch_analysis_active()
+        if not mutate():
+            return False
+        path_changed = tuple(self.current_path_moves()) != old_path
+        candidates_changed = frozenset(self.app.candidate_state.candidates) != old_candidates
+        analysis_changed = path_changed or candidates_changed or (was_batch and exit_batch)
+        if was_running and analysis_changed:
+            self.pause_engine_analysis()
+        if path_changed:
+            self._rebuild_board_from_moves(self.current_path_moves())
+            self._sync_engine_position(old_engine_moves)
+            self.engine.clear_analysis()
+            self.check_candidate_root()
+        self._ensure_candidate_root()
+        if was_batch and exit_batch:
+            # User-driven changes leave batch mode; batch stepping opts out.
+            self._exit_batch_mode()
+        if was_running and analysis_changed and resume_after:
+            self.sync_analysis()
+        if track_edit:
+            if before is None:
+                raise AssertionError("Tracked position change missing snapshot")
+            self.edit_undo.append(before)
+            self.edit_redo.clear()
+        return True
+
+    def _run_session_reset(self, mutate: Callable[[], None]) -> None:
+        was_running = self.app.analysis_enabled
+        was_batch = self.is_batch_analysis_active()
+        if was_running:
+            self.pause_engine_analysis()
+        mutate()
+        self._rebuild_position_from_tree()
+        self.engine.clear_analysis()
+        self.check_candidate_root()
+        self._ensure_candidate_root()
+        if was_batch:
+            self._exit_batch_mode()
+        if was_running:
+            self.sync_analysis()
+
+    def _run_tree_change(self, mutate: Callable[[], bool]) -> bool:
+        before = self._capture_edit_state()
+        if not mutate():
+            return False
+        self.edit_undo.append(before)
+        self.edit_redo.clear()
+        if self.is_batch_analysis_active():
+            # Tree-only edits are user-driven even when the position is unchanged.
+            self.leave_batch_for_live()
+        return True
+
     def _restore_edit_state(self, snap: EditSnapshot) -> None:
         tree, candidates = snap
 
-        def mutate() -> None:
+        def mutate() -> bool:
             self.tree = tree.clone()
             state = self.app.candidate_state
             state.candidates.clear()
             state.candidates.update(candidates)
-            self._rebuild_position_from_tree()
-            state.root_key = self.cache_key() if state.candidates else None
-            if self.app.analysis_mode != AnalysisModeTag.OFF:
-                self.app.analysis_mode = AnalysisModeTag.LIVE
+            state.root_key = None
+            return True
 
-        self.with_analysis_stopped(mutate)
+        self._run_position_change(mutate)
 
     def undo_edit(self) -> bool:
         if not self.edit_undo:
@@ -186,26 +233,6 @@ class GuiCore(GuiCoreAnalysisMixin):
         return True
 
     # -------------------- board and engine sync --------------------
-    def apply_move_to_state(self, col: int, row: int) -> bool:
-        side = self.current_side()
-        if not self.board.place(side, col, row):
-            return False
-        self.play_engine_mapped(side, col, row)
-        return True
-
-    def apply_pass_to_state(self) -> bool:
-        side = self.current_side()
-        if not self.board.pass_move(side):
-            return False
-        self.play_engine_mapped(side, None, None)
-        return True
-
-    def apply_swap_to_state(self) -> bool:
-        side = self.current_side()
-        if not self.board.swap_move(side):
-            return False
-        return True
-
     def _assert_never(self, value: MoveKind) -> NoReturn:
         raise AssertionError(f"Unhandled move kind: {value}")
 
@@ -226,39 +253,67 @@ class GuiCore(GuiCoreAnalysisMixin):
                 return None
         return self._assert_never(mv.kind)
 
-    def apply_move_to_state_from_move(self, mv: Move) -> bool:
+    def _engine_move(self, mv: Move) -> Optional[Tuple[Side, Optional[int], Optional[int]]]:
         match mv.kind:
             case MoveKind.PLACE:
-                return self.apply_move_to_state(mv.col, mv.row)
+                side = self._map_side_to_engine(mv.side)
+                col, row = self._map_coords_to_engine(mv.col, mv.row)
+                return side, col, row
             case MoveKind.PASS:
-                return self.apply_pass_to_state()
+                return self._map_side_to_engine(mv.side), None, None
             case MoveKind.SWAP:
-                return self.apply_swap_to_state()
-        return self._assert_never(mv.kind)
-
-    def _follow_existing_tree_move(self, mv: Move) -> bool:
-        if not self.apply_move_to_state_from_move(mv):
-            return False
-        if not self.tree.follow_child(mv):
-            raise AssertionError("Tree follow_child failed for existing move")
-        return True
-
-    def play_move_on_engine(self, mv: Move) -> None:
-        match mv.kind:
-            case MoveKind.PLACE:
-                self.play_engine_mapped(mv.side, mv.col, mv.row)
-                return
-            case MoveKind.PASS:
-                self.play_engine_mapped(mv.side, None, None)
-                return
-            case MoveKind.SWAP:
-                return
+                # Swap changes the GUI's interpretation, not the engine position.
+                return None
         self._assert_never(mv.kind)
+
+    def _engine_position_moves(self) -> tuple[Tuple[Side, Optional[int], Optional[int]], ...]:
+        return tuple(
+            engine_move
+            for mv in self.applied_history()
+            if (engine_move := self._engine_move(mv)) is not None
+        )
+
+    def _sync_engine_position(
+        self,
+        old_moves: Sequence[Tuple[Side, Optional[int], Optional[int]]],
+    ) -> None:
+        new_moves = self._engine_position_moves()
+        common = 0
+        while common < min(len(old_moves), len(new_moves)) and old_moves[common] == new_moves[common]:
+            common += 1
+        for _ in old_moves[common:]:
+            self.engine.undo()
+        for side, col, row in new_moves[common:]:
+            self.engine.play(side, col, row)
 
     def rebuild_engine_from_applied_history(self) -> None:
         self.engine.clear_board()
-        for mv in self.applied_history():
-            self.play_move_on_engine(mv)
+        for side, col, row in self._engine_position_moves():
+            self.engine.play(side, col, row)
+
+    def replace_engine(self, new_engine: KataHexEngine) -> bool:
+        if new_engine is self.engine:
+            return False
+        was_running = self.app.analysis_enabled
+        if was_running:
+            self.pause_engine_analysis()
+        old_engine = self.engine
+        self.engine = new_engine
+        try:
+            self.rebuild_engine_from_applied_history()
+        except Exception:
+            self.engine = old_engine
+            new_engine.close()
+            if was_running:
+                self.sync_analysis()
+            return False
+        self.clear_all_cached_analysis()
+        old_engine.close()
+        # Switching engines converts any batch run to live analysis.
+        self._exit_batch_mode()
+        if was_running:
+            self.sync_analysis()
+        return True
 
     def find_applied_move_index(self, col: int, row: int) -> Optional[int]:
         for idx, mv in enumerate(self.applied_history()):
@@ -266,41 +321,6 @@ class GuiCore(GuiCoreAnalysisMixin):
             if coords == (col, row):
                 return idx
         return None
-
-    def _with_analysis_paused(
-        self,
-        fn: Callable[[], None],
-        *,
-        keep_engine_synced: bool,
-        resume_after: bool = True,
-    ) -> None:
-        was_running = self.app.analysis_enabled
-        was_batch = self.is_batch_analysis_active()
-        rev_before = self.board.rev
-        tree_sig_before = self.tree.signature() if was_batch and resume_after else None
-        if was_running:
-            if keep_engine_synced:
-                self.engine.cancel_reply_capture()
-                self.engine.clear_analysis()
-            else:
-                self.stop_analysis()
-        fn()
-        self.engine.clear_analysis()
-        self.check_candidate_root()
-        if was_running and resume_after:
-            # User-driven navigation/edits should exit batch immediately once
-            # they actually change the selected tree or materialized position.
-            if was_batch and (self.board.rev != rev_before or self.tree.signature() != tree_sig_before):
-                self.app.analysis_mode = AnalysisModeTag.LIVE
-            self.resume_analysis()
-
-    def with_analysis_stopped(self, fn: Callable[[], None], *, resume_after: bool = True) -> None:
-        self._with_analysis_paused(fn, keep_engine_synced=False, resume_after=resume_after)
-
-    def with_analysis_keep_engine_synced(
-        self, fn: Callable[[], None], *, resume_after: bool = True
-    ) -> None:
-        self._with_analysis_paused(fn, keep_engine_synced=True, resume_after=resume_after)
 
     # -------------------- import and export --------------------
     def _import_size_error(self, size: int, *, source: str) -> Optional[str]:
@@ -321,16 +341,25 @@ class GuiCore(GuiCoreAnalysisMixin):
             return None
 
     def _install_imported_tree(self, size: int, tree: MoveTree) -> None:
-        def mutate() -> None:
-            self.engine.set_board_size(size)
-            self.board.set_size(size)
+        def install() -> None:
             self.tree = tree
             self.app.pending_size = size
-            self.clear_candidates()
+            self._clear_candidate_selection()
             self.clear_all_cached_analysis()
-            self._rebuild_position_from_tree()
 
-        self.with_analysis_stopped(mutate)
+        if size == self.board.n:
+            def mutate() -> bool:
+                install()
+                return True
+
+            self._run_position_change(mutate)
+        else:
+            def reset() -> None:
+                self.engine.set_board_size(size)
+                self.board.set_size(size)
+                install()
+
+            self._run_session_reset(reset)
         self._clear_edit_history()
 
     def load_hexworld_text(self, text: str) -> Optional[str]:
@@ -414,38 +443,14 @@ class GuiCore(GuiCoreAnalysisMixin):
 
     # -------------------- move navigation and editing --------------------
     def new_game(self) -> None:
-        def mutate() -> None:
-            self.engine.clear_board()
-            self.board.clear()
+        def mutate() -> bool:
             self.tree.clear()
-            self.clear_candidates()
+            self._clear_candidate_selection()
             self.clear_all_cached_analysis()
+            return True
 
-        self.with_analysis_keep_engine_synced(mutate)
+        self._run_position_change(mutate)
         self._clear_edit_history()
-
-    def undo_one(self) -> bool:
-        moves = self.current_path_moves()
-        if not moves:
-            return False
-        last = moves[-1]
-        if not self.board.undo():
-            return False
-        if not self.tree.step_back():
-            raise AssertionError("Tree step_back failed for non-root path")
-        if last.kind != MoveKind.SWAP:
-            self.engine.undo()
-        return True
-
-    def _step_forward_one(self) -> bool:
-        mv = self.next_mainline_move()
-        if mv is None:
-            return False
-        if not self.apply_move_to_state_from_move(mv):
-            return False
-        if not self.tree.step_forward():
-            raise AssertionError("Tree step_forward failed with selected mainline child")
-        return True
 
     def step_back(self) -> bool:
         return self.step_back_n(1)
@@ -453,117 +458,70 @@ class GuiCore(GuiCoreAnalysisMixin):
     def step_forward(self) -> bool:
         return self.step_forward_n(1)
 
-    def go_sibling(self, direction: int, *, resume_after: bool = True) -> bool:
+    def go_sibling(self, direction: int) -> bool:
         target = self.tree.sibling_cursor(direction)
         if target is None:
             return False
-        did = False
 
-        def mutate() -> None:
-            nonlocal did
+        def mutate() -> bool:
             self.tree.cursor = target
-            self._rebuild_position_from_tree()
-            did = True
+            return True
 
-        self.with_analysis_keep_engine_synced(mutate, resume_after=resume_after)
-        return did
+        return self._run_position_change(mutate)
 
     def shift_branch(self, direction: int) -> bool:
-        before = self._capture_edit_state()
-        if not self.tree.shift_current_branch(direction):
-            return False
-        self.edit_undo.append(before)
-        self.edit_redo.clear()
-        if self.is_batch_analysis_active():
-            self.cancel_batch_analysis()
-        return True
+        return self._run_tree_change(lambda: self.tree.shift_current_branch(direction))
 
-    def step_back_n(self, count: int, *, resume_after: bool = True) -> bool:
+    def _step_tree(self, count: int, *, forward: bool) -> bool:
+        did = False
+        for _ in range(count):
+            if not (self.tree.step_forward() if forward else self.tree.step_back()):
+                break
+            did = True
+        return did
+
+    def step_back_n(self, count: int) -> bool:
         if count <= 0 or self.current_ply() <= 0:
             return False
-        did = False
+        return self._run_position_change(lambda: self._step_tree(count, forward=False))
 
-        def mutate() -> None:
-            nonlocal did
-            for _ in range(count):
-                if not self.undo_one():
-                    break
-                did = True
-
-        self.with_analysis_keep_engine_synced(mutate, resume_after=resume_after)
-        return did
-
-    def step_forward_n(self, count: int, *, resume_after: bool = True) -> bool:
+    def step_forward_n(self, count: int) -> bool:
         if count <= 0 or self.next_mainline_move() is None:
             return False
-        did = False
+        return self._run_position_change(lambda: self._step_tree(count, forward=True))
 
-        def mutate() -> None:
-            nonlocal did
-            for _ in range(count):
-                if not self._step_forward_one():
-                    break
-                did = True
-
-        self.with_analysis_keep_engine_synced(mutate, resume_after=resume_after)
-        return did
-
-    def go_first(self, *, resume_after: bool = True) -> bool:
-        return self.step_back_n(self.current_ply(), resume_after=resume_after)
+    def go_first(self) -> bool:
+        return self.step_back_n(self.current_ply())
 
     def go_last(self) -> bool:
         return self.step_forward_n(len(self.mainline_tail_moves()))
 
-    def go_to_ply(self, ply: int, *, resume_after: bool = True) -> bool:
+    def go_to_ply(self, ply: int) -> bool:
         max_ply = len(self.visible_line_moves())
         target = max(0, min(ply, max_ply))
         current = self.current_ply()
         if target < current:
-            return self.step_back_n(current - target, resume_after=resume_after)
+            return self.step_back_n(current - target)
         if target > current:
-            return self.step_forward_n(target - current, resume_after=resume_after)
+            return self.step_forward_n(target - current)
         return False
 
     def _delete_current_leaf(self) -> bool:
-        moves = self.current_path_moves()
-        if not moves:
-            return False
-        last = moves[-1]
-        if not self.board.undo():
-            return False
-        if not self.tree.delete_cursor_node():
-            return False
-        if last.kind != MoveKind.SWAP:
-            self.engine.undo()
-        return True
+        return self.tree.delete_cursor_node()
 
     def delete_tail(self) -> bool:
-        before = self._capture_edit_state()
-        before_sig = self._edit_state_sig()
-        if self.tree.delete_selected_tail():
-            if self._edit_state_sig() == before_sig:
-                return False
-            self.edit_undo.append(before)
-            self.edit_redo.clear()
-            if self.is_batch_analysis_active():
-                self.cancel_batch_analysis()
-            return True
+        if self.next_mainline_move() is not None:
+            return self._run_tree_change(self.tree.delete_selected_tail)
         if self.current_ply() <= 0:
             return False
-
-        def mutate() -> None:
-            self._delete_current_leaf()
-
-        return self._run_tracked_edit(mutate)
+        return self._run_position_change(self._delete_current_leaf, track_edit=True)
 
     def _play_move_into_tree(self, mv: Move) -> bool:
         next_mv = self.next_mainline_move()
         if next_mv == mv:
-            return self._step_forward_one()
+            return self.tree.step_forward()
         if self.tree.find_child(self.tree.cursor, mv) is not None:
-            return self._follow_existing_tree_move(mv)
-        if not self.apply_move_to_state_from_move(mv):
-            return False
+            return self.tree.follow_child(mv)
         self.tree.add_or_select_child(mv)
         return True
 
@@ -573,13 +531,18 @@ class GuiCore(GuiCoreAnalysisMixin):
         if not self.board.is_empty(*moves[0]):
             return False
 
-        def mutate() -> None:
+        def mutate() -> bool:
+            probe = self.board.copy()
+            did = False
             for col, row in moves:
                 side = self.current_side()
-                if not self._play_move_into_tree(Move.place(side=side, col=col, row=row)):
-                    return
+                mv = Move.place(side=side, col=col, row=row)
+                if not probe.apply_move(mv) or not self._play_move_into_tree(mv):
+                    break
+                did = True
+            return did
 
-        return self._run_tracked_edit(mutate)
+        return self._run_position_change(mutate, track_edit=True)
 
     def try_play_move(self, col: int, row: int) -> bool:
         return self.try_play_moves([(col, row)])
@@ -596,11 +559,13 @@ class GuiCore(GuiCoreAnalysisMixin):
         return self.current_side() == Side.BLUE
 
     def try_pass_move(self) -> bool:
-        def mutate() -> None:
+        def mutate() -> bool:
             side = self.current_side()
-            self._play_move_into_tree(Move.pass_(side=side))
+            mv = Move.pass_(side=side)
+            probe = self.board.copy()
+            return probe.apply_move(mv) and self._play_move_into_tree(mv)
 
-        return self._run_tracked_edit(mutate)
+        return self._run_position_change(mutate, track_edit=True)
 
     def _swap_child_move(self) -> Move:
         first = self.current_path_moves()[0]
@@ -610,10 +575,12 @@ class GuiCore(GuiCoreAnalysisMixin):
         if not self.can_swap_move():
             return False
 
-        def mutate() -> None:
-            self._play_move_into_tree(self._swap_child_move())
+        def mutate() -> bool:
+            mv = self._swap_child_move()
+            probe = self.board.copy()
+            return probe.apply_move(mv) and self._play_move_into_tree(mv)
 
-        return self._run_tracked_edit(mutate)
+        return self._run_position_change(mutate, track_edit=True)
 
     def _update_swap_children_for_opening(self, node: HistoryNode, col: int, row: int) -> None:
         for child in node.children:
@@ -658,7 +625,7 @@ class GuiCore(GuiCoreAnalysisMixin):
         if self._first_illegal_move_index(probe, prefix_moves) is not None:
             return False
 
-        def mutate() -> None:
+        def mutate() -> bool:
             edit_node.move = new_move
             if idx == 0:
                 # Move 1 also anchors swap children, so refresh their stored source
@@ -677,9 +644,9 @@ class GuiCore(GuiCoreAnalysisMixin):
                     break
                 cursor = next_node
             self.tree.cursor = cursor
-            self._rebuild_position_from_tree()
+            return True
 
-        return self._run_tracked_edit(mutate)
+        return self._run_position_change(mutate, track_edit=True)
 
     def apply_pending_size(self) -> bool:
         if self.app.pending_size == self.board.n:
@@ -687,12 +654,12 @@ class GuiCore(GuiCoreAnalysisMixin):
 
         def mutate() -> None:
             self.engine.set_board_size(self.app.pending_size)
-            self.engine.clear_board()
             self.board.set_size(self.app.pending_size)
             self.tree.clear()
+            self._clear_candidate_selection()
             self.clear_all_cached_analysis()
 
-        self.with_analysis_stopped(mutate)
+        self._run_session_reset(mutate)
         self._clear_edit_history()
         return True
 

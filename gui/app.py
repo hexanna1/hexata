@@ -122,32 +122,15 @@ def cycle_engine_profile(
     if new_engine is None:
         return False
 
-    # Engine cycling intentionally restarts any batch run as live analysis.
-    was_running = core.app.analysis_enabled
-    if was_running:
-        core.toggle_analysis()
-
-    old_engine = core.engine
-    core.engine = new_engine
-    try:
-        core.rebuild_engine_from_applied_history()
-    except Exception:
-        core.engine = old_engine
-        new_engine.close()
-        if was_running:
-            core.toggle_analysis()
+    if not core.replace_engine(new_engine):
         return False
 
-    core.clear_all_cached_analysis()
-    old_engine.close()
     ui.current_engine_idx = next_idx
     ui.speed_last_t = None
     ui.speed_last_total = None
     ui.speed_vps = None
     # Runtime engine cycling is intentionally session-only; config.default_engine
     # remains the startup default instead of being rewritten from the GUI.
-    if was_running:
-        core.toggle_analysis()
     return True
 
 
@@ -365,7 +348,7 @@ def run_gui(
         elif ev.key in (pygame.K_DELETE, pygame.K_BACKSPACE):
             core.delete_tail()
         elif ev.key == pygame.K_x and (ev.mod & pygame.KMOD_SHIFT):
-            core.clear_candidates(resume_analysis=True)
+            core.clear_candidates()
         elif ch == ",":
             pv = renderer.get_display_pv(current_hover_cell())
             if renderer.should_show_pv(pv):
