@@ -263,7 +263,7 @@ def run_gui(
         is_undo_shortcut = has_ctrl and ev.key == pygame.K_z and not (mods & pygame.KMOD_SHIFT)
 
         def step_awrn(direction: int) -> None:
-            current = core.session.analysis_wide_root_noise
+            current = core.session.analysis.wide_root_noise
             idx = min(range(len(awrn_steps)), key=lambda i: abs(awrn_steps[i] - current))
             if direction < 0:
                 idx = max(0, idx - 1)
@@ -401,7 +401,7 @@ def run_gui(
             ui.drag_select = True
             ui.drag_added = False
             ui.drag_last_cell = None
-            ui.drag_start_candidates = set(core.session.candidate_selection.candidates)
+            ui.drag_start_candidates = set(core.session.analysis.candidate_selection.candidates)
 
     def handle_mouse_up(ev: pygame.event.Event, ui: UiState) -> None:
         if ev.button == 1:
@@ -491,7 +491,7 @@ def run_gui(
         )
         top_cell, top_visits = core.get_top_move()
 
-        if core.session.analysis_enabled:
+        if core.session.analysis.enabled:
             total_visits = 0
             for r in core.get_engine_analysis():
                 if r.visits:

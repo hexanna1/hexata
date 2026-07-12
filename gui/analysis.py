@@ -7,7 +7,12 @@ from typing import List, Optional, Sequence, Tuple
 
 from board import HexBoard, Move, MoveKind, Side, coord_to_human
 from engine import AnalysisMove
-from gui.state import AnalysisModeTag, BatchKind, BatchRun, TransitionKind
+from gui.state import (
+    AnalysisModeTag,
+    BatchKind,
+    BatchRun,
+    TransitionKind,
+)
 
 SLOW_BATCH_SECONDS_PER_POS = 3.0
 
@@ -22,7 +27,7 @@ class AnalysisRequest:
 class GuiCoreAnalysisMixin:
     # -------------------- mode and engine mapping --------------------
     def is_batch_analysis_active(self) -> bool:
-        return isinstance(self.session.analysis_mode, BatchRun)
+        return isinstance(self.session.analysis.mode, BatchRun)
 
     def current_side(self) -> Side:
         moves = self.current_path_moves()
@@ -129,22 +134,22 @@ class GuiCoreAnalysisMixin:
         return self._hash_applied_history(self.applied_history())
 
     def cache_reset_sig(self) -> None:
-        self.session.last_cache_sig = None
+        self.session.analysis.last_cache_sig = None
 
     def clear_all_cached_analysis(self) -> None:
-        self.session.analysis_cache.clear()
-        self.session.root_eval_cache.clear()
+        self.session.analysis.cache.clear()
+        self.session.analysis.root_eval_cache.clear()
         self.cache_reset_sig()
 
     def clear_analysis_caches(self) -> None:
-        was_running = self.session.analysis_enabled
+        was_running = self.session.analysis.enabled
 
         self.engine.clear_analysis()
         self.engine.clear_cache()
         self.clear_all_cached_analysis()
 
         if was_running:
-            self.sync_analysis()
+            self.restart_analysis()
 
     def _merge_analysis(self, primary: AnalysisMove, secondary: Optional[AnalysisMove]) -> AnalysisMove:
         """Primary supplies display order; deeper visits supplies eval metadata."""
@@ -183,24 +188,24 @@ class GuiCoreAnalysisMixin:
 
     def _merge_live_into_cache(self, live: List[AnalysisMove]) -> None:
         cache_key = self.cache_key()
-        existing = self.session.analysis_cache.get(cache_key)
+        existing = self.session.analysis.cache.get(cache_key)
         if existing is None:
-            self.session.analysis_cache[cache_key] = list(live)
+            self.session.analysis.cache[cache_key] = list(live)
             self.cache_reset_sig()
             return
 
         merged = self._merge_analysis_lists(live, existing)
-        self.session.analysis_cache[cache_key] = merged
+        self.session.analysis.cache[cache_key] = merged
         self.cache_reset_sig()
 
     def _cached_analysis_row(self, key: Tuple[int, int]) -> Optional[AnalysisMove]:
-        for r in self.session.analysis_cache.get(self.cache_key(), []):
+        for r in self.session.analysis.cache.get(self.cache_key(), []):
             if r.col == key[0] and r.row == key[1]:
                 return r
         return None
 
     def _candidate_cache_rows(self, live: List[AnalysisMove]) -> List[AnalysisMove]:
-        selected = self.session.candidate_selection.candidates
+        selected = self.session.analysis.candidate_selection.candidates
         out: List[AnalysisMove] = []
         for r in live:
             if r.col is None or r.row is None or (r.col, r.row) not in selected:
@@ -236,12 +241,12 @@ class GuiCoreAnalysisMixin:
         side_to_play = self.current_side()
         synthetic_wr = (1.0 - blue_win) if side_to_play == Side.RED else blue_win
         cache_key = self.cache_key()
-        if self.session.root_eval_cache.get(cache_key) == synthetic_wr:
+        if self.session.analysis.root_eval_cache.get(cache_key) == synthetic_wr:
             return
-        self.session.root_eval_cache[cache_key] = synthetic_wr
+        self.session.analysis.root_eval_cache[cache_key] = synthetic_wr
 
     def maybe_update_analysis_cache(self) -> None:
-        if not self.session.analysis_enabled:
+        if not self.session.analysis.enabled:
             return
         live = self.get_engine_analysis()
         if not live:
@@ -255,36 +260,36 @@ class GuiCoreAnalysisMixin:
                 for r in live
             ),
         )
-        if sig == self.session.last_cache_sig:
+        if sig == self.session.analysis.last_cache_sig:
             return
 
-        if self.session.candidate_selection.candidates:
+        if self.session.analysis.candidate_selection.candidates:
             candidate_rows = self._candidate_cache_rows(live)
             if not candidate_rows:
                 return
-            existing = self.session.analysis_cache.get(key, [])
+            existing = self.session.analysis.cache.get(key, [])
             merged = self._merge_analysis_lists(existing, candidate_rows)
             if merged != existing:
-                self.session.analysis_cache[key] = merged
+                self.session.analysis.cache[key] = merged
                 self.cache_reset_sig()
         else:
             self._merge_live_into_cache(live)
-        self.session.last_cache_sig = sig
+        self.session.analysis.last_cache_sig = sig
 
     # -------------------- analysis loop and controls --------------------
     def tick(self, now: float) -> None:
-        if isinstance(self.session.analysis_mode, BatchRun):
+        if isinstance(self.session.analysis.mode, BatchRun):
             self.step_batch_analysis(now)
             self.maybe_update_analysis_cache()
             return
         if self.check_candidate_root():
-            self.sync_analysis()
+            self.restart_analysis()
         self.maybe_update_analysis_cache()
 
     def toggle_analysis(self) -> None:
-        self.set_analysis_enabled(not self.session.analysis_enabled)
+        self.set_analysis_enabled(not self.session.analysis.enabled)
 
-    def sync_analysis(self) -> None:
+    def restart_analysis(self) -> None:
         request = self._desired_analysis_request()
         if request is None:
             return
@@ -295,49 +300,49 @@ class GuiCoreAnalysisMixin:
         self.engine.clear_analysis()
 
     def set_analysis_enabled(self, enabled: bool) -> None:
-        if enabled == self.session.analysis_enabled:
+        if enabled == self.session.analysis.enabled:
             return
         if not enabled:
-            self.session.analysis_mode = AnalysisModeTag.OFF
+            self.session.analysis.mode = AnalysisModeTag.OFF
             self.pause_engine_analysis()
             return
-        if self.session.analysis_mode == AnalysisModeTag.OFF:
-            self.session.analysis_mode = AnalysisModeTag.LIVE
-        self.sync_analysis()
+        if self.session.analysis.mode == AnalysisModeTag.OFF:
+            self.session.analysis.mode = AnalysisModeTag.LIVE
+        self.restart_analysis()
 
     def leave_batch_for_live(self) -> None:
         if not self._exit_batch_mode():
             return
         self.engine.cancel_reply_capture()
-        self.sync_analysis()
+        self.restart_analysis()
 
     def _exit_batch_mode(self) -> bool:
-        if not isinstance(self.session.analysis_mode, BatchRun):
+        if not isinstance(self.session.analysis.mode, BatchRun):
             return False
-        self.session.analysis_mode = AnalysisModeTag.LIVE
+        self.session.analysis.mode = AnalysisModeTag.LIVE
         return True
 
     def set_analysis_wide_root_noise(self, value: float) -> None:
         value = max(0.0, min(2.0, float(value)))
-        if abs(self.session.analysis_wide_root_noise - value) < 1e-9:
+        if abs(self.session.analysis.wide_root_noise - value) < 1e-9:
             return
-        self.session.analysis_wide_root_noise = value
-        if self.session.analysis_enabled:
-            self.sync_analysis()
+        self.session.analysis.wide_root_noise = value
+        if self.session.analysis.enabled:
+            self.restart_analysis()
 
     # -------------------- analysis queries --------------------
     def get_active_analysis(self) -> List[AnalysisMove]:
         # Prefer the most informative analysis (cache/live) while candidates can
         # upgrade cached winrate/visits.
-        if self.session.candidate_selection.candidates:
-            base = self.session.analysis_cache.get(self.cache_key(), [])
+        if self.session.analysis.candidate_selection.candidates:
+            base = self.session.analysis.cache.get(self.cache_key(), [])
             if not base:
                 return self.get_candidate_analysis()
             return self._merge_analysis_lists(base, self.get_candidate_analysis())
-        base = self.session.analysis_cache.get(self.cache_key(), [])
+        base = self.session.analysis.cache.get(self.cache_key(), [])
         if base:
             return base
-        if self.session.analysis_enabled:
+        if self.session.analysis.enabled:
             live = self.get_engine_analysis()
             if live:
                 return live
@@ -345,7 +350,7 @@ class GuiCoreAnalysisMixin:
 
     def get_top_move(self) -> Tuple[Optional[Tuple[int, int]], int]:
         best: Optional[AnalysisMove] = None
-        candidate_mode = bool(self.session.candidate_selection.candidates)
+        candidate_mode = bool(self.session.analysis.candidate_selection.candidates)
         recs = self.get_candidate_analysis() if candidate_mode else self.get_active_analysis()
         for r in recs:
             if r.col is None or r.row is None or r.order is None:
@@ -362,13 +367,13 @@ class GuiCoreAnalysisMixin:
 
     # -------------------- engine analysis lifecycle --------------------
     def _desired_analysis_request(self) -> Optional[AnalysisRequest]:
-        mode = self.session.analysis_mode
+        mode = self.session.analysis.mode
         if mode == AnalysisModeTag.OFF:
             return None
         side = self.current_side()
         if isinstance(mode, BatchRun):
             return AnalysisRequest(side=side, batch_kind=mode.kind)
-        candidates = self.session.candidate_selection.candidates
+        candidates = self.session.analysis.candidate_selection.candidates
         if candidates:
             return AnalysisRequest(
                 side=side,
@@ -378,7 +383,7 @@ class GuiCoreAnalysisMixin:
 
     def _apply_analysis_request(self, request: AnalysisRequest) -> None:
         if request.batch_kind is not None:
-            run = self.session.analysis_mode
+            run = self.session.analysis.mode
             if not isinstance(run, BatchRun):
                 raise AssertionError("Batch request without batch state")
             self.engine.cancel_reply_capture()
@@ -398,7 +403,7 @@ class GuiCoreAnalysisMixin:
     def _start_analysis(self, side_to_analyze: Side, *, allowed_moves: Sequence[Tuple[int, int]] = ()) -> None:
         mapped_side = self._map_side_to_engine(side_to_analyze)
         mapped_moves = [self._map_coords_to_engine(col, row) for col, row in allowed_moves]
-        self.engine.kata_set_param("analysisWideRootNoise", self.session.analysis_wide_root_noise)
+        self.engine.kata_set_param("analysisWideRootNoise", self.session.analysis.wide_root_noise)
         allow_filters = ((mapped_side, mapped_moves),) if mapped_moves else ()
         self.engine.start_analysis(mapped_side, self.analyze_interval_cs, allow_filters)
 
@@ -413,13 +418,13 @@ class GuiCoreAnalysisMixin:
             if target is None:
                 raise AssertionError("Failed to rewind batch line")
             self._commit_cursor(target, kind=TransitionKind.BATCH_START)
-        self.session.analysis_mode = BatchRun(
+        self.session.analysis.mode = BatchRun(
             kind=BatchKind.RAW_NN if fast else BatchKind.TIMED,
             first_update_at=None,
             line=line,
             expected_rev=self.board.rev,
         )
-        self.sync_analysis()
+        self.restart_analysis()
 
     def finish_batch_analysis(self) -> None:
         self.set_analysis_enabled(False)
@@ -428,7 +433,7 @@ class GuiCoreAnalysisMixin:
         self.leave_batch_for_live()
 
     def step_batch_analysis(self, now: float) -> None:
-        run = self.session.analysis_mode
+        run = self.session.analysis.mode
         if not isinstance(run, BatchRun):
             return
         if self.board.rev != run.expected_rev:
@@ -445,8 +450,8 @@ class GuiCoreAnalysisMixin:
 
     def _should_cancel_batch(self, run: BatchRun) -> bool:
         return (
-            (not self.session.analysis_enabled)
-            or self.session.candidate_selection.candidates
+            (not self.session.analysis.enabled)
+            or self.session.analysis.candidate_selection.candidates
         )
 
     def _step_batch_raw_nn(self, run: BatchRun) -> None:
@@ -481,7 +486,7 @@ class GuiCoreAnalysisMixin:
         self._advance_batch_position(restart_analysis=True)
 
     def _advance_batch_position(self, *, restart_analysis: bool) -> None:
-        run = self.session.analysis_mode
+        run = self.session.analysis.mode
         if not isinstance(run, BatchRun):
             return
         next_ply = self.current_ply()
@@ -497,7 +502,7 @@ class GuiCoreAnalysisMixin:
         run.expected_rev = self.board.rev
         if restart_analysis:
             # Batch owns the restart timing after stepping to the next position.
-            self.sync_analysis()
+            self.restart_analysis()
 
     # -------------------- candidate analysis --------------------
     def add_candidate(self, col: int, row: int) -> None:
@@ -505,7 +510,7 @@ class GuiCoreAnalysisMixin:
 
     def toggle_candidate(self, col: int, row: int) -> None:
         key = (col, row)
-        if key not in self.session.candidate_selection.candidates:
+        if key not in self.session.analysis.candidate_selection.candidates:
             self.add_candidate(col, row)
             return
 
@@ -515,16 +520,16 @@ class GuiCoreAnalysisMixin:
         self._update_candidate_selection((col, row), selected=False)
 
     def clear_candidates(self) -> None:
-        had_candidates = bool(self.session.candidate_selection.candidates)
+        had_candidates = bool(self.session.analysis.candidate_selection.candidates)
         self._clear_candidate_selection()
-        if had_candidates and self.session.analysis_enabled and not self.is_batch_analysis_active():
-            self.sync_analysis()
+        if had_candidates and self.session.analysis.enabled and not self.is_batch_analysis_active():
+            self.restart_analysis()
 
     def check_candidate_root(self) -> bool:
         return self._invalidate_candidate_root()
 
     def get_candidate_analysis(self) -> List[AnalysisMove]:
-        selection = self.session.candidate_selection
+        selection = self.session.analysis.candidate_selection
         rows: List[Tuple[Tuple[int, int], AnalysisMove]] = []
         for key in selection.candidates:
             source = self._analysis_row_for_key(key)
@@ -557,18 +562,18 @@ class GuiCoreAnalysisMixin:
         return out
 
     def _clear_candidate_selection(self) -> None:
-        selection = self.session.candidate_selection
+        selection = self.session.analysis.candidate_selection
         selection.candidates.clear()
         selection.root_key = None
 
     def _ensure_candidate_root(self) -> None:
-        selection = self.session.candidate_selection
+        selection = self.session.analysis.candidate_selection
         if selection.candidates and selection.root_key is None:
             selection.root_key = self.cache_key()
 
     def _update_candidate_selection(self, key: Tuple[int, int], *, selected: bool) -> bool:
-        selection = self.session.candidate_selection
-        if self.session.analysis_enabled and not self.is_batch_analysis_active():
+        selection = self.session.analysis.candidate_selection
+        if self.session.analysis.enabled and not self.is_batch_analysis_active():
             self.maybe_update_analysis_cache()
         if selected:
             if not self.board.is_empty(*key) or key in selection.candidates:
@@ -577,22 +582,22 @@ class GuiCoreAnalysisMixin:
             self._ensure_candidate_root()
             if self.is_batch_analysis_active():
                 self.cancel_batch_analysis()
-            elif self.session.analysis_enabled:
-                self.sync_analysis()
+            elif self.session.analysis.enabled:
+                self.restart_analysis()
             return True
         if key not in selection.candidates:
             return False
         selection.candidates.remove(key)
         if not selection.candidates:
             self._clear_candidate_selection()
-            if self.session.analysis_enabled and not self.is_batch_analysis_active():
-                self.sync_analysis()
-        elif self.session.analysis_enabled and not self.is_batch_analysis_active():
-            self.sync_analysis()
+            if self.session.analysis.enabled and not self.is_batch_analysis_active():
+                self.restart_analysis()
+        elif self.session.analysis.enabled and not self.is_batch_analysis_active():
+            self.restart_analysis()
         return True
 
     def _invalidate_candidate_root(self) -> bool:
-        selection = self.session.candidate_selection
+        selection = self.session.analysis.candidate_selection
         if (
             not selection.candidates
             or selection.root_key is None

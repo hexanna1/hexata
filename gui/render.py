@@ -424,7 +424,7 @@ class GuiRenderer:
         return (int(pos[0] * scale_x), int(pos[1] * scale_y))
 
     def _eval_graph_best_reply_winrate(self, key: bytes) -> Optional[float]:
-        recs = self.session.analysis_cache.get(key)
+        recs = self.session.analysis.cache.get(key)
         # Prefer full-root ordered analysis; filtered candidate rows are partial.
         best = None
         if recs:
@@ -435,7 +435,7 @@ class GuiRenderer:
                     best = r
         if best is not None and best.winrate is not None:
             return best.winrate
-        return self.session.root_eval_cache.get(key)
+        return self.session.analysis.root_eval_cache.get(key)
 
     @staticmethod
     def _eval_graph_x_for_ply(rect: pygame.Rect, n_moves: int, ply: int) -> int:
@@ -597,7 +597,7 @@ class GuiRenderer:
                 winrate_map[(r.col, r.row)] = r.winrate
             if r.prior is not None:
                 prior_map[(r.col, r.row)] = r.prior
-        if self.session.candidate_selection.candidates:
+        if self.session.analysis.candidate_selection.candidates:
             candidate_wr_map = {
                 (r.col, r.row): r.winrate
                 for r in self.core.get_candidate_analysis()
@@ -622,7 +622,7 @@ class GuiRenderer:
                             fill = lerp_rgb(ANALYSIS_LOW, ANALYSIS_HIGH, t)
                             if max_prior is not None and pr >= max_prior - 0.001:
                                 fill = ANALYSIS_BEST
-                    elif (col, row) in self.session.candidate_selection.candidates:
+                    elif (col, row) in self.session.analysis.candidate_selection.candidates:
                         cand_wr = candidate_wr_map.get((col, row))
                         if cand_wr is None:
                             fill = CANDIDATE_UNKNOWN
@@ -1055,7 +1055,7 @@ class GuiRenderer:
 
     def _hud_best_analysis(self) -> Optional[AnalysisMove]:
         display: Optional[AnalysisMove] = None
-        candidate_mode = bool(self.session.candidate_selection.candidates)
+        candidate_mode = bool(self.session.analysis.candidate_selection.candidates)
         recs = (
             self.core.get_candidate_analysis()
             if candidate_mode
@@ -1078,8 +1078,8 @@ class GuiRenderer:
         turn_side = self.core.current_side()
         turn_color = RED if turn_side == Side.RED else BLUE
         turn_name = "Red" if turn_side == Side.RED else "Blue"
-        analysis_txt = "ON" if self.session.analysis_enabled else "OFF"
-        analysis_color = TEXT_ON_LIGHT if self.session.analysis_enabled else TEXT_MUTED
+        analysis_txt = "ON" if self.session.analysis.enabled else "OFF"
+        analysis_color = TEXT_ON_LIGHT if self.session.analysis.enabled else TEXT_MUTED
         parts: List[Tuple[str, Tuple[int, int, int]]] = [
             ("Size: ", TEXT_ON_LIGHT),
             (f"{self.board.n}", TEXT_ON_LIGHT),
@@ -1123,7 +1123,7 @@ class GuiRenderer:
         self.text.hud_small.blit_line(help_line, TEXT_ON_LIGHT, 12, 32)
 
     def draw_top_right_status(self, ui: UiStateLike) -> None:
-        awrn = f"{self.session.analysis_wide_root_noise:.2f}".rstrip("0").rstrip(".")
+        awrn = f"{self.session.analysis.wide_root_noise:.2f}".rstrip("0").rstrip(".")
         awrn_text = f"AWRN {awrn}"
         awrn_w = self.fonts.hud_small.get_rect(awrn_text).width
         awrn_x = max(12, self.layout.board_px_w - awrn_w - 12)

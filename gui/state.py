@@ -47,18 +47,23 @@ AnalysisMode = AnalysisModeTag | BatchRun
 
 
 @dataclass(slots=True)
+class AnalysisState:
+    candidate_selection: CandidateSelection = field(default_factory=CandidateSelection)
+    cache: dict[bytes, list[AnalysisMove]] = field(default_factory=dict)
+    root_eval_cache: dict[bytes, float] = field(default_factory=dict)
+    last_cache_sig: Optional[tuple] = None
+    wide_root_noise: float = 0.04
+    mode: AnalysisMode = AnalysisModeTag.OFF
+
+    @property
+    def enabled(self) -> bool:
+        return self.mode != AnalysisModeTag.OFF
+
+
+@dataclass(slots=True)
 class SessionState:
     pending_size: int
     tree: MoveTree = field(default_factory=MoveTree)
-    candidate_selection: CandidateSelection = field(default_factory=CandidateSelection)
-    analysis_cache: dict[bytes, list[AnalysisMove]] = field(default_factory=dict)
-    root_eval_cache: dict[bytes, float] = field(default_factory=dict)
-    last_cache_sig: Optional[tuple] = None
-    analysis_wide_root_noise: float = 0.04
-    analysis_mode: AnalysisMode = AnalysisModeTag.OFF
+    analysis: AnalysisState = field(default_factory=AnalysisState)
     edit_undo: list[EditSnapshot] = field(default_factory=list)
     edit_redo: list[EditSnapshot] = field(default_factory=list)
-
-    @property
-    def analysis_enabled(self) -> bool:
-        return self.analysis_mode != AnalysisModeTag.OFF

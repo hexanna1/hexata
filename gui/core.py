@@ -96,7 +96,7 @@ class GuiCore(GuiCoreAnalysisMixin):
 
     # -------------------- edit history --------------------
     def _take_edit_snapshot(self) -> EditSnapshot:
-        selection = self.session.candidate_selection
+        selection = self.session.analysis.candidate_selection
         # Candidates are position-local and undo/redo restores them with the board.
         # The caller replaces the live tree, transferring this instance to the stack.
         return (
@@ -104,19 +104,11 @@ class GuiCore(GuiCoreAnalysisMixin):
             tuple(sorted(selection.candidates)),
         )
 
-    def _clear_edit_history(self) -> None:
-        self.session.edit_undo.clear()
-        self.session.edit_redo.clear()
-
     def _rebuild_board_from_moves(self, moves: Sequence[Move]) -> None:
         self.board.clear()
         for mv in moves:
             if not self.board.apply_move(mv):
                 raise AssertionError(f"Illegal move while rebuilding board: {mv}")
-
-    def _rebuild_position_from_tree(self) -> None:
-        self._rebuild_board_from_moves(self.current_path_moves())
-        self.rebuild_engine_from_applied_history()
 
     @staticmethod
     def _path_moves_to(tree: MoveTree, cursor: HistoryNode) -> tuple[Move, ...]:
@@ -150,6 +142,7 @@ class GuiCore(GuiCoreAnalysisMixin):
         pending_size: Optional[int] = None,
         candidates: Optional[Sequence[Tuple[int, int]]] = None,
         clear_analysis_cache: bool = False,
+        clear_edit_history: bool = False,
         track_edit: bool = False,
     ) -> None:
         target_size = self.board.n if board_size is None else board_size
@@ -166,8 +159,8 @@ class GuiCore(GuiCoreAnalysisMixin):
         before = self._take_edit_snapshot() if track_edit else None
         old_path = tuple(self.current_path_moves())
         old_engine_moves = self._engine_position_moves()
-        old_candidates = frozenset(self.session.candidate_selection.candidates)
-        was_running = self.session.analysis_enabled
+        old_candidates = frozenset(self.session.analysis.candidate_selection.candidates)
+        was_running = self.session.analysis.enabled
         was_batch = self.is_batch_analysis_active()
         size_changed = target_size != self.board.n
         path_changed = new_path != old_path
@@ -180,18 +173,20 @@ class GuiCore(GuiCoreAnalysisMixin):
         ):
             raise AssertionError("Tree-only transition changed position state")
 
+        position_changed = size_changed or path_changed
         if size_changed:
             if was_running:
                 self.pause_engine_analysis()
             self.engine.set_board_size(target_size)
-            self.board.set_size(target_size)
 
         self.session.tree = tree
         tree.cursor = target_cursor
+        if position_changed:
+            self.board.replace_position(target_board)
         if pending_size is not None:
             self.session.pending_size = pending_size
         if candidates is not None:
-            selection = self.session.candidate_selection
+            selection = self.session.analysis.candidate_selection
             selection.candidates.clear()
             selection.candidates.update(candidates)
             selection.root_key = None
@@ -199,14 +194,14 @@ class GuiCore(GuiCoreAnalysisMixin):
             self.clear_all_cached_analysis()
 
         if size_changed:
-            self._rebuild_position_from_tree()
+            self.rebuild_engine_from_applied_history()
             self.engine.clear_analysis()
             self.check_candidate_root()
             self._ensure_candidate_root()
             if was_batch:
                 self._exit_batch_mode()
             if was_running:
-                self.sync_analysis()
+                self.restart_analysis()
         elif kind == TransitionKind.USER_TREE:
             if was_batch:
                 # Tree-only edits are user-driven even when the position is unchanged.
@@ -217,7 +212,6 @@ class GuiCore(GuiCoreAnalysisMixin):
             if was_running and analysis_changed:
                 self.pause_engine_analysis()
             if path_changed:
-                self._rebuild_board_from_moves(new_path)
                 self._sync_engine_position(old_engine_moves)
                 self.engine.clear_analysis()
                 self.check_candidate_root()
@@ -230,19 +224,21 @@ class GuiCore(GuiCoreAnalysisMixin):
                 and analysis_changed
                 and kind == TransitionKind.USER_POSITION
             ):
-                self.sync_analysis()
+                self.restart_analysis()
 
-        if track_edit:
-            if before is None:
-                raise AssertionError("Tracked state change missing snapshot")
-            self.session.edit_undo.append(before)
-            self.session.edit_redo.clear()
-
-        selection = self.session.candidate_selection
+        selection = self.session.analysis.candidate_selection
         if bool(selection.candidates) != (selection.root_key is not None):
             raise AssertionError("Candidate selection is not bound to a position")
         if selection.candidates and selection.root_key != self.cache_key():
             raise AssertionError("Candidate selection is bound to a stale position")
+        if clear_edit_history:
+            self.session.edit_undo.clear()
+            self.session.edit_redo.clear()
+        elif track_edit:
+            if before is None:
+                raise AssertionError("Tracked state change missing snapshot")
+            self.session.edit_undo.append(before)
+            self.session.edit_redo.clear()
 
     def _commit_cursor(
         self,
@@ -276,18 +272,20 @@ class GuiCore(GuiCoreAnalysisMixin):
     def undo_edit(self) -> bool:
         if not self.session.edit_undo:
             return False
-        target = self.session.edit_undo.pop()
+        target = self.session.edit_undo[-1]
         current = self._take_edit_snapshot()
         self._restore_edit_state(target)
+        self.session.edit_undo.pop()
         self.session.edit_redo.append(current)
         return True
 
     def redo_edit(self) -> bool:
         if not self.session.edit_redo:
             return False
-        target = self.session.edit_redo.pop()
+        target = self.session.edit_redo[-1]
         current = self._take_edit_snapshot()
         self._restore_edit_state(target)
+        self.session.edit_redo.pop()
         self.session.edit_undo.append(current)
         return True
 
@@ -353,7 +351,7 @@ class GuiCore(GuiCoreAnalysisMixin):
     def replace_engine(self, new_engine: KataHexEngine) -> bool:
         if new_engine is self.engine:
             return False
-        was_running = self.session.analysis_enabled
+        was_running = self.session.analysis.enabled
         if was_running:
             self.pause_engine_analysis()
         old_engine = self.engine
@@ -364,14 +362,14 @@ class GuiCore(GuiCoreAnalysisMixin):
             self.engine = old_engine
             new_engine.close()
             if was_running:
-                self.sync_analysis()
+                self.restart_analysis()
             return False
         self.clear_all_cached_analysis()
         old_engine.close()
         # Switching engines converts any batch run to live analysis.
         self._exit_batch_mode()
         if was_running:
-            self.sync_analysis()
+            self.restart_analysis()
         return True
 
     def find_applied_move_index(self, col: int, row: int) -> Optional[int]:
@@ -406,8 +404,8 @@ class GuiCore(GuiCoreAnalysisMixin):
             pending_size=size,
             candidates=(),
             clear_analysis_cache=True,
+            clear_edit_history=True,
         )
-        self._clear_edit_history()
 
     def load_hexworld_text(self, text: str) -> Optional[str]:
         try:
@@ -494,8 +492,8 @@ class GuiCore(GuiCoreAnalysisMixin):
             MoveTree(),
             candidates=(),
             clear_analysis_cache=True,
+            clear_edit_history=True,
         )
-        self._clear_edit_history()
 
     def step_back(self) -> bool:
         return self.step_back_n(1)
@@ -721,8 +719,8 @@ class GuiCore(GuiCoreAnalysisMixin):
             board_size=self.session.pending_size,
             candidates=(),
             clear_analysis_cache=True,
+            clear_edit_history=True,
         )
-        self._clear_edit_history()
         return True
 
     def adjust_pending_size(self, delta: int) -> None:

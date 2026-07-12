@@ -137,7 +137,7 @@ class GuiCoreTests(unittest.TestCase):
         self.assertEqual(probe.history, list(core.applied_history()))
         self.assertEqual(probe.occ, core.board.occ)
         self.assertEqual(tuple(core.engine.played), core._engine_position_moves())
-        selection = core.session.candidate_selection
+        selection = core.session.analysis.candidate_selection
         self.assertEqual(bool(selection.candidates), selection.root_key is not None)
         if selection.candidates:
             self.assertEqual(selection.root_key, core.cache_key())
@@ -161,7 +161,7 @@ class GuiCoreTests(unittest.TestCase):
         before_future = core.mainline_tail_moves()
         before_variations = core.next_variation_moves()
         before_pending = core.session.pending_size
-        before_cache = dict(core.session.analysis_cache)
+        before_cache = dict(core.session.analysis.cache)
         before_n = core.board.n
         before_rev = core.board.rev
         before_calls = list(engine.calls)
@@ -173,7 +173,7 @@ class GuiCoreTests(unittest.TestCase):
         self.assertEqual(core.mainline_tail_moves(), before_future)
         self.assertEqual(core.next_variation_moves(), before_variations)
         self.assertEqual(core.session.pending_size, before_pending)
-        self.assertEqual(core.session.analysis_cache, before_cache)
+        self.assertEqual(core.session.analysis.cache, before_cache)
         self.assertEqual(engine.calls, before_calls)
 
     def _start_slow_batch(self, core: GuiCore, engine: FakeEngine, *, clear_live: bool = False):
@@ -192,7 +192,7 @@ class GuiCoreTests(unittest.TestCase):
 
         core.start_batch_analysis()
         core.tick(0.0)
-        run = core.session.analysis_mode
+        run = core.session.analysis.mode
         self.assertIsNotNone(run)
         return run
 
@@ -410,7 +410,7 @@ class GuiCoreTests(unittest.TestCase):
         core.try_play_move(1, 1)
         core.add_candidate(2, 2)
         core.set_analysis_enabled(True)
-        core.session.analysis_cache[core.cache_key()] = ["cached"]
+        core.session.analysis.cache[core.cache_key()] = ["cached"]
         new_engine = FakeEngine()
 
         self.assertTrue(core.replace_engine(new_engine))
@@ -418,8 +418,8 @@ class GuiCoreTests(unittest.TestCase):
         self.assertIs(core.engine, new_engine)
         self.assertIn(("close",), old_engine.calls)
         self.assertEqual(new_engine.played, [(Side.RED, 1, 1)])
-        self.assertEqual(core.session.candidate_selection.candidates, {(2, 2)})
-        self.assertFalse(core.session.analysis_cache)
+        self.assertEqual(core.session.analysis.candidate_selection.candidates, {(2, 2)})
+        self.assertFalse(core.session.analysis.cache)
         self.assertTrue(any(call[0] == "start_analysis" and len(call) == 4 for call in new_engine.calls))
 
     def test_replace_engine_failure_restores_old_engine(self):
@@ -447,8 +447,8 @@ class GuiCoreTests(unittest.TestCase):
         board = core.board
 
         core.add_candidate(1, 1)
-        self.assertTrue(core.session.candidate_selection.candidates)
-        root_key = core.session.candidate_selection.root_key
+        self.assertTrue(core.session.analysis.candidate_selection.candidates)
+        root_key = core.session.analysis.candidate_selection.root_key
         self.assertIsNotNone(root_key)
 
         board.place(Side.RED, 2, 2)
@@ -456,19 +456,19 @@ class GuiCoreTests(unittest.TestCase):
 
         cleared = core.check_candidate_root()
         self.assertTrue(cleared)
-        self.assertEqual(core.session.candidate_selection.candidates, set())
-        self.assertIsNone(core.session.candidate_selection.root_key)
+        self.assertEqual(core.session.analysis.candidate_selection.candidates, set())
+        self.assertIsNone(core.session.analysis.candidate_selection.root_key)
 
     def test_play_move_with_analysis_off_clears_invalid_candidates_immediately(self):
         core, _engine = self._mk_core()
 
         core.add_candidate(1, 1)
-        self.assertEqual(core.session.candidate_selection.candidates, {(1, 1)})
-        self.assertFalse(core.session.analysis_enabled)
+        self.assertEqual(core.session.analysis.candidate_selection.candidates, {(1, 1)})
+        self.assertFalse(core.session.analysis.enabled)
 
         self.assertTrue(core.try_play_move(1, 1))
-        self.assertEqual(core.session.candidate_selection.candidates, set())
-        self.assertIsNone(core.session.candidate_selection.root_key)
+        self.assertEqual(core.session.analysis.candidate_selection.candidates, set())
+        self.assertIsNone(core.session.analysis.candidate_selection.root_key)
 
     def test_merge_analysis_lists_keeps_order_and_uses_deeper_eval_metadata(self):
         core, _engine = self._mk_core()
@@ -536,15 +536,15 @@ class GuiCoreTests(unittest.TestCase):
         key0 = core.cache_key_for_moves([])
         key1 = core.cache_key_for_moves(self._path_moves(core)[:1])
         key2 = core.cache_key_for_moves(self._path_moves(core)[:2])
-        core.session.analysis_cache[key0] = ["a"]
-        core.session.analysis_cache[key1] = ["b"]
-        core.session.analysis_cache[key2] = ["c"]
+        core.session.analysis.cache[key0] = ["a"]
+        core.session.analysis.cache[key1] = ["b"]
+        core.session.analysis.cache[key2] = ["c"]
 
         core.delete_tail()  # removes last move; history length back to 1
 
-        self.assertIn(key0, core.session.analysis_cache)
-        self.assertIn(key1, core.session.analysis_cache)
-        self.assertIn(key2, core.session.analysis_cache)
+        self.assertIn(key0, core.session.analysis.cache)
+        self.assertIn(key1, core.session.analysis.cache)
+        self.assertIn(key2, core.session.analysis.cache)
 
     def test_branching_clears_future_entries_but_keeps_cache(self):
         core, _engine = self._mk_core()
@@ -555,16 +555,16 @@ class GuiCoreTests(unittest.TestCase):
         key0 = core.cache_key_for_moves([])
         key1 = core.cache_key_for_moves(self._path_moves(core)[:1])
         key2 = core.cache_key_for_moves(self._visible_line(core)[:2])
-        core.session.analysis_cache[key0] = ["a"]
-        core.session.analysis_cache[key1] = ["b"]
-        core.session.analysis_cache[key2] = ["c"]
+        core.session.analysis.cache[key0] = ["a"]
+        core.session.analysis.cache[key1] = ["b"]
+        core.session.analysis.cache[key2] = ["c"]
 
         core.try_play_move(3, 1)  # diverge, should clear future
 
         self.assertEqual(core.mainline_tail_moves(), [])
-        self.assertIn(key0, core.session.analysis_cache)
-        self.assertIn(key1, core.session.analysis_cache)
-        self.assertIn(key2, core.session.analysis_cache)
+        self.assertIn(key0, core.session.analysis.cache)
+        self.assertIn(key1, core.session.analysis.cache)
+        self.assertIn(key2, core.session.analysis.cache)
 
     def test_try_play_or_pass_creates_variation_without_promoting_mainline(self):
         cases = (
@@ -598,20 +598,20 @@ class GuiCoreTests(unittest.TestCase):
         key1 = core.cache_key_for_moves(self._path_moves(core)[:1])
         key2 = core.cache_key_for_moves(self._visible_line(core)[:2])
         key3 = core.cache_key_for_moves(self._visible_line(core)[:3])
-        core.session.analysis_cache[key0] = ["a"]
-        core.session.analysis_cache[key1] = ["b"]
-        core.session.analysis_cache[key2] = ["c"]
-        core.session.analysis_cache[key3] = ["d"]
+        core.session.analysis.cache[key0] = ["a"]
+        core.session.analysis.cache[key1] = ["b"]
+        core.session.analysis.cache[key2] = ["c"]
+        core.session.analysis.cache[key3] = ["d"]
 
         did = core.try_play_moves([(2, 1), (3, 1)])
 
         self.assertTrue(did)
         self.assertEqual(self._history_coords(core), [(1, 1), (2, 1), (3, 1)])
         self.assertEqual(core.mainline_tail_moves(), [])
-        self.assertIn(key0, core.session.analysis_cache)
-        self.assertIn(key1, core.session.analysis_cache)
-        self.assertIn(key2, core.session.analysis_cache)
-        self.assertIn(key3, core.session.analysis_cache)
+        self.assertIn(key0, core.session.analysis.cache)
+        self.assertIn(key1, core.session.analysis.cache)
+        self.assertIn(key2, core.session.analysis.cache)
+        self.assertIn(key3, core.session.analysis.cache)
 
     def test_try_play_or_pass_follows_existing_variation_without_promoting_mainline(self):
         cases = (
@@ -1104,7 +1104,7 @@ class GuiCoreTests(unittest.TestCase):
         core.try_play_move(3, 2)  # c2
         core.try_play_move(4, 2)  # d2
         stale_key = core.cache_key()
-        core.session.analysis_cache[stale_key] = [
+        core.session.analysis.cache[stale_key] = [
             AnalysisMove("a1", order=1, col=1, row=1, winrate=0.5, visits=100, prior=0.1, pv=None)
         ]
 
@@ -1113,7 +1113,7 @@ class GuiCoreTests(unittest.TestCase):
 
         self.assertTrue(did)
         self.assertNotEqual(core.cache_key(), stale_key)
-        self.assertIn(stale_key, core.session.analysis_cache)
+        self.assertIn(stale_key, core.session.analysis.cache)
         self.assertEqual(core.get_active_analysis(), [])
 
     def test_undo_redo_does_not_clear_analysis_cache(self):
@@ -1121,21 +1121,21 @@ class GuiCoreTests(unittest.TestCase):
 
         core.try_play_move(1, 1)
         key_before = core.cache_key()
-        core.session.analysis_cache[key_before] = ["a"]
+        core.session.analysis.cache[key_before] = ["a"]
 
         core.try_play_move(2, 1)
         key_after = core.cache_key()
-        core.session.analysis_cache[key_after] = ["b"]
+        core.session.analysis.cache[key_after] = ["b"]
 
         self.assertTrue(core.undo_edit())
         self.assertEqual(core.cache_key(), key_before)
-        self.assertEqual(core.session.analysis_cache[key_before], ["a"])
-        self.assertEqual(core.session.analysis_cache[key_after], ["b"])
+        self.assertEqual(core.session.analysis.cache[key_before], ["a"])
+        self.assertEqual(core.session.analysis.cache[key_after], ["b"])
 
         self.assertTrue(core.redo_edit())
         self.assertEqual(core.cache_key(), key_after)
-        self.assertEqual(core.session.analysis_cache[key_before], ["a"])
-        self.assertEqual(core.session.analysis_cache[key_after], ["b"])
+        self.assertEqual(core.session.analysis.cache[key_before], ["a"])
+        self.assertEqual(core.session.analysis.cache[key_after], ["b"])
 
     def test_undo_restores_candidates_and_candidate_analysis(self):
         core, engine = self._mk_core()
@@ -1154,21 +1154,21 @@ class GuiCoreTests(unittest.TestCase):
         core.tick(0.0)
 
         core.try_play_move(2, 1)
-        self.assertEqual(core.session.candidate_selection.candidates, set())
-        self.assertEqual(core.session.analysis_mode, AnalysisModeTag.LIVE)
+        self.assertEqual(core.session.analysis.candidate_selection.candidates, set())
+        self.assertEqual(core.session.analysis.mode, AnalysisModeTag.LIVE)
 
         self.assertTrue(core.undo_edit())
-        self.assertEqual(core.session.candidate_selection.candidates, {(1, 1)})
+        self.assertEqual(core.session.analysis.candidate_selection.candidates, {(1, 1)})
         self.assertEqual(core.candidate_result((1, 1)), (0.4, 5))
-        self.assertEqual(core.session.candidate_selection.root_key, core.cache_key())
-        self.assertEqual(core.session.analysis_mode, AnalysisModeTag.LIVE)
+        self.assertEqual(core.session.analysis.candidate_selection.root_key, core.cache_key())
+        self.assertEqual(core.session.analysis.mode, AnalysisModeTag.LIVE)
 
     def test_undo_after_cache_clear_restores_candidates_without_stale_analysis(self):
         core, _engine = self._mk_core()
 
         core.toggle_analysis()
         core.add_candidate(1, 1)
-        core.session.analysis_cache[core.cache_key()] = [
+        core.session.analysis.cache[core.cache_key()] = [
             AnalysisMove("a1", order=0, col=1, row=1, winrate=0.4, visits=5, prior=0.2, pv=None)
         ]
 
@@ -1176,9 +1176,9 @@ class GuiCoreTests(unittest.TestCase):
         core.clear_analysis_caches()
 
         self.assertTrue(core.undo_edit())
-        self.assertEqual(core.session.candidate_selection.candidates, {(1, 1)})
+        self.assertEqual(core.session.analysis.candidate_selection.candidates, {(1, 1)})
         self.assertEqual(core.candidate_result((1, 1)), (None, None))
-        self.assertEqual(core.session.candidate_selection.root_key, core.cache_key())
+        self.assertEqual(core.session.analysis.candidate_selection.root_key, core.cache_key())
 
     def test_undo_during_batch_exits_batch_mode(self):
         core, _engine = self._mk_core()
@@ -1190,7 +1190,7 @@ class GuiCoreTests(unittest.TestCase):
         self.assertTrue(core.is_batch_analysis_active())
         self.assertTrue(core.undo_edit())
         self.assertFalse(core.is_batch_analysis_active())
-        self.assertEqual(core.session.analysis_mode, AnalysisModeTag.LIVE)
+        self.assertEqual(core.session.analysis.mode, AnalysisModeTag.LIVE)
 
     def test_clear_analysis_caches_while_candidate_filter_keeps_candidates(self):
         core, _engine = self._mk_core()
@@ -1199,13 +1199,13 @@ class GuiCoreTests(unittest.TestCase):
         core.add_candidate(2, 2)
         core.set_analysis_enabled(True)
 
-        core.session.analysis_cache[core.cache_key_for_moves([])] = ["x"]
+        core.session.analysis.cache[core.cache_key_for_moves([])] = ["x"]
 
         core.clear_analysis_caches()
 
-        self.assertTrue(core.session.analysis_enabled)
-        self.assertEqual(core.session.candidate_selection.candidates, {(1, 1), (2, 2)})
-        self.assertEqual(core.session.analysis_cache, {})
+        self.assertTrue(core.session.analysis.enabled)
+        self.assertEqual(core.session.analysis.candidate_selection.candidates, {(1, 1), (2, 2)})
+        self.assertEqual(core.session.analysis.cache, {})
 
     def test_clear_analysis_caches_during_fast_batch_restarts_raw_nn_immediately(self):
         board = HexBoard(5)
@@ -1215,7 +1215,7 @@ class GuiCoreTests(unittest.TestCase):
         core.try_play_move(1, 1)
         core.start_batch_analysis(fast=True)
         core.tick(0.0)
-        run = core.session.analysis_mode
+        run = core.session.analysis.mode
 
         self.assertTrue(core.is_batch_analysis_active())
         self.assertTrue(engine.raw_capture_pending)
@@ -1243,7 +1243,7 @@ class GuiCoreTests(unittest.TestCase):
         core.tick(0.0)
 
         key = core.cache_key()
-        cached = core.session.analysis_cache[key]
+        cached = core.session.analysis.cache[key]
         self.assertEqual((cached[1].winrate, cached[1].visits), (0.4, 5))
 
         engine.analysis = [
@@ -1252,7 +1252,7 @@ class GuiCoreTests(unittest.TestCase):
         ]
         core.tick(0.1)
 
-        cached = core.session.analysis_cache[key]
+        cached = core.session.analysis.cache[key]
         self.assertEqual((cached[1].winrate, cached[1].visits), (0.45, 50))
 
     def test_fast_batch_actions_do_not_start_live_analysis(self):
@@ -1297,7 +1297,7 @@ class GuiCoreTests(unittest.TestCase):
                 core.try_play_move(3, 1)
                 core.step_back()
                 core.session.pending_size = 7
-                core.session.analysis_cache[core.cache_key_for_moves([])] = ["cached"]
+                core.session.analysis.cache[core.cache_key_for_moves([])] = ["cached"]
                 self._assert_tree_state(core, history=[(1, 1)], future=[(2, 1)], variations=[(3, 1)])
                 self._assert_failed_load_preserves_state(core, engine, getattr(core, method), text)
 
@@ -1321,7 +1321,7 @@ class GuiCoreTests(unittest.TestCase):
 
         cache_key = core.cache_key()
         cached = [AnalysisMove("a1", order=1, col=1, row=1, winrate=0.5, visits=10, prior=0.2, pv=None)]
-        core.session.analysis_cache[cache_key] = cached
+        core.session.analysis.cache[cache_key] = cached
         self.assertEqual(core.get_active_analysis(), cached)
 
         core.clear_all_cached_analysis()
@@ -1356,8 +1356,8 @@ class GuiCoreTests(unittest.TestCase):
         core.start_batch_analysis()
         new_calls = self._new_calls(engine, before)
 
-        self.assertTrue(core.session.analysis_enabled)
-        self.assertEqual(core.session.candidate_selection.candidates, set())
+        self.assertTrue(core.session.analysis.enabled)
+        self.assertEqual(core.session.analysis.candidate_selection.candidates, set())
         self.assertTrue(core.is_batch_analysis_active())
         self.assertTrue(any(call[0] == "start_analysis" for call in new_calls))
 
@@ -1396,7 +1396,7 @@ class GuiCoreTests(unittest.TestCase):
         self.assertEqual(len(core.board.history), 3)
         self.assertEqual(core.mainline_tail_moves(), [])
         self.assertFalse(core.is_batch_analysis_active())
-        self.assertFalse(core.session.analysis_enabled)
+        self.assertFalse(core.session.analysis.enabled)
 
     def test_batch_analysis_restarts_live_analysis_after_step_forward(self):
         core, engine = self._mk_core()
@@ -1506,7 +1506,7 @@ class GuiCoreTests(unittest.TestCase):
         core.delete_tail()
 
         self.assertFalse(core.is_batch_analysis_active())
-        self.assertTrue(core.session.analysis_enabled)
+        self.assertTrue(core.session.analysis.enabled)
         self.assertEqual(core.board.rev, before_rev)
         self.assertEqual(self._future_coords(core), [(3, 1)])
         self.assertEqual(self._history_coords(core), [])
@@ -1524,7 +1524,7 @@ class GuiCoreTests(unittest.TestCase):
         new_calls = self._new_calls(engine, before)
 
         self.assertFalse(core.is_batch_analysis_active())
-        self.assertTrue(core.session.analysis_enabled)
+        self.assertTrue(core.session.analysis.enabled)
         self.assertEqual(sum(1 for call in new_calls if call[0] == "start_analysis"), 1)
 
         before = len(engine.calls)
@@ -1546,7 +1546,7 @@ class GuiCoreTests(unittest.TestCase):
         new_calls = self._new_calls(engine, before)
 
         self.assertFalse(core.is_batch_analysis_active())
-        self.assertTrue(core.session.analysis_enabled)
+        self.assertTrue(core.session.analysis.enabled)
         self.assertEqual(sum(1 for call in new_calls if call[0] == "start_analysis"), 1)
 
         before = len(engine.calls)
@@ -1575,7 +1575,7 @@ class GuiCoreTests(unittest.TestCase):
 
         self.assertFalse(core.is_batch_analysis_active())
         self.assertEqual(engine.analysis, [])
-        self.assertNotIn(core.cache_key(), core.session.analysis_cache)
+        self.assertNotIn(core.cache_key(), core.session.analysis.cache)
 
     def test_analysis_enabled_transitions_are_idempotent(self):
         for with_candidates in (False, True):
@@ -1590,13 +1590,13 @@ class GuiCoreTests(unittest.TestCase):
                 core.set_analysis_enabled(True)
                 new_calls = self._new_calls(engine, before)
 
-                self.assertTrue(core.session.analysis_enabled)
+                self.assertTrue(core.session.analysis.enabled)
                 self.assertFalse(core.is_batch_analysis_active())
                 if with_candidates:
-                    self.assertEqual(core.session.candidate_selection.candidates, {(1, 1)})
+                    self.assertEqual(core.session.analysis.candidate_selection.candidates, {(1, 1)})
                     self.assertTrue(any(call[0] == "start_analysis" and len(call) == 4 for call in new_calls))
                 else:
-                    self.assertEqual(core.session.candidate_selection.candidates, set())
+                    self.assertEqual(core.session.analysis.candidate_selection.candidates, set())
                     self.assertTrue(any(call[0] == "start_analysis" for call in new_calls))
                 before = len(engine.calls)
                 core.set_analysis_enabled(True)
@@ -1606,10 +1606,10 @@ class GuiCoreTests(unittest.TestCase):
         core, engine = self._mk_core()
         self._start_slow_batch(core, engine)
         self.assertTrue(core.is_batch_analysis_active())
-        self.assertTrue(core.session.analysis_enabled)
+        self.assertTrue(core.session.analysis.enabled)
         core.toggle_analysis()
         core.tick(0.1)
-        self.assertFalse(core.session.analysis_enabled)
+        self.assertFalse(core.session.analysis.enabled)
         self.assertFalse(core.is_batch_analysis_active())
 
     def test_play_move_during_candidate_filter_cases(self):
@@ -1623,8 +1623,8 @@ class GuiCoreTests(unittest.TestCase):
             core.try_play_move(2, 2)
             new_calls = self._new_calls(engine, before)
 
-            self.assertTrue(core.session.analysis_enabled)
-            self.assertEqual(core.session.candidate_selection.candidates, set())
+            self.assertTrue(core.session.analysis.enabled)
+            self.assertEqual(core.session.analysis.candidate_selection.candidates, set())
             self.assertFalse(core.is_batch_analysis_active())
             self.assertTrue(any(call[0] == "start_analysis" for call in new_calls))
 
@@ -1660,7 +1660,7 @@ class GuiCoreTests(unittest.TestCase):
 
         self.assertNotIn(("play", Side.RED, 1, 1), engine.calls)
         self.assertIn(("start_analysis", Side.RED, 15, ((Side.RED, [(1, 1), (2, 1)]),)), engine.calls)
-        self.assertEqual(engine.params["analysisWideRootNoise"], core.session.analysis_wide_root_noise)
+        self.assertEqual(engine.params["analysisWideRootNoise"], core.session.analysis.wide_root_noise)
         self.assertEqual(core.get_top_move(), (None, 0))
 
         pv = ((1, 1), (3, 1))
@@ -1726,7 +1726,7 @@ class GuiCoreTests(unittest.TestCase):
                 new_calls = self._new_calls(engine, before)
                 self.assertTrue(any(call[0] == "clear_analysis" for call in new_calls))
                 self.assertTrue(any(call[0] == "start_analysis" for call in new_calls))
-                self.assertFalse(core.session.candidate_selection.candidates)
+                self.assertFalse(core.session.analysis.candidate_selection.candidates)
                 self.assertEqual(engine.analysis, [])
 
     def test_delete_tail_behavior(self):
@@ -1759,9 +1759,9 @@ class GuiCoreTests(unittest.TestCase):
         key0 = core.cache_key_for_moves([])
         key1 = core.cache_key_for_moves(self._path_moves(core)[:1])
         key2 = core.cache_key_for_moves(self._path_moves(core)[:2])
-        core.session.analysis_cache[key0] = ["a"]
-        core.session.analysis_cache[key1] = ["b"]
-        core.session.analysis_cache[key2] = ["c"]
+        core.session.analysis.cache[key0] = ["a"]
+        core.session.analysis.cache[key1] = ["b"]
+        core.session.analysis.cache[key2] = ["c"]
 
         core.go_first()
         self.assertTrue(core.mainline_tail_moves())
@@ -1769,9 +1769,9 @@ class GuiCoreTests(unittest.TestCase):
         core.delete_tail()
 
         self.assertEqual(core.mainline_tail_moves(), [])
-        self.assertIn(key0, core.session.analysis_cache)
-        self.assertIn(key1, core.session.analysis_cache)
-        self.assertIn(key2, core.session.analysis_cache)
+        self.assertIn(key0, core.session.analysis.cache)
+        self.assertIn(key1, core.session.analysis.cache)
+        self.assertIn(key2, core.session.analysis.cache)
 
 
 if __name__ == "__main__":

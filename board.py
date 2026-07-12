@@ -71,6 +71,13 @@ class HexBoard:
         out.history = list(self.history)
         return out
 
+    def replace_position(self, other: "HexBoard") -> None:
+        self._bump_rev()
+        self.n = other.n
+        self.edge_a, self.edge_b = other.edge_a, other.edge_b
+        self.occ = list(other.occ)
+        self.history = list(other.history)
+
     def in_bounds(self, col: int, row: int) -> bool:
         return 1 <= col <= self.n and 1 <= row <= self.n
 
