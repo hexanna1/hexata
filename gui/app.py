@@ -19,18 +19,21 @@ warnings.filterwarnings(
 
 import pygame
 
-from board import HexBoard
+from board import Board, GameType
 from engine import KataHexEngine
 from gui.core import DEFAULT_ANALYZE_INTERVAL_CS, GuiCore
 from gui.render import GuiRenderer
 
 logger = logging.getLogger(__name__)
+GAME_TYPES = tuple(GameType)
 
 
 @dataclass(frozen=True, slots=True)
 class EngineProfile:
     name: str
     cmd: tuple[str, ...]
+    game_type: GameType = GameType.HEX
+    is_default: bool = False
 
 
 @dataclass(slots=True)
@@ -60,7 +63,10 @@ class UiState:
 
     @property
     def has_multiple_engines(self) -> bool:
-        return len(self.engine_profiles) > 1
+        if not (0 <= self.current_engine_idx < len(self.engine_profiles)):
+            return False
+        current_game = self.engine_profiles[self.current_engine_idx].game_type
+        return sum(1 for profile in self.engine_profiles if profile.game_type == current_game) > 1
 
 
 @dataclass(slots=True)
@@ -74,6 +80,7 @@ class UiPrefs:
 
 
 def load_position_text(text: str, *, core: GuiCore, on_success: Callable[[], None]) -> bool:
+    # Full URLs are game-specific; paste should not switch game modes implicitly.
     hexworld_error = core.load_hexworld_text(text)
     if hexworld_error is None:
         on_success()
@@ -92,6 +99,77 @@ def load_position_text(text: str, *, core: GuiCore, on_success: Callable[[], Non
     return False
 
 
+def load_alternate_y_move_text(text: str, *, core: GuiCore, on_success: Callable[[], None]) -> bool:
+    alternate_y_error = core.load_alternate_y_move_format(text)
+    if alternate_y_error is None:
+        on_success()
+        return True
+    logger.info("%s", alternate_y_error)
+    return False
+
+
+def _engine_indexes_for_game(ui: UiState, game_type: GameType) -> list[int]:
+    return [
+        i
+        for i, profile in enumerate(ui.engine_profiles)
+        if profile.game_type == game_type
+    ]
+
+
+def _default_engine_index(ui: UiState, game_type: GameType) -> Optional[int]:
+    indexes = _engine_indexes_for_game(ui, game_type)
+    if not indexes:
+        return None
+    for i in indexes:
+        if ui.engine_profiles[i].is_default:
+            return i
+    return indexes[0]
+
+
+def _reset_engine_speed(ui: UiState) -> None:
+    ui.speed_last_t = None
+    ui.speed_last_total = None
+    ui.speed_vps = None
+
+
+def _start_engine(profile: EngineProfile, *, board_size: int, engine_echo: bool) -> KataHexEngine:
+    return KataHexEngine(
+        board_size=board_size,
+        cmd=list(profile.cmd),
+        game_type=profile.game_type,
+        engine_echo=engine_echo,
+        suppress_stderr=True,
+    )
+
+
+def _switch_engine_profile(
+    core: GuiCore,
+    ui: UiState,
+    *,
+    profile_idx: int,
+    engine_echo: bool,
+) -> bool:
+    profile = ui.engine_profiles[profile_idx]
+    try:
+        new_engine = _start_engine(
+            profile,
+            board_size=core.board.n,
+            engine_echo=engine_echo,
+        )
+    except (OSError, RuntimeError) as exc:
+        logger.warning("Engine switch to %s failed: %s", profile.name, exc)
+        return False
+
+    if not core.replace_engine(new_engine):
+        return False
+
+    ui.current_engine_idx = profile_idx
+    _reset_engine_speed(ui)
+    # Runtime engine cycling is session-only; the configured per-game default
+    # remains the startup engine instead of being rewritten from the GUI.
+    return True
+
+
 def cycle_engine_profile(
     core: GuiCore,
     ui: UiState,
@@ -99,43 +177,66 @@ def cycle_engine_profile(
     direction: int = 1,
     engine_echo: bool,
 ) -> bool:
-    if len(ui.engine_profiles) <= 1:
-        return False
     if direction not in (-1, 1):
         raise ValueError(f"Invalid engine cycle direction: {direction}")
-
-    new_engine = None
-    next_idx = ui.current_engine_idx
-    for offset in range(1, len(ui.engine_profiles)):
-        next_idx = (ui.current_engine_idx + direction * offset) % len(ui.engine_profiles)
-        profile = ui.engine_profiles[next_idx]
-        try:
-            new_engine = KataHexEngine(
-                board_size=core.board.n,
-                cmd=list(profile.cmd),
-                engine_echo=engine_echo,
-                suppress_stderr=True,
-            )
-            break
-        except (OSError, RuntimeError) as exc:
-            logger.warning("Engine switch to %s failed: %s", profile.name, exc)
-    if new_engine is None:
+    indexes = _engine_indexes_for_game(ui, core.board.game_type)
+    if len(indexes) <= 1:
         return False
 
-    if not core.replace_engine(new_engine):
-        return False
+    if ui.current_engine_idx in indexes:
+        current_pos = indexes.index(ui.current_engine_idx)
+        candidates = [
+            indexes[(current_pos + direction * offset) % len(indexes)]
+            for offset in range(1, len(indexes))
+        ]
+    else:
+        candidates = indexes[::direction]
+    for next_idx in candidates:
+        if _switch_engine_profile(
+            core,
+            ui,
+            profile_idx=next_idx,
+            engine_echo=engine_echo,
+        ):
+            return True
+    return False
 
-    ui.current_engine_idx = next_idx
-    ui.speed_last_t = None
-    ui.speed_last_total = None
-    ui.speed_vps = None
-    # Runtime engine cycling is intentionally session-only; config.default_engine
-    # remains the startup default instead of being rewritten from the GUI.
+
+def switch_game_type(core: GuiCore, ui: UiState, game_type: GameType, *, engine_echo: bool) -> bool:
+    if game_type == core.board.game_type:
+        return False
+    profile_idx = _default_engine_index(ui, game_type)
+    if profile_idx is None:
+        logger.warning("No engine configured for %s", game_type.value)
+        return False
+    profile = ui.engine_profiles[profile_idx]
+    try:
+        new_engine = _start_engine(
+            profile,
+            board_size=core.board.n,
+            engine_echo=engine_echo,
+        )
+    except (OSError, RuntimeError) as exc:
+        logger.warning("Engine switch to %s failed: %s", profile.name, exc)
+        return False
+    if not core.switch_game_type(new_engine):
+        return False
+    ui.current_engine_idx = profile_idx
+    _reset_engine_speed(ui)
     return True
 
 
+def next_configured_game_type(core: GuiCore, ui: UiState) -> Optional[GameType]:
+    current_idx = GAME_TYPES.index(core.board.game_type)
+    for offset in range(1, len(GAME_TYPES)):
+        game_type = GAME_TYPES[(current_idx + offset) % len(GAME_TYPES)]
+        if _default_engine_index(ui, game_type) is not None:
+            return game_type
+    return None
+
+
 def run_gui(
-    board: HexBoard,
+    board: Board,
     engine: KataHexEngine,
     *,
     engine_profiles: tuple[EngineProfile, ...],
@@ -235,6 +336,12 @@ def run_gui(
             return
         load_position_text(text, core=core, on_success=relayout_after_load)
 
+    def load_alternate_y_from_clipboard() -> None:
+        text = get_clipboard_text()
+        if not text:
+            return
+        load_alternate_y_move_text(text, core=core, on_success=relayout_after_load)
+
     def copy_hexworld_url() -> None:
         url = core.build_hexworld_url()
         set_clipboard_text(url)
@@ -302,8 +409,14 @@ def run_gui(
         elif ev.key == pygame.K_o and has_shift and not has_ctrl:
             ui.prefs.toggle_board_orientation()
             renderer.set_board_orientation(ui.prefs.board_orientation)
+        elif ev.key == pygame.K_g and has_shift and not has_ctrl:
+            next_type = next_configured_game_type(core, ui)
+            if next_type is not None and switch_game_type(core, ui, next_type, engine_echo=engine_echo):
+                renderer.apply_window_size(*pygame.display.get_window_size())
         elif ev.key == pygame.K_n and (mods & pygame.KMOD_SHIFT) and not has_ctrl:
             core.new_game()
+        elif ev.key == pygame.K_v and has_ctrl and has_shift:
+            load_alternate_y_from_clipboard()
         elif ev.key == pygame.K_v and has_ctrl:
             load_from_clipboard()
         elif ev.key == pygame.K_c and has_ctrl and (mods & pygame.KMOD_SHIFT):
@@ -522,7 +635,7 @@ def run_gui(
 
     current_engine_idx = 0
     for i, profile in enumerate(engine_profiles):
-        if profile.name == current_engine_name:
+        if profile.game_type == board.game_type and profile.name == current_engine_name:
             current_engine_idx = i
             break
 

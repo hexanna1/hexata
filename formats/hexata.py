@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from board import HexBoard, Move, MoveKind, Side, coord_to_human
+from board import Board, GameType, Move, MoveKind, Side, coord_to_human
+from formats.hexworld import IGNORED_HEXWORLD_TOKENS, parse_hexworld_prefix
 from history_tree import HistoryNode, MoveTree
 
 
@@ -76,6 +77,7 @@ def build_hexata_format(size: int, tree: MoveTree) -> str:
 @dataclass(slots=True)
 class _Parser:
     text: str
+    game_type: GameType = GameType.HEX
     pos: int = field(init=False, default=0)
     tree: MoveTree = field(init=False, default_factory=MoveTree)
     size: int = field(init=False, default=0)
@@ -86,18 +88,22 @@ class _Parser:
             raise ValueError("Move text is empty")
         if any(ch.isspace() for ch in self.text):
             raise ValueError("Whitespace is not allowed in move text")
-        size_start = self.pos
-        while self.pos < len(self.text) and self.text[self.pos].isdigit():
-            self.pos += 1
-        if self.pos == size_start:
-            raise ValueError("Move text must start with board size")
-        self.size = int(self.text[:self.pos])
+        prefix_end = self.text.find(",")
+        if prefix_end < 0:
+            raise ValueError("Move text must include a board prefix")
+        cols, rows, _configs = parse_hexworld_prefix(self.text[:prefix_end])
+        if cols != rows:
+            raise ValueError(f"Non-square boards are not supported: {cols}x{rows}")
+        self.size = cols
+        self.pos = prefix_end
         self._consume(",")
+        self._consume_ignored_tokens()
         if self._peek() == ",":
             self._mark_cursor(self.tree.root)
             self._consume(",")
+            self._consume_ignored_tokens()
         if self.pos < len(self.text):
-            self._parse_line(self.tree.root, HexBoard(self.size), Side.RED)
+            self._parse_line(self.tree.root, Board(self.size, self.game_type), Side.RED)
         if self.pos != len(self.text):
             raise ValueError(f"Unexpected trailing text at position {self.pos + 1}")
         self.tree.cursor = self.cursor_node or _mainline_tail_node(self.tree)
@@ -118,7 +124,16 @@ class _Parser:
             raise ValueError("Only one cursor marker is allowed")
         self.cursor_node = node
 
-    def _parse_move_token(self, board: HexBoard, side: Side) -> Move:
+    def _consume_ignored_tokens(self) -> None:
+        while True:
+            for token in IGNORED_HEXWORLD_TOKENS:
+                if self.text.startswith(token, self.pos):
+                    self.pos += len(token)
+                    break
+            else:
+                return
+
+    def _parse_move_token(self, board: Board, side: Side) -> Move:
         if self.pos >= len(self.text):
             raise ValueError("Unexpected end of move text")
         if self.text.startswith(":p", self.pos):
@@ -150,13 +165,14 @@ class _Parser:
             col = (col * 26) + (ord(ch) - ord("a") + 1)
         return Move.place(side=side, col=col, row=row)
 
-    def _parse_line(self, parent: HistoryNode, board: HexBoard, side: Side) -> None:
+    def _parse_line(self, parent: HistoryNode, board: Board, side: Side) -> None:
         saw_move = False
         current_parent = parent
         current_board = board.copy()
         current_side = side
 
         while True:
+            self._consume_ignored_tokens()
             ch = self._peek()
             if ch is None or ch == ")":
                 break
@@ -170,11 +186,15 @@ class _Parser:
             if not current_board.apply_move(mv):
                 raise ValueError(f"Illegal move in tree text: {_move_to_token(mv)}")
             saw_move = True
+            self._consume_ignored_tokens()
             if self._peek() == ",":
                 self._mark_cursor(child)
                 self._consume(",")
 
-            while self._peek() == "(":
+            while True:
+                self._consume_ignored_tokens()
+                if self._peek() != "(":
+                    break
                 self._consume("(")
                 self._parse_line(current_parent, before_move, current_side)
                 self._consume(")")
@@ -186,8 +206,10 @@ class _Parser:
             raise ValueError("Empty variation is not allowed")
 
 
-def parse_hexata_format(text: str) -> tuple[int, MoveTree]:
+def parse_hexata_format(
+    text: str, *, game_type: GameType | str = GameType.HEX
+) -> tuple[int, MoveTree]:
     try:
-        return _Parser(text=text).parse()
+        return _Parser(text=text, game_type=GameType.parse(game_type)).parse()
     except RecursionError as exc:
         raise ValueError("Move text nesting too deep") from exc

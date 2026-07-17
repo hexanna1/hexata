@@ -2,7 +2,7 @@ import unittest
 import sys
 from unittest import mock
 
-from board import HexBoard, Move, MoveKind, Side
+from board import Board, GameType, Move, MoveKind, Side
 from engine import AnalysisMove
 from gui.core import GuiCore
 from gui.state import AnalysisModeTag
@@ -10,7 +10,9 @@ from formats import hexata
 
 
 class FakeEngine:
-    def __init__(self):
+    def __init__(self, game_type=GameType.HEX, board_n=5):
+        self.game_type = game_type
+        self.board_n = board_n
         self.calls = []
         self.analysis = []
         self.params = {}
@@ -55,6 +57,7 @@ class FakeEngine:
         self.played = []
 
     def set_board_size(self, n):
+        self.board_n = n
         self.calls.append(("set_board_size", n))
 
     def get_analysis(self):
@@ -85,8 +88,14 @@ class RawCaptureBlockingEngine(FakeEngine):
 
 class GuiCoreTests(unittest.TestCase):
     def _mk_core(self):
-        board = HexBoard(5)
+        board = Board(5)
         engine = FakeEngine()
+        core = GuiCore(board, engine)
+        return core, engine
+
+    def _mk_y_core(self):
+        board = Board(5, GameType.Y)
+        engine = FakeEngine(GameType.Y)
         core = GuiCore(board, engine)
         return core, engine
 
@@ -119,6 +128,37 @@ class GuiCoreTests(unittest.TestCase):
     def _visible_line(self, core: GuiCore):
         return list(core.visible_line_moves())
 
+    def test_y_board_uses_triangular_legal_cells(self):
+        board = Board(5, GameType.Y)
+
+        self.assertTrue(board.in_bounds(1, 1))
+        self.assertTrue(board.in_bounds(5, 1))
+        self.assertTrue(board.in_bounds(1, 5))
+        self.assertFalse(board.in_bounds(5, 2))
+        self.assertFalse(board.place(Side.RED, 5, 2))
+        self.assertEqual(len(list(board.legal_cells())), 15)
+
+    def test_y_swap_reconciles_engine_with_swapped_color_same_coordinate(self):
+        core, engine = self._mk_y_core()
+
+        self.assertTrue(core.try_play_move(3, 1))
+        self.assertTrue(core.try_swap_move())
+        core.toggle_analysis()
+
+        self.assertEqual(core.board.get(3, 1), int(Side.BLUE))
+        self.assertNotIn(("clear_board",), engine.calls)
+        self.assertEqual(engine.calls.count(("undo",)), 1)
+        self.assertEqual(engine.played, [(Side.BLUE, 3, 1)])
+        self.assertIn(("start_analysis", Side.RED, core.analyze_interval_cs), engine.calls)
+
+    def test_load_alternate_y_move_format_maps_bottom_letter_bands_to_internal_rows(self):
+        core, _engine = self._mk_y_core()
+
+        error = core.load_alternate_y_move_format("1. e1 2. e5 3. d1 4. a1")
+
+        self.assertIsNone(error)
+        self.assertEqual(self._history_coords(core), [(1, 1), (5, 1), (1, 2), (1, 5)])
+
     def _movelist_rows(self, core: GuiCore):
         view = core.build_movelist_view()
         rows = [
@@ -131,7 +171,7 @@ class GuiCoreTests(unittest.TestCase):
         return rows, view.focus_row
 
     def _assert_tree_state(self, core: GuiCore, *, history=None, future=None, variations=None):
-        probe = HexBoard(core.board.n)
+        probe = Board(core.board.n, core.board.game_type)
         for mv in core.current_path_moves():
             self.assertTrue(probe.apply_move(mv))
         self.assertEqual(probe.history, list(core.applied_history()))
@@ -441,6 +481,41 @@ class GuiCoreTests(unittest.TestCase):
 
         self.assertIs(core.engine, engine)
         self.assertEqual(engine.calls, before_calls)
+
+    def test_switch_game_type_commits_a_complete_session_reset(self):
+        core, old_engine = self._mk_core()
+        core.try_play_move(1, 1)
+        core.add_candidate(2, 2)
+        core.set_analysis_enabled(True)
+        core.session.analysis.cache[core.cache_key()] = ["cached"]
+        core.session.analysis.root_eval_cache[core.cache_key()] = 0.5
+        old_call_count = len(old_engine.calls)
+        new_engine = FakeEngine(GameType.Y)
+
+        self.assertTrue(core.switch_game_type(new_engine))
+
+        self.assertIs(core.engine, new_engine)
+        self.assertEqual(core.board.game_type, GameType.Y)
+        self.assertEqual(core.board.n, 5)
+        self.assertEqual(core.session.pending_size, 5)
+        self.assertEqual(core.current_path_moves(), [])
+        self.assertEqual(core.board.history, [])
+        self.assertFalse(core.session.analysis.candidate_selection.candidates)
+        self.assertFalse(core.session.analysis.cache)
+        self.assertFalse(core.session.analysis.root_eval_cache)
+        self.assertFalse(core.session.edit_undo)
+        self.assertEqual(
+            old_engine.calls[old_call_count:],
+            [("stop_analysis",), ("clear_analysis",), ("close",)],
+        )
+        self.assertEqual(
+            new_engine.calls,
+            [
+                ("clear_analysis",),
+                ("kata_set_param", "analysisWideRootNoise", 0.04),
+                ("start_analysis", Side.RED, core.analyze_interval_cs),
+            ],
+        )
 
     def test_candidate_root_key_invalidation(self):
         core, _engine = self._mk_core()
@@ -908,7 +983,7 @@ class GuiCoreTests(unittest.TestCase):
         text = core.build_hexata_format()
         self.assertEqual(text, "5,c2(b1,):p(:se4)")
 
-        loaded = GuiCore(HexBoard(6), FakeEngine())
+        loaded = GuiCore(Board(6), FakeEngine())
         error = loaded.load_hexata_format(text)
 
         self.assertIsNone(error)
@@ -979,7 +1054,7 @@ class GuiCoreTests(unittest.TestCase):
         sys.setrecursionlimit(recursion_limit)
         try:
             board_size = 8
-            core = GuiCore(HexBoard(board_size), FakeEngine())
+            core = GuiCore(Board(board_size), FakeEngine())
             total = 0
             for row in range(1, board_size + 1):
                 for col in range(1, board_size + 1):
@@ -1208,7 +1283,7 @@ class GuiCoreTests(unittest.TestCase):
         self.assertEqual(core.session.analysis.cache, {})
 
     def test_clear_analysis_caches_during_fast_batch_restarts_raw_nn_immediately(self):
-        board = HexBoard(5)
+        board = Board(5)
         engine = RawCaptureBlockingEngine()
         core = GuiCore(board, engine)
 

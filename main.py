@@ -8,7 +8,13 @@ import logging
 import os
 import shlex
 
-from board import DEFAULT_BOARD_SIZE, MAX_BOARD_SIZE, MIN_BOARD_SIZE, HexBoard
+from board import (
+    DEFAULT_BOARD_SIZE,
+    MAX_BOARD_SIZE,
+    MIN_BOARD_SIZE,
+    Board,
+    GameType,
+)
 from cli import add_cli_arguments, run_cli
 from engine import KataHexEngine
 from gui.app import EngineProfile, UiPrefs, run_gui
@@ -40,51 +46,82 @@ def _load_config_parser(base_dir: str) -> tuple[configparser.ConfigParser, str]:
 
 
 def _engine_profiles_from_parser(parser: configparser.ConfigParser) -> tuple[EngineProfile, ...]:
+    game_sections = {f"engine.{game_type.value}" for game_type in GameType}
+    default_names = {
+        game_type: parser.get(
+            f"engine.{game_type.value}",
+            "default",
+            fallback="",
+        ).strip()
+        for game_type in GameType
+    }
     profiles: list[EngineProfile] = []
     for section in parser.sections():
         if not section.startswith("engine."):
             continue
-        name = section[len("engine.") :].strip()
+        parts = section.split(".")
+        if section in game_sections:
+            continue
+        if len(parts) != 3:
+            raise ValueError("Engine sections must be [engine.<game>.<name>]")
+        game_type = GameType.parse(parts[1])
+        name = parts[2].strip()
         if not name:
-            raise ValueError("Empty [engine.<name>] section in config.ini")
+            raise ValueError("Empty [engine.<game>.<name>] section in config.ini")
         profiles.append(
             EngineProfile(
                 name=name,
                 cmd=tuple(_expand_cmd(_require_config_value(parser, section, "cmd"))),
+                game_type=game_type,
+                is_default=(name == default_names[game_type]),
             )
         )
     if not profiles:
-        raise ValueError("Missing [engine.<name>] cmd in config.ini")
+        raise ValueError("Missing [engine.<game>.<name>] cmd in config.ini")
+    for game_type, default_name in default_names.items():
+        if default_name and not any(
+            profile.game_type == game_type and profile.name == default_name
+            for profile in profiles
+        ):
+            raise ValueError(f"Unknown engine.{game_type.value}.default in config.ini: {default_name}")
     return tuple(profiles)
 
 
 def _select_engine_profile(
-    parser: configparser.ConfigParser,
     profiles: tuple[EngineProfile, ...],
     *,
+    game_type: GameType,
     requested_name: str | None = "",
 ) -> EngineProfile:
     requested = (requested_name or "").strip()
-    target_name = requested or parser.get("engine", "default_engine", fallback="").strip()
-    if not target_name:
-        return profiles[0]
-    for profile in profiles:
-        if profile.name == target_name:
-            return profile
+    compatible = [profile for profile in profiles if profile.game_type == game_type]
+    if not compatible:
+        raise ValueError(f"Missing [engine.{game_type.value}.<name>] cmd in config.ini")
     if requested:
-        raise ValueError(f"Unknown CLI engine profile in config.ini: {requested}")
-    raise ValueError(f"Unknown engine.default_engine in config.ini: {target_name}")
+        for profile in compatible:
+            if profile.name == requested:
+                return profile
+        raise ValueError(
+            f"Unknown {game_type.value} CLI engine profile in config.ini: {requested}"
+        )
+    return next((profile for profile in compatible if profile.is_default), compatible[0])
 
 
 def _emit_engine_config_error(exc: Exception, *, json_mode: bool) -> int:
     msg = f"Engine config error: {exc}"
     print(json.dumps({"ok": False, "error": msg}) if json_mode else msg)
     if not json_mode:
-        print("Edit config.ini and set [engine.<name>].cmd to your KataHex command.")
+        print("Edit config.ini and set [engine.<game>.<name>].cmd.")
     return 1
 
 
-def _save_ui_prefs(config_local_path: str, prefs: UiPrefs, *, board_size: int) -> None:
+def _save_ui_prefs(
+    config_local_path: str,
+    prefs: UiPrefs,
+    *,
+    board_size: int,
+    game_type: GameType,
+) -> None:
     parser = configparser.ConfigParser(interpolation=None)
     parser.read([config_local_path])
 
@@ -96,6 +133,7 @@ def _save_ui_prefs(config_local_path: str, prefs: UiPrefs, *, board_size: int) -
     if not parser.has_section("game"):
         parser.add_section("game")
     parser.set("game", "size", str(max(MIN_BOARD_SIZE, min(MAX_BOARD_SIZE, board_size))))
+    parser.set("game", "type", game_type.value)
     with open(config_local_path, "w", encoding="utf-8") as f:
         parser.write(f)
 
@@ -105,6 +143,10 @@ def _load_board_orientation(parser: configparser.ConfigParser, default: str) -> 
     if value not in ("flat", "diamond"):
         raise ValueError("ui.board_orientation must be flat or diamond")
     return value
+
+
+def _load_game_type(parser: configparser.ConfigParser) -> GameType:
+    return GameType.parse(parser.get("game", "type", fallback=GameType.HEX.value))
 
 
 def _load_gui_runtime_config(parser: configparser.ConfigParser) -> tuple[int, UiPrefs]:
@@ -136,6 +178,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     cli_ap = subparsers.add_parser("cli", help="CLI analysis tools for HexWorld positions")
+    cli_ap.add_argument(
+        "--game",
+        choices=[game_type.value for game_type in GameType],
+        default=GameType.HEX.value,
+        help="Game to analyze (default: hex)",
+    )
     add_cli_arguments(cli_ap)
     return ap
 
@@ -148,22 +196,23 @@ def main() -> int:
     try:
         parser, config_local_path = _load_config_parser(base_dir)
         engine_profiles = _engine_profiles_from_parser(parser)
+        game_type = GameType.parse(args.game) if args.mode == "cli" else _load_game_type(parser)
         if args.mode == "cli" and getattr(args, "cli_cmd", "") == "match":
             selected_engine = None
             selected_engine_a = _select_engine_profile(
-                parser,
                 engine_profiles,
+                game_type=game_type,
                 requested_name=getattr(args, "engine_a", ""),
             )
             selected_engine_b = _select_engine_profile(
-                parser,
                 engine_profiles,
+                game_type=game_type,
                 requested_name=getattr(args, "engine_b", ""),
             )
         else:
             selected_engine = _select_engine_profile(
-                parser,
                 engine_profiles,
+                game_type=game_type,
                 requested_name=getattr(args, "engine", ""),
             )
             selected_engine_a = None
@@ -178,8 +227,9 @@ def main() -> int:
                 args,
                 engine_a_cmd=list(selected_engine_a.cmd),
                 engine_b_cmd=list(selected_engine_b.cmd),
+                game_type=game_type,
             )
-        return run_cli(args, engine_cmd=list(selected_engine.cmd))
+        return run_cli(args, engine_cmd=list(selected_engine.cmd), game_type=game_type)
 
     try:
         size, ui_prefs = _load_gui_runtime_config(parser)
@@ -187,13 +237,14 @@ def main() -> int:
         print(f"Config error: {exc}")
         return 1
 
-    board = HexBoard(size)
+    board = Board(size, game_type)
     exit_code = 0
 
     try:
         engine = KataHexEngine(
             board_size=size,
             cmd=list(selected_engine.cmd),
+            game_type=game_type,
             engine_echo=args.engine_echo,
             suppress_stderr=True,
         )
@@ -213,7 +264,12 @@ def main() -> int:
     except KeyboardInterrupt:
         exit_code = 130
     finally:
-        _save_ui_prefs(config_local_path, ui_prefs, board_size=board.n)
+        _save_ui_prefs(
+            config_local_path,
+            ui_prefs,
+            board_size=board.n,
+            game_type=board.game_type,
+        )
 
     return exit_code
 

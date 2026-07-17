@@ -5,7 +5,7 @@ import struct
 from dataclasses import dataclass, replace
 from typing import List, Optional, Sequence, Tuple
 
-from board import HexBoard, Move, MoveKind, Side, coord_to_human
+from board import Board, Move, MoveKind, Side, coord_to_human
 from engine import AnalysisMove
 from gui.state import (
     AnalysisModeTag,
@@ -43,24 +43,27 @@ class GuiCoreAnalysisMixin:
         moves = self.current_path_moves()
         return len(moves) >= 2 and moves[1].kind == MoveKind.SWAP
 
+    def swap_transpose_active(self) -> bool:
+        return self.swap_active() and self.board.game_type.swap_transposes
+
     def map_side_to_engine(self, side: Side) -> Side:
-        if self.swap_active():
+        if self.swap_transpose_active():
             return self.flip_side(side)
         return side
 
     def map_coords_to_engine(self, col: int, row: int) -> Tuple[int, int]:
-        if self.swap_active():
+        if self.swap_transpose_active():
             return (row, col)
         return (col, row)
 
     def map_coords_from_engine(self, col: int, row: int) -> Tuple[int, int]:
-        if self.swap_active():
+        if self.swap_transpose_active():
             return (row, col)
         return (col, row)
 
     def get_engine_analysis(self) -> List[AnalysisMove]:
         recs = self.engine.get_analysis()
-        if not self.swap_active():
+        if not self.swap_transpose_active():
             return recs
 
         out: List[AnalysisMove] = []
@@ -99,7 +102,7 @@ class GuiCoreAnalysisMixin:
         return r.winrate is not None and r.visits is not None and r.visits > 0
 
     def _materialized_history_for_moves(self, moves: Sequence[Move]) -> tuple[Move, ...]:
-        probe = HexBoard(self.board.n)
+        probe = Board(self.board.n, self.board.game_type)
         for mv in moves:
             if not probe.apply_move(mv):
                 raise AssertionError(f"Illegal move sequence for cache key: {moves!r}")
@@ -117,6 +120,7 @@ class GuiCoreAnalysisMixin:
     def _hash_applied_history(self, moves: Sequence[Move]) -> bytes:
         side = Side.RED if not moves else self.flip_side(moves[-1].side)
         h = hashlib.blake2b(digest_size=16)
+        h.update(self.board.game_type.value.encode("ascii") + b"\0")
         h.update(struct.pack("<IB", self.board.n, int(side)))
         for mv in moves:
             kind, mv_side, col, row = self._cache_move_token(mv)

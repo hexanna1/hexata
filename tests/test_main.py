@@ -13,55 +13,59 @@ class MainTests(unittest.TestCase):
     def test_select_engine_profile_defaults_to_first(self):
         parser = self._parser(
             """
-[engine.beta]
+[engine.hex.beta]
 cmd = beta
 
-[engine.alpha]
+[engine.hex.alpha]
 cmd = alpha
 """
         )
 
         profiles = main._engine_profiles_from_parser(parser)
-        selected = main._select_engine_profile(parser, profiles)
+        selected = main._select_engine_profile(profiles, game_type=main.GameType.HEX)
 
         self.assertEqual([p.name for p in profiles], ["beta", "alpha"])
         self.assertEqual(selected.name, "beta")
 
-    def test_select_engine_profile_uses_default_engine(self):
+    def test_select_engine_profile_uses_game_default(self):
         parser = self._parser(
             """
-[engine]
-default_engine = alpha
+[engine.hex]
+default = alpha
 
-[engine.beta]
+[engine.hex.beta]
 cmd = beta
 
-[engine.alpha]
+[engine.hex.alpha]
 cmd = alpha
 """
         )
 
         profiles = main._engine_profiles_from_parser(parser)
-        selected = main._select_engine_profile(parser, profiles)
+        selected = main._select_engine_profile(profiles, game_type=main.GameType.HEX)
 
         self.assertEqual(selected.name, "alpha")
 
     def test_select_engine_profile_uses_requested_name(self):
         parser = self._parser(
             """
-[engine]
-default_engine = alpha
+[engine.hex]
+default = alpha
 
-[engine.beta]
+[engine.hex.beta]
 cmd = beta
 
-[engine.alpha]
+[engine.hex.alpha]
 cmd = alpha
 """
         )
 
         profiles = main._engine_profiles_from_parser(parser)
-        selected = main._select_engine_profile(parser, profiles, requested_name="beta")
+        selected = main._select_engine_profile(
+            profiles,
+            game_type=main.GameType.HEX,
+            requested_name="beta",
+        )
 
         self.assertEqual(selected.name, "beta")
 

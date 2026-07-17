@@ -2,12 +2,20 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Callable, List, Optional, Protocol, Tuple
+from typing import Callable, Iterable, List, Optional, Protocol, Tuple
 
 import pygame
 import pygame.freetype
 
-from board import HexBoard, Move, MoveKind, Side, col_to_human_letters, coord_to_human
+from board import (
+    Board,
+    GameType,
+    Move,
+    MoveKind,
+    Side,
+    col_to_human_letters,
+    coord_to_human,
+)
 from engine import AnalysisMove
 from gui.core import GuiCore
 from gui.state import SessionState
@@ -20,6 +28,7 @@ TEXT_MUTED = (132, 132, 132)
 SURFACE_BG = (237, 230, 217)
 BOARD_EMPTY = (228, 216, 194)
 LINE = (130, 118, 100)
+Y_SIDE = (82, 82, 82)
 HELP_HEADER = tuple((RED[i] + BLUE[i]) // 2 for i in range(3))
 
 
@@ -123,30 +132,18 @@ class BoardProjection:
     ) -> List[Tuple[int, int]]:
         return [self.corner(origin_x, origin_y, r, ax, ay, i) for i in range(6)]
 
-    def board_bounds(self, n: int, r: int) -> Tuple[float, float, float, float]:
+    def cell_bounds(
+        self, cells: Iterable[Tuple[int, int]], r: int
+    ) -> Tuple[float, float, float, float]:
         xs: List[float] = []
         ys: List[float] = []
-        for ay in (0, n - 1):
-            for ax in (0, n - 1):
-                cx, cy = self.center(0.0, 0.0, r, ax, ay)
-                for deg in self.corner_degrees:
-                    a = math.radians(deg)
-                    xs.append(cx + r * math.cos(a))
-                    ys.append(cy + r * math.sin(a))
+        for ax, ay in cells:
+            cx, cy = self.center(0.0, 0.0, r, ax, ay)
+            for deg in self.corner_degrees:
+                a = math.radians(deg)
+                xs.append(cx + r * math.cos(a))
+                ys.append(cy + r * math.sin(a))
         return min(xs), min(ys), max(xs), max(ys)
-
-    def board_size(self, n: int, r: int) -> Tuple[float, float]:
-        left, top, right, bottom = self.board_bounds(n, r)
-        return right - left, bottom - top
-
-    def layout_size(self, n: int, r: int) -> Tuple[float, float]:
-        board_w, board_h = self.board_size(n, r)
-        label_pad = LABEL_PAD_K * r
-        return board_w + label_pad, board_h + label_pad
-
-    def origin_for_board(self, left: float, top: float, n: int, r: int) -> Tuple[float, float]:
-        bounds_left, bounds_top, _right, _bottom = self.board_bounds(n, r)
-        return left - bounds_left, top - bounds_top
 
     def border_sides(self) -> Tuple[BorderSpec, ...]:
         return self.border_specs
@@ -169,6 +166,12 @@ FLAT_BORDER_SPECS = (
     BorderSpec(Side.RED, ((5, 0), (0, 1)), lambda i, n: (i, n - 1)),
     BorderSpec(Side.BLUE, ((4, 5), (5, 0)), lambda i, n: (0, i)),
     BorderSpec(Side.BLUE, ((1, 2), (2, 3)), lambda i, n: (n - 1, i)),
+)
+
+Y_BORDER_SPECS = (
+    (((2, 3), (3, 4)), lambda i, n: (i, 0)),
+    (((4, 5), (5, 0)), lambda i, n: (0, i)),
+    (((1, 2), (0, 1)), lambda i, n: (n - 1 - i, i)),
 )
 
 FLAT_PROJECTION = BoardProjection(
@@ -351,7 +354,7 @@ class GuiRenderer:
         self.apply_window_size(DEFAULT_WIN_W, DEFAULT_WIN_H)
 
     @property
-    def board(self) -> HexBoard:
+    def board(self) -> Board:
         return self.core.board
 
     @property
@@ -371,14 +374,30 @@ class GuiRenderer:
         small_sz = max(4, min(16, int(r * fill)))
         return pygame.freetype.Font(None, small_sz)
 
-    def min_window_size(self, n: int) -> Tuple[int, int]:
-        layout_w, layout_h = self.projection.layout_size(n, MIN_R)
+    def min_window_size(self) -> Tuple[int, int]:
+        layout_w, layout_h = self._current_layout_size(MIN_R)
         win_w = int(layout_w + PANEL_W + 2 * BOARD_PAD)
         win_h = int(layout_h + HUD_H + 2 * BOARD_PAD)
         return win_w, win_h
 
+    def _current_axis_cells(self):
+        for col, row in self.board.legal_cells():
+            yield col - 1, row - 1
+
+    def _current_board_bounds(self, r: int) -> Tuple[float, float, float, float]:
+        return self.projection.cell_bounds(self._current_axis_cells(), r)
+
+    def _current_layout_size(self, r: int) -> Tuple[float, float]:
+        left, top, right, bottom = self._current_board_bounds(r)
+        label_pad = LABEL_PAD_K * r
+        return (right - left) + label_pad, (bottom - top) + label_pad
+
+    def _current_origin_for_board(self, left: float, top: float, r: int) -> Tuple[float, float]:
+        bounds_left, bounds_top, _right, _bottom = self._current_board_bounds(r)
+        return left - bounds_left, top - bounds_top
+
     def apply_window_size(self, win_w: int, win_h: int) -> Tuple[int, int]:
-        min_w, min_h = self.min_window_size(self.board.n)
+        min_w, min_h = self.min_window_size()
         win_w = max(win_w, min_w)
         win_h = max(win_h, min_h)
         if (win_w, win_h) != pygame.display.get_window_size():
@@ -389,24 +408,31 @@ class GuiRenderer:
         usable_w0 = max(0.0, self.layout.board_px_w - 2 * BOARD_PAD)
         usable_h0 = max(0.0, self.layout.board_px_h - HUD_H - 2 * BOARD_PAD)
 
-        denom_w, denom_h = self.projection.layout_size(self.board.n, 1)
+        denom_w, denom_h = self._current_layout_size(1)
         r_w = usable_w0 / denom_w if denom_w > 0 else MIN_R
         r_h = usable_h0 / denom_h if denom_h > 0 else MIN_R
         self.layout.r = int(max(MIN_R, min(r_w, r_h, MAX_R)))
 
         label_pad = LABEL_PAD_K * self.layout.r
-        layout_w, layout_h = self.projection.layout_size(self.board.n, self.layout.r)
+        layout_w, layout_h = self._current_layout_size(self.layout.r)
         extra_w = max(0.0, usable_w0 - layout_w)
         extra_h = max(0.0, usable_h0 - layout_h)
         board_left = BOARD_PAD + label_pad + extra_w / 2
         board_top = HUD_H + BOARD_PAD + label_pad + extra_h / 2
-        self.layout.origin_x, self.layout.origin_y = self.projection.origin_for_board(
-            board_left, board_top, self.board.n, self.layout.r
+        self.layout.origin_x, self.layout.origin_y = self._current_origin_for_board(
+            board_left, board_top, self.layout.r
         )
 
         self.fonts.board_small = self.make_board_small(self.layout.r)
         self.text.update_board_small(self.fonts.board_small)
-        pygame.display.set_caption(f"Hex {self.board.n}x{self.board.n}")
+        match self.board.game_type:
+            case GameType.HEX:
+                caption = f"Hex {self.board.n}x{self.board.n}"
+            case GameType.Y:
+                caption = f"Y {self.board.n}"
+            case _:
+                raise AssertionError(f"Unhandled game type: {self.board.game_type}")
+        pygame.display.set_caption(caption)
         return win_w, win_h
 
     def window_to_surface_pos(self, pos: Tuple[int, int]) -> Tuple[int, int]:
@@ -542,7 +568,7 @@ class GuiRenderer:
         if best is None:
             return None
         col, row = best
-        if 1 <= col <= self.board.n and 1 <= row <= self.board.n:
+        if self.board.in_bounds(col, row):
             return best
         return None
 
@@ -609,6 +635,8 @@ class GuiRenderer:
 
         for row in range(1, self.board.n + 1):
             for col in range(1, self.board.n + 1):
+                if not self.board.in_bounds(col, row):
+                    continue
                 ax, ay = col - 1, row - 1
                 occ = self.board.get(col, row)
 
@@ -714,6 +742,25 @@ class GuiRenderer:
 
     def draw_borders(self) -> None:
         thickness = 4
+        match self.board.game_type:
+            case GameType.Y:
+                for corner_pairs, edge_cell in Y_BORDER_SPECS:
+                    for i in range(self.board.n):
+                        ax, ay = edge_cell(i, self.board.n)
+                        for c1, c2 in corner_pairs:
+                            pygame.draw.line(
+                                self.screen,
+                                Y_SIDE,
+                                self.corner(ax, ay, c1),
+                                self.corner(ax, ay, c2),
+                                thickness,
+                            )
+                return
+            case GameType.HEX:
+                pass
+            case _:
+                raise AssertionError(f"Unhandled game type: {self.board.game_type}")
+
         for border in self.projection.border_sides():
             color = RED if border.side == Side.RED else BLUE
             for i in range(self.board.n):
@@ -775,6 +822,8 @@ class GuiRenderer:
         if show_coords:
             for row in range(1, self.board.n + 1):
                 for col in range(1, self.board.n + 1):
+                    if not self.board.in_bounds(col, row):
+                        continue
                     ax, ay = col - 1, row - 1
                     cx, cy = self.center(ax, ay)
                     colr = TEXT_ON_DARK if self.board.get(col, row) >= 0 else TEXT_ON_LIGHT
@@ -1160,11 +1209,13 @@ class GuiRenderer:
             ("item", "[/]:set analysisWideRootNoise   shift+c:clear cache"),
             ("item", "d:engine debug   shift+e:next engine"),
             ("item", "ctrl+shift+e:prev engine   shift+o:orient"),
+            ("item", "shift+g:switch game"),
             ("header", "Candidates / batch"),
             ("item", "right-click:toggle cand   right-drag:toggle cands"),
             ("item", "shift+x:clear cands   shift+b:fast batch   ctrl+shift+b:batch"),
             ("header", "Clipboard / misc"),
-            ("item", "ctrl+v:load   ctrl+c:hexworld   ctrl+shift+c:hexata"),
+            ("item", "ctrl+v:load   ctrl+shift+v:alt Y load"),
+            ("item", "ctrl+c:hexworld   ctrl+shift+c:hexata"),
             ("item", "+/-:pending size   enter:apply size   ctrl+s:screenshot"),
             ("item", "esc:quit"),
         ]

@@ -2,6 +2,7 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
+from board import GameType
 from gui import app as gui
 from gui.render import GuiRenderer
 
@@ -67,7 +68,7 @@ class GuiModuleTests(unittest.TestCase):
     def test_cycle_engine_profile_delegates_replacement(self):
         new_engine = SimpleNamespace(close=mock.Mock())
         core = SimpleNamespace(
-            board=SimpleNamespace(n=11),
+            board=SimpleNamespace(n=11, game_type=GameType.HEX),
             replace_engine=mock.Mock(return_value=True),
         )
         ui = gui.UiState(
@@ -89,6 +90,7 @@ class GuiModuleTests(unittest.TestCase):
         ctor.assert_called_once_with(
             board_size=11,
             cmd=["alt"],
+            game_type=GameType.HEX,
             engine_echo=True,
             suppress_stderr=True,
         )
@@ -101,7 +103,7 @@ class GuiModuleTests(unittest.TestCase):
     def test_cycle_engine_profile_failure_leaves_current_engine_running(self):
         old_engine = SimpleNamespace(close=mock.Mock())
         core = SimpleNamespace(
-            board=SimpleNamespace(n=11),
+            board=SimpleNamespace(n=11, game_type=GameType.HEX),
             engine=old_engine,
             replace_engine=mock.Mock(return_value=True),
         )
@@ -132,7 +134,7 @@ class GuiModuleTests(unittest.TestCase):
     def test_cycle_engine_profile_skips_bad_profile_and_wraps(self):
         new_engine = SimpleNamespace(close=mock.Mock())
         core = SimpleNamespace(
-            board=SimpleNamespace(n=11),
+            board=SimpleNamespace(n=11, game_type=GameType.HEX),
             replace_engine=mock.Mock(return_value=True),
         )
         ui = gui.UiState(
@@ -158,12 +160,14 @@ class GuiModuleTests(unittest.TestCase):
                 mock.call(
                     board_size=11,
                     cmd=["bad"],
+                    game_type=GameType.HEX,
                     engine_echo=False,
                     suppress_stderr=True,
                 ),
                 mock.call(
                     board_size=11,
                     cmd=["alt"],
+                    game_type=GameType.HEX,
                     engine_echo=False,
                     suppress_stderr=True,
                 ),

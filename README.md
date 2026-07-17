@@ -17,8 +17,9 @@ A lightweight, keyboard-first GUI and CLI for analyzing Hex with the [KataHex](h
 ## Quick setup
 - Install deps: `pip install -r requirements.txt` (pygame only).
 - Install KataHex separately (engine binary, config, and model weights): [KataHex 20240812](https://github.com/hzyhhzy/KataGomo_fork/releases/tag/Hex_20240812)
-- Edit `config.ini` and set `[engine.main].cmd` to point at your KataHex binary, config, and model.
+- Edit `config.ini` and set `[engine.hex.<name>].cmd` to point at your KataHex binary, config, and model.
   - Example format: `cmd = path/to/katahex gtp -config path/to/engine.cfg -model path/to/weights.bin.gz`
+  - To enable Y, add an `[engine.y.<name>]` profile using a compiled engine and the [Y weights](https://github.com/hexanna1/KataGomo/releases/tag/y-20260716).
 - Run: `python3 main.py gui`
 
 ## Quick controls
@@ -29,7 +30,7 @@ A lightweight, keyboard-first GUI and CLI for analyzing Hex with the [KataHex](h
 - Right-click or drag to toggle candidates
 
 ## Files at a glance
-- `board.py`: Hex board model, linear history, and move rules.
+- `board.py`: Board model, linear history, and move rules.
 - `history_tree.py`: Move-tree model for branching history and cursor navigation.
 - `engine.py`: Engine process wrapper, GTP-ish parsing, and analysis I/O.
 - `main.py`: Program entry point; loads config and dispatches GUI or CLI mode.

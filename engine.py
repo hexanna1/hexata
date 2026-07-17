@@ -10,15 +10,16 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Sequence, Tuple, Union
 
-from board import Side
+from board import GameType, Side, coord_to_human, human_letters_to_col
 
 # -------------------- coords --------------------
 # Three coordinate systems:
 # 1) Board coords (GUI): "a1" is top-left. col increases right, row increases down.
 #    (col,row) are 1-indexed. Examples: a1 -> (1,1), b1 -> (2,1), a2 -> (1,2).
-# 2) Engine "play" coords: send `play <B|W> (x,y)` with x=2*col+row-2, y=2*row-1.
+# 2) Hex engine "play" coords: send `play <B|W> (x,y)` with x=2*col+row-2, y=2*row-1.
 #    Examples: a1 -> (1,1), b1 -> (3,1), a2 -> (2,3).
-# 3) Engine "kata-analyze" tokens (Go-style like "G4"):
+#    Y engine coords are direct board coords, so the adapter sends human coords like "a1".
+# 3) Hex engine "kata-analyze" tokens (Go-style like "G4"):
 #    Letters are Go-style columns skipping I (A=1..H=8,J=9,...) -> value p.
 #    Number is 2 * (row counted from bottom of board), so row_from_bottom = num//2.
 #    Decode with board size N: row = (N + 1) - row_from_bottom;
@@ -26,6 +27,16 @@ from board import Side
 def board_to_engine_xy(col: int, row: int) -> Tuple[int, int]:
     # x = 2*col + row - 2, y = 2*row - 1
     return (2 * col + row - 2, 2 * row - 1)
+
+
+def board_to_engine_vertex(col: int, row: int, game_type: GameType = GameType.HEX) -> str:
+    match game_type:
+        case GameType.HEX:
+            x, y = board_to_engine_xy(col, row)
+            return f"({x},{y})"
+        case GameType.Y:
+            return coord_to_human(col, row)
+    raise AssertionError(f"Unhandled game type: {game_type}")
 
 
 # -------------------- analysis token -> board (col,row) --------------------
@@ -53,40 +64,68 @@ def int_to_gtp_letters_skipI(v: int) -> Optional[str]:
     return "".join(reversed(out))
 
 
-def parse_analysis_move_token(tok: str, board_n: int) -> Optional[Tuple[int, int]]:
-    t = tok.strip()
-    if t.lower() in ("pass", "resign"):
-        return None
-    m = _MOVE_TOKEN_RE.match(t)
+def _parse_y_analysis_move_token(tok: str, board_n: int) -> Optional[Tuple[int, int]]:
+    m = _MOVE_TOKEN_RE.match(tok.strip())
     if not m:
         return None
-
-    p = gtp_letters_to_int_skipI(m.group(1))
-    num = int(m.group(2))
-    if p <= 0 or num <= 0 or num % 2:
-        return None
-
-    row_from_bottom = num // 2
-    row = (board_n + 1) - row_from_bottom
-
-    tmp = p - row + 1
-    if tmp % 2:
-        return None
-    col = tmp // 2
-
-    if not (1 <= col <= board_n and 1 <= row <= board_n):
+    col = human_letters_to_col(m.group(1))
+    row = int(m.group(2))
+    if not GameType.Y.in_bounds(board_n, col, row):
         return None
     return (col, row)
 
 
-def to_analysis_token(col: int, row: int, board_n: int) -> Optional[str]:
-    if not (1 <= col <= board_n and 1 <= row <= board_n):
+def parse_analysis_move_token(
+    tok: str,
+    board_n: int,
+    game_type: GameType | str = GameType.HEX,
+) -> Optional[Tuple[int, int]]:
+    t = tok.strip()
+    if t.lower() in ("pass", "resign"):
         return None
-    letters = int_to_gtp_letters_skipI(2 * col + row - 1)
-    if letters is None:
+    game_type = GameType.parse(game_type)
+    match game_type:
+        case GameType.Y:
+            return _parse_y_analysis_move_token(t, board_n)
+        case GameType.HEX:
+            m = _MOVE_TOKEN_RE.match(t)
+            if not m:
+                return None
+
+            p = gtp_letters_to_int_skipI(m.group(1))
+            num = int(m.group(2))
+            if p <= 0 or num <= 0 or num % 2:
+                return None
+
+            row_from_bottom = num // 2
+            row = (board_n + 1) - row_from_bottom
+            tmp = p - row + 1
+            if tmp % 2:
+                return None
+            col = tmp // 2
+            return (col, row) if game_type.in_bounds(board_n, col, row) else None
+    raise AssertionError(f"Unhandled game type: {game_type}")
+
+
+def to_analysis_token(
+    col: int,
+    row: int,
+    board_n: int,
+    game_type: GameType | str = GameType.HEX,
+) -> Optional[str]:
+    game_type = GameType.parse(game_type)
+    if not game_type.in_bounds(board_n, col, row):
         return None
-    row_from_bottom = (board_n + 1) - row
-    return f"{letters}{2 * row_from_bottom}"
+    match game_type:
+        case GameType.Y:
+            return coord_to_human(col, row)
+        case GameType.HEX:
+            letters = int_to_gtp_letters_skipI(2 * col + row - 1)
+            if letters is None:
+                return None
+            row_from_bottom = (board_n + 1) - row
+            return f"{letters}{2 * row_from_bottom}"
+    raise AssertionError(f"Unhandled game type: {game_type}")
 
 
 # -------------------- parse kata-analyze output (minimal fields) --------------------
@@ -127,7 +166,11 @@ class RawNNResult:
     policy_pass: Optional[float]
 
 
-def parse_kata_analyze_line(line: str, board_n: int) -> List[AnalysisMove]:
+def parse_kata_analyze_line(
+    line: str,
+    board_n: int,
+    game_type: GameType | str = GameType.HEX,
+) -> List[AnalysisMove]:
     if "info move " not in line:
         return []
 
@@ -142,7 +185,9 @@ def parse_kata_analyze_line(line: str, board_n: int) -> List[AnalysisMove]:
             if pv_str:
                 pv_list: List[Tuple[int, int]] = []
                 for tok in pv_str.split():
-                    coord = parse_analysis_move_token(tok, board_n=board_n)
+                    coord = parse_analysis_move_token(
+                        tok, board_n=board_n, game_type=game_type
+                    )
                     if coord is None:
                         break
                     pv_list.append(coord)
@@ -156,7 +201,7 @@ def parse_kata_analyze_line(line: str, board_n: int) -> List[AnalysisMove]:
         prior = _get_field(rest, "prior", float)
         order = _get_field(rest, "order", int)
 
-        coord = parse_analysis_move_token(move, board_n=board_n)
+        coord = parse_analysis_move_token(move, board_n=board_n, game_type=game_type)
         col: Optional[int] = None
         row: Optional[int] = None
         if coord is not None:
@@ -242,10 +287,12 @@ class KataHexEngine:
         board_size: int,
         *,
         cmd: List[str],
+        game_type: GameType = GameType.HEX,
         engine_echo: bool = False,
         suppress_stderr: bool = True,
     ):
         self.board_n = board_size
+        self.game_type = game_type
         self._by_move: Dict[str, AnalysisMove] = {}
         self._lock = threading.Lock()
         self._analysis_mute_until_sync = False
@@ -272,7 +319,9 @@ class KataHexEngine:
                 if line.lstrip().startswith("="):
                     self._analysis_mute_until_sync = False
                 return
-            recs = parse_kata_analyze_line(line, board_n=self.board_n)
+            recs = parse_kata_analyze_line(
+                line, board_n=self.board_n, game_type=self.game_type
+            )
             if not recs:
                 return
             with self._lock:
@@ -341,8 +390,7 @@ class KataHexEngine:
         if col is None or row is None:
             self._send(f"play {eng} pass")
             return
-        x, y = board_to_engine_xy(col, row)
-        self._send(f"play {eng} ({x},{y})")
+        self._send(f"play {eng} {board_to_engine_vertex(col, row, self.game_type)}")
 
     def undo(self) -> None:
         self._send("undo")
@@ -368,7 +416,7 @@ class KataHexEngine:
         for side, moves in allow_filters:
             tokens: List[str] = []
             for col, row in moves:
-                tok = to_analysis_token(col, row, self.board_n)
+                tok = to_analysis_token(col, row, self.board_n, self.game_type)
                 if tok is None:
                     raise ValueError(f"Invalid analysis move: {(col, row)!r}")
                 tokens.append(tok)

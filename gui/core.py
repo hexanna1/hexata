@@ -3,7 +3,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, NoReturn, Optional, Sequence, Tuple
 
-from board import MAX_BOARD_SIZE, MIN_BOARD_SIZE, HexBoard, Move, MoveKind, Side, coord_to_human
+from board import (
+    MAX_BOARD_SIZE,
+    MIN_BOARD_SIZE,
+    Board,
+    GameType,
+    Move,
+    MoveKind,
+    Side,
+    coord_to_human,
+)
 from engine import KataHexEngine
 from formats import flexible_moves, hexata, hexworld
 from gui.analysis import GuiCoreAnalysisMixin
@@ -58,7 +67,7 @@ class EvalGraphData:
 class GuiCore(GuiCoreAnalysisMixin):
     def __init__(
         self,
-        board: HexBoard,
+        board: Board,
         engine: KataHexEngine,
         *,
         analyze_interval_cs: int = DEFAULT_ANALYZE_INTERVAL_CS,
@@ -66,6 +75,8 @@ class GuiCore(GuiCoreAnalysisMixin):
         self.board = board
         self.engine = engine
         self.analyze_interval_cs = analyze_interval_cs
+        if engine.game_type != board.game_type:
+            raise ValueError("Engine game type does not match board game type")
 
         self.session = SessionState(pending_size=board.n)
 
@@ -125,8 +136,10 @@ class GuiCore(GuiCoreAnalysisMixin):
         return tuple(moves)
 
     @staticmethod
-    def _materialize_position(moves: Sequence[Move], board_size: int) -> HexBoard:
-        probe = HexBoard(board_size)
+    def _materialize_position(
+        moves: Sequence[Move], board_size: int, game_type: GameType
+    ) -> Board:
+        probe = Board(board_size, game_type)
         for mv in moves:
             if not probe.apply_move(mv):
                 raise AssertionError(f"Illegal move while materializing tree: {mv}")
@@ -144,11 +157,22 @@ class GuiCore(GuiCoreAnalysisMixin):
         clear_analysis_cache: bool = False,
         clear_edit_history: bool = False,
         track_edit: bool = False,
+        replacement_engine: Optional[KataHexEngine] = None,
     ) -> None:
-        target_size = self.board.n if board_size is None else board_size
+        if replacement_engine is None:
+            target_engine = self.engine
+            target_board_size = self.board.n if board_size is None else board_size
+        else:
+            if board_size is not None:
+                raise AssertionError("Replacement engine declares its board size")
+            target_engine = replacement_engine
+            target_board_size = replacement_engine.board_n
+        target_game_type = target_engine.game_type
         target_cursor = tree.cursor if cursor is None else cursor
         new_path = self._path_moves_to(tree, target_cursor)
-        target_board = self._materialize_position(new_path, target_size)
+        target_board = self._materialize_position(
+            new_path, target_board_size, target_game_type
+        )
         if candidates is not None and any(
             not target_board.is_empty(*candidate) for candidate in candidates
         ):
@@ -162,22 +186,33 @@ class GuiCore(GuiCoreAnalysisMixin):
         old_candidates = frozenset(self.session.analysis.candidate_selection.candidates)
         was_running = self.session.analysis.enabled
         was_batch = self.is_batch_analysis_active()
-        size_changed = target_size != self.board.n
+        size_changed = target_board_size != self.board.n
+        game_changed = target_game_type != self.board.game_type
+        engine_changed = target_engine is not self.engine
+        session_reset = size_changed or game_changed
         path_changed = new_path != old_path
         target_candidates = old_candidates if candidates is None else frozenset(candidates)
         candidates_changed = target_candidates != old_candidates
-        if size_changed and kind != TransitionKind.USER_POSITION:
-            raise AssertionError("Only user position transitions may resize the session")
+        if game_changed != engine_changed:
+            raise AssertionError("Game transitions must replace the engine")
+        if engine_changed and new_path:
+            raise AssertionError("Game transitions must install an empty position")
+        if session_reset and kind != TransitionKind.USER_POSITION:
+            raise AssertionError("Only user position transitions may reset the session")
         if kind == TransitionKind.USER_TREE and (
-            size_changed or path_changed or candidates_changed
+            session_reset or path_changed or candidates_changed
         ):
             raise AssertionError("Tree-only transition changed position state")
 
-        position_changed = size_changed or path_changed
-        if size_changed:
+        position_changed = session_reset or path_changed
+        old_engine = self.engine
+        if session_reset:
             if was_running:
                 self.pause_engine_analysis()
-            self.engine.set_board_size(target_size)
+            if engine_changed:
+                self.engine = target_engine
+            else:
+                self.engine.set_board_size(target_board_size)
 
         self.session.tree = tree
         tree.cursor = target_cursor
@@ -193,13 +228,16 @@ class GuiCore(GuiCoreAnalysisMixin):
         if clear_analysis_cache:
             self.clear_all_cached_analysis()
 
-        if size_changed:
-            self.rebuild_engine_from_applied_history()
-            self.engine.clear_analysis()
+        if session_reset:
+            if not engine_changed:
+                self.rebuild_engine_from_applied_history()
+                self.engine.clear_analysis()
             self.check_candidate_root()
             self._ensure_candidate_root()
             if was_batch:
                 self._exit_batch_mode()
+            if engine_changed:
+                old_engine.close()
             if was_running:
                 self.restart_analysis()
         elif kind == TransitionKind.USER_TREE:
@@ -231,6 +269,8 @@ class GuiCore(GuiCoreAnalysisMixin):
             raise AssertionError("Candidate selection is not bound to a position")
         if selection.candidates and selection.root_key != self.cache_key():
             raise AssertionError("Candidate selection is bound to a stale position")
+        if self.engine.game_type != self.board.game_type:
+            raise AssertionError("Engine and board game types diverged")
         if clear_edit_history:
             self.session.edit_undo.clear()
             self.session.edit_redo.clear()
@@ -294,7 +334,7 @@ class GuiCore(GuiCoreAnalysisMixin):
         raise AssertionError(f"Unhandled move kind: {value}")
 
     @staticmethod
-    def _first_illegal_move_index(board: HexBoard, moves: Sequence[Move]) -> Optional[int]:
+    def _first_illegal_move_index(board: Board, moves: Sequence[Move]) -> Optional[int]:
         for i, mv in enumerate(moves):
             if not board.apply_move(mv):
                 return i
@@ -319,7 +359,7 @@ class GuiCore(GuiCoreAnalysisMixin):
             case MoveKind.PASS:
                 return self.map_side_to_engine(mv.side), None, None
             case MoveKind.SWAP:
-                # Swap changes the GUI's interpretation, not the engine position.
+                # Swap is represented by the materialized opening, not a command.
                 return None
         self._assert_never(mv.kind)
 
@@ -351,6 +391,9 @@ class GuiCore(GuiCoreAnalysisMixin):
     def replace_engine(self, new_engine: KataHexEngine) -> bool:
         if new_engine is self.engine:
             return False
+        if new_engine.game_type != self.board.game_type:
+            new_engine.close()
+            return False
         was_running = self.session.analysis.enabled
         if was_running:
             self.pause_engine_analysis()
@@ -370,6 +413,26 @@ class GuiCore(GuiCoreAnalysisMixin):
         self._exit_batch_mode()
         if was_running:
             self.restart_analysis()
+        return True
+
+    def switch_game_type(self, new_engine: KataHexEngine) -> bool:
+        if new_engine is self.engine:
+            return False
+        game_type = new_engine.game_type
+        if game_type == self.board.game_type:
+            new_engine.close()
+            return False
+        if not MIN_BOARD_SIZE <= new_engine.board_n <= MAX_BOARD_SIZE:
+            new_engine.close()
+            return False
+        self._commit_transition(
+            MoveTree(),
+            pending_size=new_engine.board_n,
+            candidates=(),
+            clear_analysis_cache=True,
+            clear_edit_history=True,
+            replacement_engine=new_engine,
+        )
         return True
 
     def find_applied_move_index(self, col: int, row: int) -> Optional[int]:
@@ -407,9 +470,24 @@ class GuiCore(GuiCoreAnalysisMixin):
             clear_edit_history=True,
         )
 
+    def _url_game_type_error(self, text: str) -> Optional[str]:
+        url_game_type = hexworld.url_game_type(text)
+        if url_game_type is None or url_game_type == self.board.game_type:
+            return None
+        return (
+            f"Position is for {url_game_type.value}; "
+            f"current game is {self.board.game_type.value}"
+        )
+
     def load_hexworld_text(self, text: str) -> Optional[str]:
+        if game_type_error := self._url_game_type_error(text):
+            return game_type_error
+
         try:
-            size, past_moves, future_moves_parsed, _next_side = hexworld.parse_hexworld_position(text)
+            size, past_moves, future_moves_parsed, _next_side = hexworld.parse_hexworld_position(
+                text,
+                game_type=self.board.game_type,
+            )
         except Exception as exc:
             return f"HexWorld parse failed: {exc}"
 
@@ -418,7 +496,7 @@ class GuiCore(GuiCoreAnalysisMixin):
             return size_error
 
         all_moves = past_moves + future_moves_parsed
-        probe = HexBoard(size)
+        probe = Board(size, self.board.game_type)
         illegal_index = self._first_illegal_move_index(probe, all_moves)
         if illegal_index is not None:
             mv = all_moves[illegal_index]
@@ -448,7 +526,8 @@ class GuiCore(GuiCoreAnalysisMixin):
         return self.swap_active() and idx == 0 and len(moves) >= 2 and moves[1].kind == MoveKind.SWAP
 
     def build_hexworld_url(self) -> str:
-        return hexworld.build_hexworld_url(
+        return hexworld.build_position_url(
+            self.board.game_type,
             self.board.n,
             self.current_path_moves(),
             self.mainline_tail_moves(),
@@ -458,13 +537,18 @@ class GuiCore(GuiCoreAnalysisMixin):
         return hexata.build_hexata_format(self.board.n, self.session.tree)
 
     def load_hexata_format(self, text: str) -> Optional[str]:
+        if game_type_error := self._url_game_type_error(text):
+            return game_type_error
+        if hexworld.url_game_type(text) is not None:
+            text = hexworld.extract_hash(text)
+
         prefixed_size = self._parse_hexata_size_prefix(text)
         if prefixed_size is not None:
             prefixed_error = self._import_size_error(prefixed_size, source="Hexata format")
             if prefixed_error is not None:
                 return prefixed_error
         try:
-            size, tree = hexata.parse_hexata_format(text)
+            size, tree = hexata.parse_hexata_format(text, game_type=self.board.game_type)
         except ValueError as exc:
             return f"Hexata format parse failed: {exc}"
 
@@ -477,9 +561,26 @@ class GuiCore(GuiCoreAnalysisMixin):
 
     def load_flexible_move_format(self, text: str) -> Optional[str]:
         try:
-            moves = flexible_moves.parse_flexible_move_format(text, board_size=self.board.n)
+            moves = flexible_moves.parse_flexible_move_format(
+                text, board_size=self.board.n, game_type=self.board.game_type
+            )
         except ValueError as exc:
             return f"Flexible move format parse failed: {exc}"
+
+        tree = MoveTree()
+        tree.rebuild_from_line(moves, [])
+        self._install_imported_tree(self.board.n, tree)
+        return None
+
+    def load_alternate_y_move_format(self, text: str) -> Optional[str]:
+        if self.board.game_type != GameType.Y:
+            return "Alternate Y move format requires Y"
+        try:
+            moves = flexible_moves.parse_alternate_y_move_format(
+                text, board_size=self.board.n
+            )
+        except ValueError as exc:
+            return f"Alternate Y move format parse failed: {exc}"
 
         tree = MoveTree()
         tree.rebuild_from_line(moves, [])
@@ -651,8 +752,8 @@ class GuiCore(GuiCoreAnalysisMixin):
                 continue
             child.move = Move.swap(side=child.move.side, col=col, row=row)
 
-    def _prune_invalid_descendants(self, node: HistoryNode, board: HexBoard) -> None:
-        stack: list[tuple[HistoryNode, HexBoard]] = [(node, board)]
+    def _prune_invalid_descendants(self, node: HistoryNode, board: Board) -> None:
+        stack: list[tuple[HistoryNode, Board]] = [(node, board)]
         while stack:
             parent, parent_board = stack.pop()
             for child in list(parent.children):
@@ -677,7 +778,7 @@ class GuiCore(GuiCoreAnalysisMixin):
         if path_nodes[idx].move.kind != MoveKind.PLACE:
             return False
 
-        target_col, target_row = (row, col) if idx == 0 and self.swap_active() else (col, row)
+        target_col, target_row = (row, col) if idx == 0 and self.swap_transpose_active() else (col, row)
         new_move = Move.place(side=path_nodes[idx].move.side, col=target_col, row=target_row)
         tree = self.session.tree.clone()
         cloned_path = tree.current_path_nodes()
@@ -685,7 +786,7 @@ class GuiCore(GuiCoreAnalysisMixin):
         parent = edit_node.parent
         existing = None if parent is None else tree.find_child(parent, new_move)
 
-        probe = HexBoard(self.board.n)
+        probe = Board(self.board.n, self.board.game_type)
         prefix_moves = [node.move for node in cloned_path[:idx]] + [new_move]
         if self._first_illegal_move_index(probe, prefix_moves) is not None:
             return False

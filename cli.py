@@ -10,7 +10,16 @@ import sys
 import time
 from typing import Iterator, Optional
 
-from board import DEFAULT_BOARD_SIZE, MAX_BOARD_SIZE, MIN_BOARD_SIZE, HexBoard, MoveKind, Side, coord_to_human
+from board import (
+    DEFAULT_BOARD_SIZE,
+    MAX_BOARD_SIZE,
+    MIN_BOARD_SIZE,
+    Board,
+    GameType,
+    MoveKind,
+    Side,
+    coord_to_human,
+)
 from engine import AnalysisMove, KataHexEngine, RawNNResult
 from gui.core import GuiCore
 from formats import hexworld
@@ -180,12 +189,13 @@ def _opening_line_to_text(line: tuple[tuple[int, int], ...]) -> str:
     return ",".join(coord_to_human(col, row) for col, row in line)
 
 
-def _match_hexworld_url(board: HexBoard) -> str:
-    return hexworld.build_hexworld_url(board.n, board.history)
+def _match_hexworld_url(board: Board) -> str:
+    return hexworld.build_position_url(board.game_type, board.n, board.history)
 
 
-def _input_hexworld_url(text: str) -> str:
-    return f"https://hexworld.org/board/#{hexworld.extract_hash(text)}"
+def _input_hexworld_url(text: str, game_type: GameType) -> str:
+    output_type = hexworld.url_game_type(text) or game_type
+    return hexworld.position_url_from_hash(output_type, hexworld.extract_hash(text))
 
 
 def _search_failure_error(status: str) -> str:
@@ -402,7 +412,7 @@ def _sample_weighted_match_move(
 
 
 def _sample_match_search_move(
-    board: HexBoard,
+    board: Board,
     recs: list[AnalysisMove],
     *,
     temp: float,
@@ -503,7 +513,7 @@ def _emit_match_record(
     *,
     ok: bool,
     error: Optional[str],
-    board: HexBoard,
+    board: Board,
     started_at: float,
     match: dict,
 ) -> None:
@@ -520,6 +530,7 @@ def _emit_match_record(
 
 def _validate_match_args(
     args: argparse.Namespace,
+    game_type: GameType,
 ) -> tuple[Optional[list[tuple[tuple[int, int], ...]]], Optional[str]]:
     if args.size < MIN_BOARD_SIZE or args.size > MAX_BOARD_SIZE:
         return None, f"--size must be between {MIN_BOARD_SIZE} and {MAX_BOARD_SIZE}"
@@ -541,7 +552,7 @@ def _validate_match_args(
         return None, "--openings must include at least one coordinate"
 
     for line in openings:
-        probe = HexBoard(args.size)
+        probe = Board(args.size, game_type)
         side = Side.RED
         for col, row in line:
             if not probe.place(side, col, row):
@@ -554,18 +565,21 @@ def _start_match_engines(
     board_n: int,
     engine_a_cmd: list[str],
     engine_b_cmd: list[str],
+    game_type: GameType,
 ) -> tuple[Optional[tuple[KataHexEngine, KataHexEngine]], Optional[str]]:
     engine_a: Optional[KataHexEngine] = None
     try:
         engine_a = KataHexEngine(
             board_size=board_n,
             cmd=engine_a_cmd,
+            game_type=game_type,
             engine_echo=False,
             suppress_stderr=True,
         )
         engine_b = KataHexEngine(
             board_size=board_n,
             cmd=engine_b_cmd,
+            game_type=game_type,
             engine_echo=False,
             suppress_stderr=True,
         )
@@ -590,9 +604,10 @@ def _run_match_game(
     round_num: int,
     opening: tuple[tuple[int, int], ...],
     engine_a_is_red: bool,
+    game_type: GameType,
 ) -> Optional[str]:
     started_at = time.monotonic()
-    board = HexBoard(args.size)
+    board = Board(args.size, game_type)
     engine_a.clear_board()
     engine_b.clear_board()
     engine_a.clear_cache()
@@ -730,11 +745,14 @@ def _run_cli_match(
     *,
     engine_a_cmd: list[str],
     engine_b_cmd: list[str],
+    game_type: GameType = GameType.HEX,
 ) -> tuple[bool, dict]:
-    openings, error = _validate_match_args(args)
+    openings, error = _validate_match_args(args, game_type)
     if error is not None or openings is None:
         return False, {"error": error}
-    engines, error = _start_match_engines(args.size, engine_a_cmd, engine_b_cmd)
+    engines, error = _start_match_engines(
+        args.size, engine_a_cmd, engine_b_cmd, game_type
+    )
     if error is not None or engines is None:
         return False, {"error": error}
     engine_a, engine_b = engines
@@ -756,6 +774,7 @@ def _run_cli_match(
                     round_num=round_num,
                     opening=opening,
                     engine_a_is_red=engine_a_is_red,
+                    game_type=game_type,
                 )
                 if error is not None:
                     return False, {"error": error, "already_emitted": True}
@@ -781,7 +800,7 @@ def _add_cli_engine_argument(ap: argparse.ArgumentParser) -> None:
     ap.add_argument(
         "--engine",
         default=None,
-        help="Engine profile name from config.ini (defaults to default_engine/first profile)",
+        help="Engine profile name from config.ini (defaults to [engine.<game>].default/first profile)",
     )
 
 
@@ -895,7 +914,7 @@ def _run_analyze_positions(
 
         position_error = spec_error or core.load_hexworld_text(position_input)
         record = {
-            "hexworld": _input_hexworld_url(position_input),
+            "hexworld": _input_hexworld_url(position_input, core.board.game_type),
             "ok": False,
             "error": position_error,
         }
@@ -929,7 +948,7 @@ def _run_batch_positions(
         started_at = time.monotonic()
         position_error = core.load_hexworld_text(position_input)
         record = {
-            "hexworld": _input_hexworld_url(position_input),
+            "hexworld": _input_hexworld_url(position_input, core.board.game_type),
             "ok": False,
             "error": position_error,
         }
@@ -957,11 +976,18 @@ def run_cli(
     engine_cmd: list[str] | None = None,
     engine_a_cmd: list[str] | None = None,
     engine_b_cmd: list[str] | None = None,
+    game_type: GameType | str = GameType.HEX,
 ) -> int:
+    game_type = GameType.parse(game_type)
     if args.cli_cmd == "match":
         if engine_a_cmd is None or engine_b_cmd is None:
             return _fail("Internal error: missing match engine commands")
-        ok, payload = _run_cli_match(args, engine_a_cmd=engine_a_cmd, engine_b_cmd=engine_b_cmd)
+        ok, payload = _run_cli_match(
+            args,
+            engine_a_cmd=engine_a_cmd,
+            engine_b_cmd=engine_b_cmd,
+            game_type=game_type,
+        )
         if ok:
             return 0
         if payload.get("already_emitted"):
@@ -983,11 +1009,12 @@ def run_cli(
     else:
         return _fail(f"Unknown cli command: {args.cli_cmd}")
 
-    board = HexBoard(DEFAULT_BOARD_SIZE)
+    board = Board(DEFAULT_BOARD_SIZE, game_type)
     try:
         engine = KataHexEngine(
             board_size=board.n,
             cmd=engine_cmd,
+            game_type=game_type,
             engine_echo=False,
             suppress_stderr=True,
         )

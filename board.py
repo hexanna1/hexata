@@ -20,6 +20,39 @@ class MoveKind(Enum):
     SWAP = "swap"
 
 
+class GameType(Enum):
+    HEX = "hex"
+    Y = "y"
+
+    @staticmethod
+    def parse(value: "GameType | str") -> "GameType":
+        if isinstance(value, GameType):
+            return value
+        try:
+            return GameType(value.strip().lower())
+        except ValueError as exc:
+            raise ValueError(f"Unknown game type: {value}") from exc
+
+    def in_bounds(self, board_size: int, col: int, row: int) -> bool:
+        if not (1 <= col <= board_size and 1 <= row <= board_size):
+            return False
+        match self:
+            case GameType.HEX:
+                return True
+            case GameType.Y:
+                return col + row <= board_size + 1
+        raise AssertionError(f"Unhandled game type: {self}")
+
+    @property
+    def swap_transposes(self) -> bool:
+        match self:
+            case GameType.HEX:
+                return True
+            case GameType.Y:
+                return False
+        raise AssertionError(f"Unhandled game type: {self}")
+
+
 @dataclass(frozen=True, slots=True)
 class Move:
     kind: MoveKind
@@ -40,15 +73,16 @@ class Move:
         return Move(kind=MoveKind.SWAP, side=side, col=col, row=row)
 
 
-class HexBoard:
+class Board:
     """
-    Hex board state with pass and swap handling.
-    - Side.RED connects TOP<->BOTTOM
-    - Side.BLUE connects LEFT<->RIGHT
+    Board state with pass and client-side swap handling.
+    - Hex: Side.RED connects TOP<->BOTTOM, Side.BLUE connects LEFT<->RIGHT.
+    - Y: both sides connect all three triangular sides.
     """
 
-    def __init__(self, n: int):
+    def __init__(self, n: int, game_type: GameType = GameType.HEX):
         self.rev = 0
+        self.game_type = game_type
         self.set_size(n)
 
     def _bump_rev(self) -> None:
@@ -64,22 +98,29 @@ class HexBoard:
     def clear(self) -> None:
         self.set_size(self.n)
 
-    def copy(self) -> "HexBoard":
-        out = HexBoard(self.n)
+    def copy(self) -> "Board":
+        out = Board(self.n, self.game_type)
         out.rev = self.rev
         out.occ = list(self.occ)
         out.history = list(self.history)
         return out
 
-    def replace_position(self, other: "HexBoard") -> None:
+    def replace_position(self, other: "Board") -> None:
         self._bump_rev()
+        self.game_type = other.game_type
         self.n = other.n
         self.edge_a, self.edge_b = other.edge_a, other.edge_b
         self.occ = list(other.occ)
         self.history = list(other.history)
 
     def in_bounds(self, col: int, row: int) -> bool:
-        return 1 <= col <= self.n and 1 <= row <= self.n
+        return self.game_type.in_bounds(self.n, col, row)
+
+    def legal_cells(self):
+        for row in range(1, self.n + 1):
+            for col in range(1, self.n + 1):
+                if self.in_bounds(col, row):
+                    yield col, row
 
     def _idx(self, col: int, row: int) -> int:
         return (row - 1) * self.n + (col - 1)
@@ -126,7 +167,10 @@ class HexBoard:
             return False
 
         old_col, old_row = first.col, first.row
-        new_col, new_row = old_row, old_col
+        if self.game_type.swap_transposes:
+            new_col, new_row = old_row, old_col
+        else:
+            new_col, new_row = old_col, old_row
         old_idx = self._idx(old_col, old_row)
         new_idx = self._idx(new_col, new_row)
         if self.occ[old_idx] != int(first.side):
@@ -183,6 +227,15 @@ def col_to_human_letters(col: int) -> str:
         out.append(chr(ord("a") + (v % 26)))
         v //= 26
     return "".join(reversed(out))
+
+
+def human_letters_to_col(letters: str) -> int:
+    col = 0
+    for ch in letters.lower():
+        if not ("a" <= ch <= "z"):
+            raise ValueError(f"Bad column letters: {letters!r}")
+        col = col * 26 + (ord(ch) - ord("a") + 1)
+    return col
 
 
 def coord_to_human(col: int, row: int) -> str:

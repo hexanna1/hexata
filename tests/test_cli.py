@@ -4,8 +4,8 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import cli
-from board import Side
-from engine import AnalysisMove, RawNNResult
+from board import GameType, Side
+from engine import AnalysisMove, RawNNResult, parse_analysis_move_token, to_analysis_token
 
 
 class _AlwaysEmptyBoard:
@@ -61,9 +61,15 @@ class CliTests(unittest.TestCase):
         raw_once.assert_called_once_with(core.engine)
         run_search.assert_not_called()
 
+    def test_y_analysis_tokens_use_direct_coords(self):
+        self.assertEqual(parse_analysis_move_token("b1", 5, GameType.Y), (2, 1))
+        self.assertEqual(to_analysis_token(2, 1, 5, GameType.Y), "b1")
+        self.assertIsNone(parse_analysis_move_token("d3", 5, GameType.Y))
+
     def test_run_cli_analyze_streams_one_result_per_position_and_clears_cache_between(self):
         engine = SimpleNamespace(clear_cache=Mock(), close=Mock())
         core = SimpleNamespace(
+            board=SimpleNamespace(game_type=GameType.HEX),
             load_hexworld_text=Mock(
                 side_effect=lambda text: None if text != "bad" else "HexWorld parse failed: bad"
             ),
