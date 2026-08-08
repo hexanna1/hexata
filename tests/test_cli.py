@@ -5,114 +5,39 @@ from unittest.mock import Mock, patch
 
 import cli
 from board import GameType, Side
-from engine import AnalysisMove, RawNNResult, parse_analysis_move_token, to_analysis_token
-
-
-class _AlwaysEmptyBoard:
-    def __init__(self, n: int):
-        self.n = n
-
-    def is_empty(self, col: int, row: int) -> bool:
-        return True
+from engine import AnalysisMove, parse_analysis_move_token, to_analysis_token
 
 
 class CliTests(unittest.TestCase):
-    def test_raw_winrate_helpers_handle_swap_perspective(self):
-        raw = RawNNResult(white_win=0.7, policy_rows=(), policy_pass=None)
-
-        core_no_swap = SimpleNamespace(map_side_to_engine=lambda side: side)
-        self.assertEqual(cli._raw_red_winrate(core_no_swap, raw), 0.3)
+    def test_winrate_helper_handles_side_perspective(self):
         self.assertEqual(cli._side_winrate_to_red(0.3, Side.RED), 0.3)
         self.assertEqual(cli._side_winrate_to_red(0.3, Side.BLUE), 0.7)
-
-        core_swap = SimpleNamespace(
-            map_side_to_engine=lambda side: (Side.BLUE if side == Side.RED else Side.RED)
-        )
-        self.assertEqual(cli._raw_red_winrate(core_swap, raw), 0.7)
         self.assertEqual(cli._side_winrate_to_red(0.7, Side.RED), 0.7)
         self.assertEqual(cli._side_winrate_to_red(0.7, Side.BLUE), 0.3)
-
-    def test_run_cli_analyze_omitted_search_seconds_uses_raw_nn(self):
-        core = SimpleNamespace(
-            engine=object(),
-            board=_AlwaysEmptyBoard(2),
-            map_coords_to_engine=lambda col, row: (col, row),
-            map_side_to_engine=lambda side: side,
-        )
-        args = SimpleNamespace(search_seconds=None, top_n=3)
-        raw = RawNNResult(
-            white_win=0.6,
-            policy_rows=((0.1, 0.2), (0.0, None)),
-            policy_pass=0.3,
-        )
-
-        with patch("cli._run_kata_raw_nn_once", return_value=raw) as raw_once, patch(
-            "cli._run_for_seconds_from_first_update", side_effect=AssertionError("search path used")
-        ) as run_search:
-            ok, payload = cli._run_cli_analyze(core, args)
-
-        self.assertTrue(ok)
-        self.assertEqual(payload["analyze"]["method"], "raw_nn")
-        self.assertEqual(payload["analyze"]["best"], {"move": "pass", "prior": 0.3})
-        self.assertEqual(payload["analyze"]["root_eval"], {"red_winrate": 0.4})
-        self.assertEqual(len(payload["analyze"]["moves"]), 3)
-        self.assertNotIn("red_winrate", payload["analyze"]["moves"][0])
-        self.assertNotIn("visits", payload["analyze"]["moves"][0])
-        raw_once.assert_called_once_with(core.engine)
-        run_search.assert_not_called()
 
     def test_y_analysis_tokens_use_direct_coords(self):
         self.assertEqual(parse_analysis_move_token("b1", 5, GameType.Y), (2, 1))
         self.assertEqual(to_analysis_token(2, 1, 5, GameType.Y), "b1")
         self.assertIsNone(parse_analysis_move_token("d3", 5, GameType.Y))
 
-    def test_run_cli_analyze_streams_one_result_per_position_and_clears_cache_between(self):
-        engine = SimpleNamespace(clear_cache=Mock(), close=Mock())
-        core = SimpleNamespace(
-            board=SimpleNamespace(game_type=GameType.HEX),
-            load_hexworld_text=Mock(
-                side_effect=lambda text: None if text != "bad" else "HexWorld parse failed: bad"
-            ),
-            build_hexworld_url=Mock(
-                side_effect=[
-                    "https://hexworld.org/board/#14c1,a1",
-                    "https://hexworld.org/board/#14c1,b1",
-                ]
-            ),
-        )
+    def test_run_cli_analyze_uses_analysis_subcommand(self):
         args = SimpleNamespace(
             cli_cmd="analyze",
             position=["good-1", "bad", "good-2"],
             top_n=None,
-            search_seconds=None,
+            visits=None,
             analysis_wide_root_noise=None,
         )
-        ok_payload = {
-            "analyze": {
-                "method": "raw_nn",
-                "best": {"move": "a1", "prior": 0.2},
-                "root_eval": {"red_winrate": 0.4},
-                "moves": [],
-            },
-        }
 
-        with patch("cli.KataHexEngine", return_value=engine), patch(
-            "cli.GuiCore", return_value=core
-        ), patch("cli._run_cli_analyze", side_effect=[(True, ok_payload), (True, ok_payload)]
-        ) as run_analyze, patch("cli._emit") as emit:
+        with patch("cli._run_analyze_positions", return_value=1) as run_analyze:
             exit_code = cli.run_cli(args, engine_cmd=["katahex"])
 
         self.assertEqual(exit_code, 1)
-        self.assertEqual(emit.call_count, 3)
-        self.assertEqual(
-            [(call.args[0]["hexworld"], call.args[0]["ok"]) for call in emit.call_args_list],
-            [
-                ("https://hexworld.org/board/#14c1,a1", True),
-                ("https://hexworld.org/board/#bad", False),
-                ("https://hexworld.org/board/#14c1,b1", True),
-            ],
+        run_analyze.assert_called_once_with(
+            args,
+            engine_cmd=["katahex"],
+            game_type=GameType.HEX,
         )
-        engine.close.assert_called_once_with()
 
     def test_iter_cli_positions_expands_stdin_sentinel_in_position_order(self):
         with patch("cli.sys.stdin", io.StringIO("\nstdin-1\nstdin-2\n\n")):

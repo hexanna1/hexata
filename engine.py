@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Sequence, Tuple, Union
 
-from board import GameType, Side, coord_to_human, human_letters_to_col
+from board import GameType, Move, MoveKind, Side, coord_to_human, human_letters_to_col
 
 # -------------------- coords --------------------
 # Three coordinate systems:
@@ -37,6 +37,24 @@ def board_to_engine_vertex(col: int, row: int, game_type: GameType = GameType.HE
         case GameType.Y:
             return coord_to_human(col, row)
     raise AssertionError(f"Unhandled game type: {game_type}")
+
+
+def engine_swap_transform_active(game_type: GameType, moves: Sequence[Move]) -> bool:
+    return (
+        game_type.swap_transposes
+        and len(moves) >= 2
+        and moves[1].kind == MoveKind.SWAP
+    )
+
+
+def map_side_to_engine(side: Side, swap_transform: bool) -> Side:
+    if not swap_transform:
+        return side
+    return Side.BLUE if side == Side.RED else Side.RED
+
+
+def map_coords_to_engine(col: int, row: int, swap_transform: bool) -> Tuple[int, int]:
+    return (row, col) if swap_transform else (col, row)
 
 
 # -------------------- analysis token -> board (col,row) --------------------

@@ -24,7 +24,7 @@ Example commands:
 
 ```bash
 python3 main.py cli analyze 'https://hexworld.org/board/#14c1,a14'
-python3 main.py cli analyze 'https://hexworld.org/board/#14c1,a14::e4k4j11' --search-seconds 1
+python3 main.py cli analyze --visits 64 'https://hexworld.org/board/#14c1,a14::e4k4j11'
 ```
 
 Raw-NN:
@@ -59,10 +59,11 @@ Search:
 
 ## `batch`
 
-Example command:
+Example commands:
 
 ```bash
 python3 main.py cli batch 'https://hexworld.org/board/#14c1,a14k4d5d4e4d6c6e3f3c7j5d12'
+python3 main.py cli batch --visits 64 'https://hexworld.org/board/#14c1,a14k4d5d4e4d6c6e3f3c7j5d12'
 ```
 
 ```json

@@ -6,7 +6,12 @@ from dataclasses import dataclass, replace
 from typing import List, Optional, Sequence, Tuple
 
 from board import Board, Move, MoveKind, Side, coord_to_human
-from engine import AnalysisMove
+from engine import (
+    AnalysisMove,
+    engine_swap_transform_active,
+    map_coords_to_engine as map_engine_coords,
+    map_side_to_engine as map_engine_side,
+)
 from gui.state import (
     AnalysisModeTag,
     BatchKind,
@@ -44,22 +49,16 @@ class GuiCoreAnalysisMixin:
         return len(moves) >= 2 and moves[1].kind == MoveKind.SWAP
 
     def swap_transpose_active(self) -> bool:
-        return self.swap_active() and self.board.game_type.swap_transposes
+        return engine_swap_transform_active(self.board.game_type, self.current_path_moves())
 
     def map_side_to_engine(self, side: Side) -> Side:
-        if self.swap_transpose_active():
-            return self.flip_side(side)
-        return side
+        return map_engine_side(side, self.swap_transpose_active())
 
     def map_coords_to_engine(self, col: int, row: int) -> Tuple[int, int]:
-        if self.swap_transpose_active():
-            return (row, col)
-        return (col, row)
+        return map_engine_coords(col, row, self.swap_transpose_active())
 
     def map_coords_from_engine(self, col: int, row: int) -> Tuple[int, int]:
-        if self.swap_transpose_active():
-            return (row, col)
-        return (col, row)
+        return map_engine_coords(col, row, self.swap_transpose_active())
 
     def get_engine_analysis(self) -> List[AnalysisMove]:
         recs = self.engine.get_analysis()

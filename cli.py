@@ -6,28 +6,37 @@ import json
 import math
 import random
 import re
+import subprocess
 import sys
 import time
 from typing import Iterator, Optional
 
 from board import (
-    DEFAULT_BOARD_SIZE,
     MAX_BOARD_SIZE,
     MIN_BOARD_SIZE,
     Board,
     GameType,
+    Move,
     MoveKind,
     Side,
     coord_to_human,
 )
-from engine import AnalysisMove, KataHexEngine, RawNNResult
-from gui.core import GuiCore
+from engine import (
+    AnalysisMove,
+    KataHexEngine,
+    board_to_engine_vertex,
+    engine_swap_transform_active,
+    map_coords_to_engine,
+    map_side_to_engine,
+    parse_analysis_move_token,
+)
 from formats import hexworld
 from formats.hexworld import cell_to_col_row
 
 STARTUP_TIMEOUT_SECONDS = 30.0
 POLL_SECONDS = 0.02
 _FILTER_MOVE_RE = re.compile(r"[a-z]+[0-9]+")
+_ANALYSIS_CONCURRENCY = 64
 
 
 def _emit(payload: dict) -> None:
@@ -47,9 +56,6 @@ def _round6(x: Optional[float]) -> Optional[float]:
     if x is None or not math.isfinite(x):
         return None
     return round(x, 6)
-
-def _is_nonnegative_finite(x: Optional[float]) -> bool:
-    return x is None or (math.isfinite(x) and x >= 0.0)
 
 
 def _side_winrate_to_red(winrate: Optional[float], side: Side) -> Optional[float]:
@@ -96,87 +102,6 @@ def _to_output_row(r: AnalysisMove, *, side_to_play: Side) -> dict:
     }
 
 
-def _run_for_seconds_from_first_update(core: GuiCore, seconds: float) -> str:
-    first_update_at: Optional[float] = None
-    wait_started_at = time.monotonic()
-    while True:
-        now = time.monotonic()
-        core.tick(now)
-
-        if first_update_at is None and core.get_engine_analysis():
-            first_update_at = now
-
-        if first_update_at is not None and now - first_update_at >= seconds:
-            return "completed"
-        proc = getattr(core.engine, "proc", None)
-        if proc is not None and proc.poll() is not None:
-            return "engine_exited"
-        if first_update_at is None and now - wait_started_at >= STARTUP_TIMEOUT_SECONDS:
-            return "startup_timeout"
-        time.sleep(POLL_SECONDS)
-
-
-def _run_kata_raw_nn_once(engine: KataHexEngine) -> Optional[RawNNResult]:
-    if not engine.start_kata_raw_nn(0):
-        return None
-    started_at = time.monotonic()
-    while True:
-        done, raw = engine.poll_kata_raw_nn()
-        if done:
-            return raw
-        if engine.proc.poll() is not None:
-            return None
-        if time.monotonic() - started_at >= STARTUP_TIMEOUT_SECONDS:
-            return None
-        time.sleep(POLL_SECONDS)
-
-
-def _raw_policy_grid_value(raw: RawNNResult, col: int, row: int) -> Optional[float]:
-    if row <= 0 or col <= 0 or row > len(raw.policy_rows):
-        return None
-    row_vals = raw.policy_rows[row - 1]
-    if col > len(row_vals):
-        return None
-    return row_vals[col - 1]
-
-
-def _raw_red_winrate(core: GuiCore, raw: RawNNResult) -> Optional[float]:
-    if raw.white_win is None:
-        return None
-    if core.map_side_to_engine(Side.BLUE) == Side.BLUE:
-        blue_win = raw.white_win
-    else:
-        blue_win = 1.0 - raw.white_win
-    return _round6(1.0 - blue_win)
-
-
-def _raw_policy_rows_cli(core: GuiCore, raw: RawNNResult) -> list[dict]:
-    board = core.board
-    rows: list[tuple[str, float]] = []
-
-    for row in range(1, board.n + 1):
-        for col in range(1, board.n + 1):
-            if not board.is_empty(col, row):
-                continue
-            eng_col, eng_row = core.map_coords_to_engine(col, row)
-            raw_v = _raw_policy_grid_value(raw, eng_col, eng_row)
-            p = 0.0 if raw_v is None else max(0.0, raw_v)
-            rows.append((coord_to_human(col, row), p))
-
-    pass_p = 0.0 if raw.policy_pass is None else max(0.0, raw.policy_pass)
-    rows.append(("pass", pass_p))
-
-    rows.sort(key=lambda r: (-r[1], r[0]))
-    return [
-        {
-            "move": move,
-            "rank": i + 1,
-            "prior": _round6(p),
-        }
-        for i, (move, p) in enumerate(rows)
-    ]
-
-
 def _move_to_text(mv) -> str:
     if mv.kind == MoveKind.PASS:
         return "pass"
@@ -204,26 +129,7 @@ def _search_failure_error(status: str) -> str:
     return "No analysis update received from engine"
 
 
-def _raw_analyze_payload(core: GuiCore, raw: RawNNResult, *, top_n: Optional[int]) -> dict:
-    moves = _raw_policy_rows_cli(core, raw)
-    best = None
-    if moves:
-        m0 = moves[0]
-        best = {
-            "move": m0["move"],
-            "prior": m0["prior"],
-        }
-    if top_n is not None:
-        moves = moves[:top_n]
-    return {
-        "method": "raw_nn",
-        "best": best,
-        "root_eval": {"red_winrate": _raw_red_winrate(core, raw)},
-        "moves": moves,
-    }
-
-
-def _search_analyze_payload(
+def _search_payload_from_moves(
     recs: list[AnalysisMove],
     *,
     side_to_play: Side,
@@ -255,121 +161,6 @@ def _final_analysis_payload(*, side: Side, analyze: dict) -> dict:
         "side": _side_to_text(side),
         "analyze": analyze,
     }
-
-
-def _run_search_for_cli(
-    core: GuiCore,
-    seconds: float,
-    *,
-    candidate_only: bool = False,
-) -> tuple[bool, list[AnalysisMove] | dict]:
-    core.toggle_analysis()
-    try:
-        status = _run_for_seconds_from_first_update(core, seconds)
-        if status != "completed":
-            return False, {"error": _search_failure_error(status)}
-        recs = core.get_candidate_analysis() if candidate_only else core.get_active_analysis()
-        return True, recs
-    finally:
-        if core.session.analysis.enabled:
-            core.toggle_analysis()
-
-
-def _validate_filter_moves(core: GuiCore, filter_moves: tuple[tuple[int, int], ...]) -> Optional[str]:
-    for col, row in filter_moves:
-        move = coord_to_human(col, row)
-        if not core.board.in_bounds(col, row):
-            return f"Filtered move out of bounds: {move}"
-        if not core.board.is_empty(col, row):
-            return f"Filtered move not empty: {move}"
-    return None
-
-
-def _run_cli_analyze(
-    core: GuiCore,
-    args: argparse.Namespace,
-    *,
-    filter_moves: tuple[tuple[int, int], ...] = (),
-) -> tuple[bool, dict]:
-    if args.search_seconds is None:
-        if filter_moves:
-            return False, {"error": "Filtered analyze requires --search-seconds"}
-        raw = _run_kata_raw_nn_once(core.engine)
-        if raw is None:
-            return False, {"error": "No raw-NN reply received from engine"}
-        return True, {"analyze": _raw_analyze_payload(core, raw, top_n=args.top_n)}
-
-    filter_error = _validate_filter_moves(core, filter_moves)
-    if filter_error is not None:
-        return False, {"error": filter_error}
-
-    side_to_play = core.current_side()
-    for col, row in filter_moves:
-        core.add_candidate(col, row)
-    try:
-        ok, recs_or_error = _run_search_for_cli(core, args.search_seconds, candidate_only=bool(filter_moves))
-        if not ok:
-            return False, recs_or_error
-        return True, {
-            "analyze": _search_analyze_payload(
-                recs_or_error,
-                side_to_play=side_to_play,
-                top_n=args.top_n,
-            )
-        }
-    finally:
-        if filter_moves:
-            core.clear_candidates()
-
-
-def _run_cli_batch(core: GuiCore, args: argparse.Namespace, *, result: Optional[str] = None) -> tuple[bool, dict]:
-    if core.current_ply() and not core.go_first():
-        return False, {"error": "Failed to rewind to start for batch analysis"}
-
-    plies: list[dict] = []
-    plies_total = 0
-    while True:
-        mv = core.next_mainline_move()
-        if mv is None:
-            break
-
-        plies_total += 1
-        row = {
-            "ply": plies_total,
-            "side": _side_to_text(mv.side),
-            "played": _move_to_text(mv),
-        }
-        if plies_total != 1 and mv.kind != MoveKind.SWAP:
-            side_to_play = core.current_side()
-            ok, recs_or_error = _run_search_for_cli(core, args.search_seconds)
-            if not ok:
-                return False, recs_or_error
-            row["analyze"] = _search_analyze_payload(
-                recs_or_error,
-                side_to_play=side_to_play,
-                top_n=None,
-            )
-        plies.append(row)
-
-        if not core.step_forward():
-            return False, {"error": "Failed to step forward during batch analysis"}
-
-    batch = {"plies": plies}
-    final_side = core.current_side()
-    ok, recs_or_error = _run_search_for_cli(core, args.search_seconds)
-    if not ok:
-        return False, recs_or_error
-    batch["final"] = _final_analysis_payload(
-        side=final_side,
-        analyze=_search_analyze_payload(
-            recs_or_error,
-            side_to_play=final_side,
-            top_n=None,
-        ),
-    )
-    if result is not None:
-        batch["result"] = result
-    return True, {"batch": batch}
 
 
 def _parse_openings(raw: str) -> list[tuple[tuple[int, int], ...]]:
@@ -643,7 +434,7 @@ def _run_match_game(
                 result=result,
                 final=_final_analysis_payload(
                     side=side,
-                    analyze=_search_analyze_payload(
+                    analyze=_search_payload_from_moves(
                         recs,
                         side_to_play=side,
                         top_n=None,
@@ -728,7 +519,7 @@ def _run_match_game(
                 "engine": actor_name,
                 "visits_temp": _round6(visits_temp),
                 "played": coord_to_human(col, row),
-                "analyze": _search_analyze_payload(
+                "analyze": _search_payload_from_moves(
                     recs,
                     side_to_play=side,
                     top_n=None,
@@ -796,6 +587,460 @@ def _iter_cli_positions(positions: list[str]) -> Iterator[str]:
                 yield position
 
 
+def _analysis_engine_command(engine_cmd: list[str], *, raw_nn: bool) -> list[str]:
+    if len(engine_cmd) < 2 or engine_cmd[1] != "gtp":
+        raise ValueError("Engine command must use the KataGo gtp subcommand")
+    cmd = list(engine_cmd)
+    cmd[1] = "analysis"
+    overrides = {
+        "nnMaxBatchSize": str(_ANALYSIS_CONCURRENCY),
+        "numSearchThreads": "1",
+        "reportAnalysisWinratesAs": "BLACK",
+    }
+    if raw_nn:
+        overrides.update(
+            nnForcedSymmetry="0",
+            nnPolicyTemperature="1.0",
+            wideRootNoise="0",
+        )
+    try:
+        override_idx = cmd.index("-override-config")
+    except ValueError:
+        cmd.extend(["-override-config", ""])
+        override_idx = len(cmd) - 2
+    existing = [part for part in cmd[override_idx + 1].split(",") if part]
+    existing = [part for part in existing if part.split("=", 1)[0].strip() not in overrides]
+    cmd[override_idx + 1] = ",".join(
+        [*existing, *(f"{key}={value}" for key, value in overrides.items())]
+    )
+    cmd.extend(["-analysis-threads", str(_ANALYSIS_CONCURRENCY)])
+    return cmd
+
+
+def _parse_analysis_position(
+    position: str,
+    *,
+    game_type: GameType,
+) -> tuple[Board, list[Move], list[Move], str]:
+    url_game_type = hexworld.url_game_type(position)
+    if url_game_type is not None and url_game_type != game_type:
+        raise ValueError(
+            f"Position is for {url_game_type.value}; current game is {game_type.value}"
+        )
+    size, past_moves, future_moves, _next_side = hexworld.parse_hexworld_position(
+        position,
+        game_type=game_type,
+    )
+    if size < MIN_BOARD_SIZE or size > MAX_BOARD_SIZE:
+        raise ValueError(f"Board size {size} must be between {MIN_BOARD_SIZE} and {MAX_BOARD_SIZE}")
+    board = Board(size, game_type)
+    for move in past_moves:
+        if not board.apply_move(move):
+            raise ValueError(f"Illegal move: {_move_to_text(move)}")
+    probe = board.copy()
+    for move in future_moves:
+        if not probe.apply_move(move):
+            raise ValueError(f"Illegal move: {_move_to_text(move)}")
+    canonical_url = hexworld.build_position_url(game_type, size, past_moves, future_moves)
+    return board, past_moves, future_moves, canonical_url
+
+
+def _analysis_request(
+    board: Board,
+    *,
+    request_id: str,
+    visits: Optional[int],
+    filter_moves: tuple[tuple[int, int], ...] = (),
+    analysis_wide_root_noise: Optional[float] = None,
+) -> tuple[dict, bool]:
+    swap_transform = engine_swap_transform_active(board.game_type, board.history)
+
+    engine_moves: list[list[str]] = []
+    for move in board.history:
+        if move.kind == MoveKind.SWAP:
+            continue
+        side = map_side_to_engine(move.side, swap_transform)
+        if move.kind == MoveKind.PASS:
+            vertex = "pass"
+        else:
+            col, row = map_coords_to_engine(int(move.col), int(move.row), swap_transform)
+            vertex = board_to_engine_vertex(col, row, board.game_type)
+        engine_moves.append(["B" if side == Side.RED else "W", vertex])
+
+    request = {
+        "id": request_id,
+        "moves": engine_moves,
+        "rules": "tromp-taylor",
+        "boardXSize": board.n,
+        "boardYSize": board.n,
+        "maxVisits": 1 if visits is None else visits,
+        "includePolicy": visits is None,
+        "analysisPVLen": 1,
+    }
+    if visits is not None:
+        settings: dict[str, int | float] = {
+            "maxPlayouts": 1 << 50,
+            "maxTime": 1.0e20,
+        }
+        if analysis_wide_root_noise is not None:
+            settings["wideRootNoise"] = analysis_wide_root_noise
+        request["overrideSettings"] = settings
+
+    if filter_moves:
+        if visits is None:
+            raise ValueError("Filtered analyze requires --visits")
+        vertices: list[str] = []
+        for col, row in filter_moves:
+            move = coord_to_human(col, row)
+            if not board.in_bounds(col, row):
+                raise ValueError(f"Filtered move out of bounds: {move}")
+            if not board.is_empty(col, row):
+                raise ValueError(f"Filtered move not empty: {move}")
+            engine_col, engine_row = map_coords_to_engine(col, row, swap_transform)
+            vertices.append(board_to_engine_vertex(engine_col, engine_row, board.game_type))
+        side = Side.RED if len(board.history) % 2 == 0 else Side.BLUE
+        side = map_side_to_engine(side, swap_transform)
+        request["allowMoves"] = [
+            {
+                "player": "B" if side == Side.RED else "W",
+                "moves": vertices,
+                "untilDepth": 1,
+            }
+        ]
+    return request, swap_transform
+
+
+def _raw_payload_from_response(
+    response: dict,
+    *,
+    board: Board,
+    swap_transform: bool,
+    top_n: Optional[int],
+) -> dict:
+    policy = response.get("policy")
+    root_info = response.get("rootInfo")
+    if not isinstance(policy, list) or len(policy) != board.n * board.n + 1:
+        raise ValueError("Analysis response missing raw policy")
+    if not isinstance(root_info, dict) or not isinstance(root_info.get("winrate"), (int, float)):
+        raise ValueError("Analysis response missing root winrate")
+
+    rows: list[tuple[str, float]] = []
+    for row in range(1, board.n + 1):
+        for col in range(1, board.n + 1):
+            if not board.is_empty(col, row):
+                continue
+            engine_col, engine_row = map_coords_to_engine(col, row, swap_transform)
+            prior = policy[(engine_row - 1) * board.n + engine_col - 1]
+            rows.append((coord_to_human(col, row), max(0.0, float(prior))))
+    rows.append(("pass", max(0.0, float(policy[-1]))))
+    rows.sort(key=lambda item: (-item[1], item[0]))
+    moves = [
+        {"move": move, "rank": rank, "prior": _round6(prior)}
+        for rank, (move, prior) in enumerate(rows, start=1)
+    ]
+    best = {"move": moves[0]["move"], "prior": moves[0]["prior"]} if moves else None
+    if top_n is not None:
+        moves = moves[:top_n]
+    black_winrate = float(root_info["winrate"])
+    red_winrate = 1.0 - black_winrate if swap_transform else black_winrate
+    return {
+        "method": "raw_nn",
+        "best": best,
+        "root_eval": {"red_winrate": _round6(red_winrate)},
+        "moves": moves,
+    }
+
+
+def _search_payload_from_response(
+    response: dict,
+    *,
+    board: Board,
+    swap_transform: bool,
+    top_n: Optional[int],
+) -> dict:
+    move_infos = response.get("moveInfos")
+    root_info = response.get("rootInfo")
+    if not isinstance(move_infos, list):
+        raise ValueError("Analysis response missing moves")
+    if not isinstance(root_info, dict) or not isinstance(root_info.get("visits"), int):
+        raise ValueError("Analysis response missing root visits")
+
+    side_to_play = Side.RED if len(board.history) % 2 == 0 else Side.BLUE
+    recs: list[AnalysisMove] = []
+    for fallback_order, info in enumerate(move_infos):
+        if not isinstance(info, dict) or not isinstance(info.get("move"), str):
+            raise ValueError("Analysis response contains an invalid move")
+        token = info["move"]
+        col = row = None
+        if token.lower() != "pass":
+            coords = parse_analysis_move_token(token, board.n, board.game_type)
+            if coords is None:
+                raise ValueError(f"Analysis response contains an invalid move: {token}")
+            col, row = coords
+            if swap_transform:
+                col, row = row, col
+        black_winrate = info.get("winrate")
+        if not isinstance(black_winrate, (int, float)):
+            raise ValueError("Analysis response move missing winrate")
+        visits = info.get("visits")
+        if not isinstance(visits, int):
+            raise ValueError("Analysis response move missing visits")
+        order = info.get("order")
+        prior = info.get("prior")
+        red_winrate = 1.0 - float(black_winrate) if swap_transform else float(black_winrate)
+        recs.append(
+            AnalysisMove(
+                move=token,
+                order=order if isinstance(order, int) else fallback_order,
+                col=col,
+                row=row,
+                winrate=red_winrate if side_to_play == Side.RED else 1.0 - red_winrate,
+                visits=visits,
+                prior=float(prior) if isinstance(prior, (int, float)) else None,
+                pv=None,
+            )
+        )
+    recs.sort(key=lambda rec: rec.order)
+    payload = _search_payload_from_moves(recs, side_to_play=side_to_play, top_n=top_n)
+    payload["total_visits"] = root_info["visits"]
+    return payload
+
+
+def _run_analysis_subcommand(
+    requests: list[dict],
+    *,
+    engine_cmd: list[str],
+    raw_nn: bool,
+) -> tuple[dict[str, dict], int, bool]:
+    started_at = time.monotonic()
+    proc = subprocess.run(
+        _analysis_engine_command(engine_cmd, raw_nn=raw_nn),
+        input="".join(json.dumps(request, separators=(",", ":")) + "\n" for request in requests),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    elapsed_ms = int(round((time.monotonic() - started_at) * 1000))
+    responses: dict[str, dict] = {}
+    for line in proc.stdout.splitlines():
+        try:
+            response = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(response, dict) and isinstance(response.get("id"), str):
+            responses[response["id"]] = response
+    return responses, elapsed_ms, proc.returncode != 0
+
+
+def _analysis_payload_from_response(
+    response: dict,
+    *,
+    board: Board,
+    swap_transform: bool,
+    visits: Optional[int],
+    top_n: Optional[int],
+) -> dict:
+    if visits is None:
+        return _raw_payload_from_response(
+            response,
+            board=board,
+            swap_transform=swap_transform,
+            top_n=top_n,
+        )
+    payload = _search_payload_from_response(
+        response,
+        board=board,
+        swap_transform=swap_transform,
+        top_n=top_n,
+    )
+    if payload["total_visits"] != visits:
+        raise ValueError(
+            f"Analysis returned {payload['total_visits']} visits; expected {visits}"
+        )
+    return payload
+
+
+def _resolve_analysis_jobs(
+    requests: list[dict],
+    jobs: dict[str, tuple[dict, dict, Board, bool, Optional[int]]],
+    *,
+    engine_cmd: list[str],
+    visits: Optional[int],
+) -> tuple[int, bool]:
+    responses, elapsed_ms, had_error = _run_analysis_subcommand(
+        requests,
+        engine_cmd=engine_cmd,
+        raw_nn=visits is None,
+    )
+    for request_id, (record, target, board, swap_transform, top_n) in jobs.items():
+        response = responses.get(request_id)
+        try:
+            if response is None:
+                raise ValueError("Engine exited before analysis completed")
+            if response.get("error"):
+                raise ValueError(str(response["error"]))
+            target["analyze"] = _analysis_payload_from_response(
+                response,
+                board=board,
+                swap_transform=swap_transform,
+                visits=visits,
+                top_n=top_n,
+            )
+        except (AttributeError, TypeError, ValueError) as exc:
+            record["error"] = str(exc)
+            had_error = True
+    return elapsed_ms, had_error
+
+
+def _emit_analysis_records(records: list[dict], elapsed_ms: int, had_error: bool) -> int:
+    for record in records:
+        record.setdefault("meta", {"elapsed_ms": elapsed_ms})
+        record["ok"] = record["error"] is None
+        had_error = had_error or not record["ok"]
+        _emit(record)
+    return 1 if had_error else 0
+
+
+def _run_analyze_positions(
+    args: argparse.Namespace,
+    *,
+    engine_cmd: list[str],
+    game_type: GameType,
+) -> int:
+    records: list[dict] = []
+    requests: list[dict] = []
+    jobs: dict[str, tuple[dict, dict, Board, bool, Optional[int]]] = {}
+    for index, position_spec in enumerate(_iter_cli_positions(args.position)):
+        position = position_spec.rsplit("::", 1)[0]
+        position_started_at = time.monotonic()
+        request_id = str(index)
+        try:
+            position, filter_moves = _parse_analyze_position_spec(position_spec)
+            board, _past_moves, _future_moves, canonical_url = _parse_analysis_position(
+                position,
+                game_type=game_type,
+            )
+            request, swap_transform = _analysis_request(
+                board,
+                request_id=request_id,
+                visits=args.visits,
+                filter_moves=filter_moves,
+                analysis_wide_root_noise=args.analysis_wide_root_noise,
+            )
+        except ValueError as exc:
+            records.append(
+                {
+                    "hexworld": _input_hexworld_url(position, game_type),
+                    "ok": False,
+                    "error": str(exc),
+                    "meta": {
+                        "elapsed_ms": int(
+                            round((time.monotonic() - position_started_at) * 1000)
+                        )
+                    },
+                }
+            )
+            continue
+        record = {"hexworld": canonical_url, "ok": False, "error": None}
+        records.append(record)
+        requests.append(request)
+        jobs[request_id] = (record, record, board, swap_transform, args.top_n)
+
+    if not requests:
+        return _emit_analysis_records(records, 0, False)
+
+    try:
+        elapsed_ms, had_error = _resolve_analysis_jobs(
+            requests,
+            jobs,
+            engine_cmd=engine_cmd,
+            visits=args.visits,
+        )
+    except OSError:
+        return _fail("Engine executable not found")
+    return _emit_analysis_records(records, elapsed_ms, had_error)
+
+
+def _run_batch_positions(
+    args: argparse.Namespace,
+    *,
+    engine_cmd: list[str],
+    game_type: GameType,
+) -> int:
+    records: list[dict] = []
+    requests: list[dict] = []
+    jobs: dict[str, tuple[dict, dict, Board, bool, Optional[int]]] = {}
+
+    for position_input in _iter_cli_positions(args.position):
+        position_started_at = time.monotonic()
+        record = {
+            "hexworld": _input_hexworld_url(position_input, game_type),
+            "ok": False,
+            "error": None,
+        }
+        records.append(record)
+        try:
+            cursor_board, past_moves, future_moves, canonical_url = _parse_analysis_position(
+                position_input,
+                game_type=game_type,
+            )
+            all_moves = [*past_moves, *future_moves]
+            board = Board(cursor_board.n, game_type)
+            plies: list[dict] = []
+            batch: dict = {"plies": plies}
+            result = hexworld.terminal_result_from_text(position_input)
+            if result is not None:
+                batch["result"] = result
+            record.update(hexworld=canonical_url, batch=batch)
+
+            def add_analysis(target: dict) -> None:
+                request_id = str(len(requests))
+                snapshot = board.copy()
+                request, swap_transform = _analysis_request(
+                    snapshot,
+                    request_id=request_id,
+                    visits=args.visits,
+                )
+                requests.append(request)
+                jobs[request_id] = (record, target, snapshot, swap_transform, None)
+
+            for ply, move in enumerate(all_moves, start=1):
+                row = {
+                    "ply": ply,
+                    "side": _side_to_text(move.side),
+                    "played": _move_to_text(move),
+                }
+                if ply != 1 and move.kind != MoveKind.SWAP:
+                    add_analysis(row)
+                plies.append(row)
+                if not board.apply_move(move):
+                    raise AssertionError("Validated batch move became illegal")
+
+            final_side = Side.RED if len(all_moves) % 2 == 0 else Side.BLUE
+            final = {"side": _side_to_text(final_side)}
+            batch["final"] = final
+            add_analysis(final)
+        except ValueError as exc:
+            record["error"] = str(exc)
+            record["meta"] = {
+                "elapsed_ms": int(round((time.monotonic() - position_started_at) * 1000))
+            }
+
+    if not requests:
+        return _emit_analysis_records(records, 0, False)
+
+    try:
+        elapsed_ms, had_error = _resolve_analysis_jobs(
+            requests,
+            jobs,
+            engine_cmd=engine_cmd,
+            visits=args.visits,
+        )
+    except OSError:
+        return _fail("Engine executable not found")
+    return _emit_analysis_records(records, elapsed_ms, had_error)
+
+
 def _add_cli_engine_argument(ap: argparse.ArgumentParser) -> None:
     ap.add_argument(
         "--engine",
@@ -816,10 +1061,10 @@ def add_cli_arguments(ap: argparse.ArgumentParser) -> None:
     )
     analyze_ap.add_argument("--top-n", type=int, default=None, help="Limit number of returned moves")
     analyze_ap.add_argument(
-        "--search-seconds",
-        type=float,
+        "--visits",
+        type=int,
         default=None,
-        help="Search time (omit for raw-NN)",
+        help="Search visits per position (omit for raw-NN)",
     )
     analyze_ap.add_argument(
         "--analysis-wide-root-noise",
@@ -830,7 +1075,7 @@ def add_cli_arguments(ap: argparse.ArgumentParser) -> None:
         help="analysisWideRootNoise",
     )
 
-    batch_ap = sub.add_parser("batch", help="Analyze the full main line with per-ply search")
+    batch_ap = sub.add_parser("batch", help="Analyze positions along the full main line")
     _add_cli_engine_argument(batch_ap)
     batch_ap.add_argument(
         "position",
@@ -838,10 +1083,10 @@ def add_cli_arguments(ap: argparse.ArgumentParser) -> None:
         help="HexWorld URL(s), hash(es), or '-' for stdin",
     )
     batch_ap.add_argument(
-        "--search-seconds",
-        type=float,
-        default=1.0,
-        help="Search time per ply",
+        "--visits",
+        type=int,
+        default=None,
+        help="Search visits per position (omit for raw-NN)",
     )
 
     match_ap = sub.add_parser("match", help="Run paired engine-vs-engine search games over openings")
@@ -890,86 +1135,6 @@ def add_cli_arguments(ap: argparse.ArgumentParser) -> None:
     )
 
 
-def _run_analyze_positions(
-    core: GuiCore,
-    engine: KataHexEngine,
-    args: argparse.Namespace,
-) -> int:
-    awrn = getattr(args, "analysis_wide_root_noise", None)
-    if awrn is not None:
-        core.set_analysis_wide_root_noise(awrn)
-    had_error = False
-    for i, position_spec in enumerate(_iter_cli_positions(args.position)):
-        if i > 0:
-            engine.clear_cache()
-
-        started_at = time.monotonic()
-        try:
-            position_input, filter_moves = _parse_analyze_position_spec(position_spec)
-            spec_error = None
-        except ValueError as exc:
-            position_input = position_spec.rsplit("::", 1)[0]
-            filter_moves = ()
-            spec_error = f"Analyze position spec failed: {exc}"
-
-        position_error = spec_error or core.load_hexworld_text(position_input)
-        record = {
-            "hexworld": _input_hexworld_url(position_input, core.board.game_type),
-            "ok": False,
-            "error": position_error,
-        }
-        if position_error is None:
-            position_hexworld = core.build_hexworld_url()
-            ok, payload = _run_cli_analyze(core, args, filter_moves=filter_moves)
-            record.update(
-                {
-                    "hexworld": position_hexworld,
-                    "ok": ok,
-                    "error": None if ok else payload["error"],
-                    **({} if not ok else payload),
-                }
-            )
-        had_error = had_error or not record["ok"]
-        record["meta"] = {"elapsed_ms": int(round((time.monotonic() - started_at) * 1000))}
-        _emit(record)
-    return 1 if had_error else 0
-
-
-def _run_batch_positions(
-    core: GuiCore,
-    engine: KataHexEngine,
-    args: argparse.Namespace,
-) -> int:
-    had_error = False
-    for i, position_input in enumerate(_iter_cli_positions(args.position)):
-        if i > 0:
-            engine.clear_cache()
-
-        started_at = time.monotonic()
-        position_error = core.load_hexworld_text(position_input)
-        record = {
-            "hexworld": _input_hexworld_url(position_input, core.board.game_type),
-            "ok": False,
-            "error": position_error,
-        }
-        if position_error is None:
-            position_hexworld = core.build_hexworld_url()
-            batch_result = hexworld.terminal_result_from_text(position_input)
-            ok, payload = _run_cli_batch(core, args, result=batch_result)
-            record.update(
-                {
-                    "hexworld": position_hexworld,
-                    "ok": ok,
-                    "error": None if ok else payload["error"],
-                    **({} if not ok else payload),
-                }
-            )
-        had_error = had_error or not record["ok"]
-        record["meta"] = {"elapsed_ms": int(round((time.monotonic() - started_at) * 1000))}
-        _emit(record)
-    return 1 if had_error else 0
-
-
 def run_cli(
     args: argparse.Namespace,
     *,
@@ -999,34 +1164,32 @@ def run_cli(
     if args.cli_cmd == "analyze":
         if args.top_n is not None and args.top_n < 1:
             return _fail("--top-n must be >= 1")
-        if not _is_nonnegative_finite(args.search_seconds):
-            return _fail("--search-seconds must be finite and >= 0")
-        if args.search_seconds is None and args.analysis_wide_root_noise is not None:
-            return _fail("--analysis-wide-root-noise requires --search-seconds")
+        if args.visits is not None and args.visits < 1:
+            return _fail("--visits must be >= 1")
+        if args.analysis_wide_root_noise is not None:
+            if args.visits is None:
+                return _fail("--analysis-wide-root-noise requires --visits")
+            if not math.isfinite(args.analysis_wide_root_noise) or not (
+                0.0 <= args.analysis_wide_root_noise <= 5.0
+            ):
+                return _fail("--analysis-wide-root-noise must be between 0 and 5")
     elif args.cli_cmd == "batch":
-        if not _is_nonnegative_finite(getattr(args, "search_seconds", None)):
-            return _fail("--search-seconds must be finite and >= 0")
+        if args.visits is not None and args.visits < 1:
+            return _fail("--visits must be >= 1")
     else:
         return _fail(f"Unknown cli command: {args.cli_cmd}")
 
-    board = Board(DEFAULT_BOARD_SIZE, game_type)
-    try:
-        engine = KataHexEngine(
-            board_size=board.n,
-            cmd=engine_cmd,
-            game_type=game_type,
-            engine_echo=False,
-            suppress_stderr=True,
-        )
-    except OSError:
-        return _fail("Engine executable not found")
-    except RuntimeError as exc:
-        return _fail(str(exc))
-
-    core = GuiCore(board, engine)
     try:
         if args.cli_cmd == "analyze":
-            return _run_analyze_positions(core, engine, args)
-        return _run_batch_positions(core, engine, args)
-    finally:
-        engine.close()
+            return _run_analyze_positions(
+                args,
+                engine_cmd=engine_cmd,
+                game_type=game_type,
+            )
+        return _run_batch_positions(
+            args,
+            engine_cmd=engine_cmd,
+            game_type=game_type,
+        )
+    except ValueError as exc:
+        return _fail(str(exc))
