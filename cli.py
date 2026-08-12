@@ -594,6 +594,7 @@ def _analysis_engine_command(engine_cmd: list[str], *, raw_nn: bool) -> list[str
     cmd[1] = "analysis"
     overrides = {
         "nnMaxBatchSize": str(_ANALYSIS_CONCURRENCY),
+        "numAnalysisThreads": str(_ANALYSIS_CONCURRENCY),
         "numSearchThreads": "1",
         "reportAnalysisWinratesAs": "BLACK",
     }
@@ -613,7 +614,6 @@ def _analysis_engine_command(engine_cmd: list[str], *, raw_nn: bool) -> list[str
     cmd[override_idx + 1] = ",".join(
         [*existing, *(f"{key}={value}" for key, value in overrides.items())]
     )
-    cmd.extend(["-analysis-threads", str(_ANALYSIS_CONCURRENCY)])
     return cmd
 
 

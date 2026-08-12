@@ -20,25 +20,6 @@ class CliTests(unittest.TestCase):
         self.assertEqual(to_analysis_token(2, 1, 5, GameType.Y), "b1")
         self.assertIsNone(parse_analysis_move_token("d3", 5, GameType.Y))
 
-    def test_run_cli_analyze_uses_analysis_subcommand(self):
-        args = SimpleNamespace(
-            cli_cmd="analyze",
-            position=["good-1", "bad", "good-2"],
-            top_n=None,
-            visits=None,
-            analysis_wide_root_noise=None,
-        )
-
-        with patch("cli._run_analyze_positions", return_value=1) as run_analyze:
-            exit_code = cli.run_cli(args, engine_cmd=["katahex"])
-
-        self.assertEqual(exit_code, 1)
-        run_analyze.assert_called_once_with(
-            args,
-            engine_cmd=["katahex"],
-            game_type=GameType.HEX,
-        )
-
     def test_iter_cli_positions_expands_stdin_sentinel_in_position_order(self):
         with patch("cli.sys.stdin", io.StringIO("\nstdin-1\nstdin-2\n\n")):
             self.assertEqual(

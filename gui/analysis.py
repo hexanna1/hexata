@@ -5,7 +5,7 @@ import struct
 from dataclasses import dataclass, replace
 from typing import List, Optional, Sequence, Tuple
 
-from board import Board, Move, MoveKind, Side, coord_to_human
+from board import Move, MoveKind, Side, coord_to_human
 from engine import (
     AnalysisMove,
     engine_swap_transform_active,
@@ -100,13 +100,6 @@ class GuiCoreAnalysisMixin:
     def has_candidate_result(r: AnalysisMove) -> bool:
         return r.winrate is not None and r.visits is not None and r.visits > 0
 
-    def _materialized_history_for_moves(self, moves: Sequence[Move]) -> tuple[Move, ...]:
-        probe = Board(self.board.n, self.board.game_type)
-        for mv in moves:
-            if not probe.apply_move(mv):
-                raise AssertionError(f"Illegal move sequence for cache key: {moves!r}")
-        return tuple(probe.history)
-
     @staticmethod
     def _cache_move_token(mv: Move) -> tuple[int, int, int, int]:
         kind = 0
@@ -125,10 +118,6 @@ class GuiCoreAnalysisMixin:
             kind, mv_side, col, row = self._cache_move_token(mv)
             h.update(struct.pack("<BBHH", kind, mv_side, col, row))
         return h.digest()
-
-    def cache_key_for_moves(self, moves: Sequence[Move]) -> bytes:
-        applied = self._materialized_history_for_moves(moves)
-        return self._hash_applied_history(applied)
 
     def cache_key_for_applied_moves(self, moves: Sequence[Move]) -> bytes:
         return self._hash_applied_history(moves)
@@ -218,12 +207,6 @@ class GuiCoreAnalysisMixin:
             # Unordered candidate rows can inform display without becoming top moves.
             out.append(replace(r, move=coord_to_human(r.col, r.row), order=None))
         return out
-
-    def candidate_result(self, key: Tuple[int, int]) -> Tuple[Optional[float], Optional[int]]:
-        row = self._analysis_row_for_key(key)
-        if row is None:
-            return None, None
-        return row.winrate, row.visits
 
     def _live_analysis_row(self, key: Tuple[int, int]) -> Optional[AnalysisMove]:
         for r in self.get_engine_analysis():
@@ -510,14 +493,6 @@ class GuiCoreAnalysisMixin:
     # -------------------- candidate analysis --------------------
     def add_candidate(self, col: int, row: int) -> None:
         self._update_candidate_selection((col, row), selected=True)
-
-    def toggle_candidate(self, col: int, row: int) -> None:
-        key = (col, row)
-        if key not in self.session.analysis.candidate_selection.candidates:
-            self.add_candidate(col, row)
-            return
-
-        self._update_candidate_selection(key, selected=False)
 
     def remove_candidate(self, col: int, row: int) -> None:
         self._update_candidate_selection((col, row), selected=False)

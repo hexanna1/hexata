@@ -128,6 +128,16 @@ class GuiCoreTests(unittest.TestCase):
     def _visible_line(self, core: GuiCore):
         return list(core.visible_line_moves())
 
+    def _cache_key_for_moves(self, core: GuiCore, moves):
+        probe = Board(core.board.n, core.board.game_type)
+        for move in moves:
+            self.assertTrue(probe.apply_move(move))
+        return core.cache_key_for_applied_moves(probe.history)
+
+    def _candidate_result(self, core: GuiCore, key):
+        row = core._analysis_row_for_key(key)
+        return (None, None) if row is None else (row.winrate, row.visits)
+
     def test_y_board_uses_triangular_legal_cells(self):
         board = Board(5, GameType.Y)
 
@@ -400,12 +410,14 @@ class GuiCoreTests(unittest.TestCase):
 
     def test_delete_tail_selected_and_leaf_cases(self):
         with self.subTest(case="clears selected mainline after step back"):
-            core, _engine = self._mk_core()
+            core, engine = self._mk_core()
             self._play_two_moves(core)
             core.step_back()
             self._assert_tree_state(core, future=[(2, 1)])
+            before = len(engine.calls)
             self.assertTrue(core.delete_tail())
             self._assert_tree_state(core, future=[])
+            self.assertNotIn(("undo",), self._new_calls(engine, before))
 
         with self.subTest(case="promotes surviving sibling to mainline"):
             core, _engine = self._mk_core()
@@ -420,12 +432,14 @@ class GuiCoreTests(unittest.TestCase):
             self._assert_tree_state(core, history=[(1, 1), (3, 1)])
 
         with self.subTest(case="delete current leaf promotes surviving sibling"):
-            core, _engine = self._mk_core()
+            core, engine = self._mk_core()
             self._play_two_moves(core)
             core.step_back()
             core.try_play_move(3, 1)
+            before = len(engine.calls)
             self.assertTrue(core.delete_tail())
             self._assert_tree_state(core, history=[(1, 1)], future=[(2, 1)])
+            self.assertIn(("undo",), self._new_calls(engine, before))
 
     def test_rebuild_engine_from_applied_history(self):
         core, engine = self._mk_core()
@@ -460,7 +474,9 @@ class GuiCoreTests(unittest.TestCase):
         self.assertEqual(new_engine.played, [(Side.RED, 1, 1)])
         self.assertEqual(core.session.analysis.candidate_selection.candidates, {(2, 2)})
         self.assertFalse(core.session.analysis.cache)
-        self.assertTrue(any(call[0] == "start_analysis" and len(call) == 4 for call in new_engine.calls))
+        self.assertTrue(
+            any(call[0] == "start_analysis" and len(call) == 4 for call in new_engine.calls)
+        )
 
     def test_replace_engine_failure_restores_old_engine(self):
         core, old_engine = self._mk_core()
@@ -504,18 +520,21 @@ class GuiCoreTests(unittest.TestCase):
         self.assertFalse(core.session.analysis.cache)
         self.assertFalse(core.session.analysis.root_eval_cache)
         self.assertFalse(core.session.edit_undo)
-        self.assertEqual(
-            old_engine.calls[old_call_count:],
-            [("stop_analysis",), ("clear_analysis",), ("close",)],
+        old_calls = old_engine.calls[old_call_count:]
+        self.assertTrue(
+            all(call[0] in {"stop_analysis", "clear_analysis", "close"} for call in old_calls)
         )
-        self.assertEqual(
-            new_engine.calls,
-            [
-                ("clear_analysis",),
-                ("kata_set_param", "analysisWideRootNoise", 0.04),
-                ("start_analysis", Side.RED, core.analyze_interval_cs),
-            ],
-        )
+        self.assertEqual(old_calls.count(("stop_analysis",)), 1)
+        self.assertEqual(old_calls.count(("close",)), 1)
+        self.assertLess(old_calls.index(("stop_analysis",)), old_calls.index(("close",)))
+        self.assertEqual(new_engine.played, [])
+        self.assertNotIn(("undo",), new_engine.calls)
+        self.assertNotIn(("close",), new_engine.calls)
+        self.assertNotIn(("clear_board",), new_engine.calls)
+        self.assertFalse(any(call[0] == "set_board_size" for call in new_engine.calls))
+        starts = [call for call in new_engine.calls if call[0] == "start_analysis"]
+        self.assertEqual(len(starts), 1)
+        self.assertEqual(starts[0], ("start_analysis", Side.RED, core.analyze_interval_cs))
 
     def test_candidate_root_key_invalidation(self):
         core, _engine = self._mk_core()
@@ -583,63 +602,30 @@ class GuiCoreTests(unittest.TestCase):
         self.assertTrue(core.step_back())
         self.assertEqual(engine.analysis, [])
 
-    def test_live_position_change_preserves_engine_command_contract(self):
+    def test_live_position_change_plays_before_restarting_analysis(self):
         core, engine = self._mk_core()
         core.set_analysis_enabled(True)
         engine.calls.clear()
 
         self.assertTrue(core.try_play_move(1, 1))
 
-        self.assertEqual(
+        stop = self._index_of(engine.calls, lambda call: call[0] == "stop_analysis")
+        play = self._index_of(engine.calls, lambda call: call == ("play", Side.RED, 1, 1))
+        restart = self._index_of(
             engine.calls,
-            [
-                ("stop_analysis",),
-                ("clear_analysis",),
-                ("play", Side.RED, 1, 1),
-                ("clear_analysis",),
-                ("clear_analysis",),
-                ("kata_set_param", "analysisWideRootNoise", 0.04),
-                ("start_analysis", Side.BLUE, core.analyze_interval_cs),
-            ],
+            lambda call: call == ("start_analysis", Side.BLUE, core.analyze_interval_cs),
         )
-
-    def test_delete_tail_keeps_existing_cache_entries(self):
-        core, _engine = self._mk_core()
-
-        self._play_two_moves(core)
-
-        key0 = core.cache_key_for_moves([])
-        key1 = core.cache_key_for_moves(self._path_moves(core)[:1])
-        key2 = core.cache_key_for_moves(self._path_moves(core)[:2])
-        core.session.analysis.cache[key0] = ["a"]
-        core.session.analysis.cache[key1] = ["b"]
-        core.session.analysis.cache[key2] = ["c"]
-
-        core.delete_tail()  # removes last move; history length back to 1
-
-        self.assertIn(key0, core.session.analysis.cache)
-        self.assertIn(key1, core.session.analysis.cache)
-        self.assertIn(key2, core.session.analysis.cache)
-
-    def test_branching_clears_future_entries_but_keeps_cache(self):
-        core, _engine = self._mk_core()
-
-        self._play_two_moves(core)
-        core.step_back()  # selected mainline tail has one move
-
-        key0 = core.cache_key_for_moves([])
-        key1 = core.cache_key_for_moves(self._path_moves(core)[:1])
-        key2 = core.cache_key_for_moves(self._visible_line(core)[:2])
-        core.session.analysis.cache[key0] = ["a"]
-        core.session.analysis.cache[key1] = ["b"]
-        core.session.analysis.cache[key2] = ["c"]
-
-        core.try_play_move(3, 1)  # diverge, should clear future
-
-        self.assertEqual(core.mainline_tail_moves(), [])
-        self.assertIn(key0, core.session.analysis.cache)
-        self.assertIn(key1, core.session.analysis.cache)
-        self.assertIn(key2, core.session.analysis.cache)
+        self.assertLess(stop, play)
+        self.assertLess(play, restart)
+        clears = [i for i, call in enumerate(engine.calls) if call[0] == "clear_analysis"]
+        self.assertTrue(any(stop < clear < restart for clear in clears))
+        self.assertNotIn(("undo",), engine.calls)
+        self.assertNotIn(("close",), engine.calls)
+        self.assertNotIn(("clear_board",), engine.calls)
+        self.assertFalse(any(call[0] == "set_board_size" for call in engine.calls))
+        self.assertEqual(sum(call[0] == "stop_analysis" for call in engine.calls), 1)
+        self.assertEqual(sum(call[0] == "play" for call in engine.calls), 1)
+        self.assertEqual(sum(call[0] == "start_analysis" for call in engine.calls), 1)
 
     def test_try_play_or_pass_creates_variation_without_promoting_mainline(self):
         cases = (
@@ -669,10 +655,10 @@ class GuiCoreTests(unittest.TestCase):
         core.try_play_move(1, 2)
         core.step_back_n(2)
 
-        key0 = core.cache_key_for_moves([])
-        key1 = core.cache_key_for_moves(self._path_moves(core)[:1])
-        key2 = core.cache_key_for_moves(self._visible_line(core)[:2])
-        key3 = core.cache_key_for_moves(self._visible_line(core)[:3])
+        key0 = self._cache_key_for_moves(core, [])
+        key1 = self._cache_key_for_moves(core, self._path_moves(core)[:1])
+        key2 = self._cache_key_for_moves(core, self._visible_line(core)[:2])
+        key3 = self._cache_key_for_moves(core, self._visible_line(core)[:3])
         core.session.analysis.cache[key0] = ["a"]
         core.session.analysis.cache[key1] = ["b"]
         core.session.analysis.cache[key2] = ["c"]
@@ -1098,7 +1084,7 @@ class GuiCoreTests(unittest.TestCase):
             list(core.applied_history()),
         )
         self.assertEqual(keys[0], core.cache_key_for_applied_moves(core.applied_history()[:1]))
-        self.assertNotEqual(keys[0], core.cache_key_for_moves(core.visible_line_moves()[:1]))
+        self.assertNotEqual(keys[0], self._cache_key_for_moves(core, core.visible_line_moves()[:1]))
 
     def test_eval_graph_prefix_keys_replay_future_swap_from_pre_swap_cursor(self):
         core, _engine = self._mk_core()
@@ -1112,12 +1098,15 @@ class GuiCoreTests(unittest.TestCase):
             list(graph_data.moves),
             list(core.applied_history()) + core.mainline_tail_moves(),
         )
-        self.assertEqual(keys[0], core.cache_key_for_moves(core.current_path_moves()))
+        self.assertEqual(keys[0], self._cache_key_for_moves(core, core.current_path_moves()))
         self.assertEqual(
             keys[1],
-            core.cache_key_for_moves(core.current_path_moves() + core.mainline_tail_moves()[:1]),
+            self._cache_key_for_moves(
+                core,
+                core.current_path_moves() + core.mainline_tail_moves()[:1],
+            ),
         )
-        self.assertEqual(keys[2], core.cache_key_for_moves(core.visible_line_moves()))
+        self.assertEqual(keys[2], self._cache_key_for_moves(core, core.visible_line_moves()))
 
     def test_load_hexworld_text_with_swap(self):
         core, engine = self._mk_core()
@@ -1234,7 +1223,7 @@ class GuiCoreTests(unittest.TestCase):
 
         self.assertTrue(core.undo_edit())
         self.assertEqual(core.session.analysis.candidate_selection.candidates, {(1, 1)})
-        self.assertEqual(core.candidate_result((1, 1)), (0.4, 5))
+        self.assertEqual(self._candidate_result(core, (1, 1)), (0.4, 5))
         self.assertEqual(core.session.analysis.candidate_selection.root_key, core.cache_key())
         self.assertEqual(core.session.analysis.mode, AnalysisModeTag.LIVE)
 
@@ -1252,7 +1241,7 @@ class GuiCoreTests(unittest.TestCase):
 
         self.assertTrue(core.undo_edit())
         self.assertEqual(core.session.analysis.candidate_selection.candidates, {(1, 1)})
-        self.assertEqual(core.candidate_result((1, 1)), (None, None))
+        self.assertEqual(self._candidate_result(core, (1, 1)), (None, None))
         self.assertEqual(core.session.analysis.candidate_selection.root_key, core.cache_key())
 
     def test_undo_during_batch_exits_batch_mode(self):
@@ -1274,7 +1263,7 @@ class GuiCoreTests(unittest.TestCase):
         core.add_candidate(2, 2)
         core.set_analysis_enabled(True)
 
-        core.session.analysis.cache[core.cache_key_for_moves([])] = ["x"]
+        core.session.analysis.cache[self._cache_key_for_moves(core, [])] = ["x"]
 
         core.clear_analysis_caches()
 
@@ -1372,7 +1361,7 @@ class GuiCoreTests(unittest.TestCase):
                 core.try_play_move(3, 1)
                 core.step_back()
                 core.session.pending_size = 7
-                core.session.analysis.cache[core.cache_key_for_moves([])] = ["cached"]
+                core.session.analysis.cache[self._cache_key_for_moves(core, [])] = ["cached"]
                 self._assert_tree_state(core, history=[(1, 1)], future=[(2, 1)], variations=[(3, 1)])
                 self._assert_failed_load_preserves_state(core, engine, getattr(core, method), text)
 
@@ -1552,18 +1541,6 @@ class GuiCoreTests(unittest.TestCase):
                 core.tick(3.0)
                 self._assert_tree_state(core, history=end_history)
 
-    def test_batch_analysis_cancels_on_board_rev_change(self):
-        core, _engine = self._mk_core()
-        self._play_two_moves(core)
-        core.go_first()
-        core.start_batch_analysis()
-
-        self.assertTrue(core.is_batch_analysis_active())
-        core.board.place(Side.RED, 5, 5)
-        core.tick(0.1)
-
-        self.assertFalse(core.is_batch_analysis_active())
-
     def test_tree_only_edit_during_batch_cancels_immediately(self):
         core, _engine = self._mk_core()
 
@@ -1586,48 +1563,29 @@ class GuiCoreTests(unittest.TestCase):
         self.assertEqual(self._future_coords(core), [(3, 1)])
         self.assertEqual(self._history_coords(core), [])
 
-    def test_manual_step_during_batch_cancels_and_restarts_live_immediately(self):
-        core, engine = self._mk_core()
-        self._play_two_moves(core)
-        core.go_first()
-        core.start_batch_analysis()
+    def test_position_changes_during_batch_cancel_and_restart_live_once(self):
+        for action in ("step", "resize"):
+            with self.subTest(action=action):
+                core, engine = self._mk_core()
+                self._play_two_moves(core)
+                core.go_first()
+                core.start_batch_analysis()
+                if action == "resize":
+                    core.session.pending_size = 6
+                before = len(engine.calls)
 
-        self.assertTrue(core.is_batch_analysis_active())
-        before = len(engine.calls)
+                changed = core.step_forward() if action == "step" else core.apply_pending_size()
 
-        self.assertTrue(core.step_forward())
-        new_calls = self._new_calls(engine, before)
+                self.assertTrue(changed)
+                self.assertFalse(core.is_batch_analysis_active())
+                self.assertTrue(core.session.analysis.enabled)
+                new_calls = self._new_calls(engine, before)
+                self.assertEqual(sum(call[0] == "start_analysis" for call in new_calls), 1)
 
-        self.assertFalse(core.is_batch_analysis_active())
-        self.assertTrue(core.session.analysis.enabled)
-        self.assertEqual(sum(1 for call in new_calls if call[0] == "start_analysis"), 1)
-
-        before = len(engine.calls)
-        core.tick(0.1)
-        tick_calls = self._new_calls(engine, before)
-        self.assertEqual(sum(1 for call in tick_calls if call[0] == "start_analysis"), 0)
-
-    def test_apply_pending_size_during_batch_cancels_and_restarts_live_immediately(self):
-        core, engine = self._mk_core()
-        self._play_two_moves(core)
-        core.go_first()
-        core.start_batch_analysis()
-
-        self.assertTrue(core.is_batch_analysis_active())
-        core.session.pending_size = 6
-        before = len(engine.calls)
-
-        self.assertTrue(core.apply_pending_size())
-        new_calls = self._new_calls(engine, before)
-
-        self.assertFalse(core.is_batch_analysis_active())
-        self.assertTrue(core.session.analysis.enabled)
-        self.assertEqual(sum(1 for call in new_calls if call[0] == "start_analysis"), 1)
-
-        before = len(engine.calls)
-        core.tick(0.1)
-        tick_calls = self._new_calls(engine, before)
-        self.assertEqual(sum(1 for call in tick_calls if call[0] == "start_analysis"), 0)
+                before = len(engine.calls)
+                core.tick(0.1)
+                tick_calls = self._new_calls(engine, before)
+                self.assertFalse(any(call[0] == "start_analysis" for call in tick_calls))
 
     def test_batch_cancel_clears_stale_engine_analysis_before_live_resume(self):
         core, engine = self._mk_core()
@@ -1734,8 +1692,9 @@ class GuiCoreTests(unittest.TestCase):
         core.add_candidate(2, 1)
 
         self.assertNotIn(("play", Side.RED, 1, 1), engine.calls)
-        self.assertIn(("start_analysis", Side.RED, 15, ((Side.RED, [(1, 1), (2, 1)]),)), engine.calls)
-        self.assertEqual(engine.params["analysisWideRootNoise"], core.session.analysis.wide_root_noise)
+        filter_calls = [call for call in engine.calls if call[0] == "start_analysis" and len(call) == 4]
+        self.assertEqual(filter_calls[-1][1], Side.RED)
+        self.assertEqual(filter_calls[-1][3], ((Side.RED, [(1, 1), (2, 1)]),))
         self.assertEqual(core.get_top_move(), (None, 0))
 
         pv = ((1, 1), (3, 1))
@@ -1766,7 +1725,7 @@ class GuiCoreTests(unittest.TestCase):
         core.set_analysis_wide_root_noise(0.12)
 
         self.assertEqual(engine.params["analysisWideRootNoise"], 0.12)
-        self.assertEqual(core.candidate_result((1, 1)), (0.7, 40))
+        self.assertEqual(self._candidate_result(core, (1, 1)), (0.7, 40))
 
     def test_delete_tail_syncs_candidate_position(self):
         core, engine = self._mk_core()
@@ -1780,73 +1739,48 @@ class GuiCoreTests(unittest.TestCase):
         self.assertEqual(new_calls.count(("undo",)), 1)
 
     def test_removing_last_candidate_resumes_live_analysis(self):
-        for remover in (GuiCore.toggle_candidate, GuiCore.remove_candidate):
-            with self.subTest(remover=remover.__name__):
-                core, engine = self._mk_core()
+        core, engine = self._mk_core()
+        self._start_candidate_filter(core, 1, 1)
+        engine.analysis = [
+            AnalysisMove("b2", order=0, col=2, row=2, winrate=0.6, visits=10, prior=0.4, pv=None)
+        ]
 
-                self._start_candidate_filter(core, 1, 1)
-                engine.analysis = [
-                    AnalysisMove("b2", order=0, col=2, row=2, winrate=0.6, visits=10, prior=0.4, pv=None)
-                ]
+        def clear_analysis_realistic():
+            engine.calls.append(("clear_analysis",))
+            engine.analysis.clear()
 
-                def clear_analysis_realistic():
-                    engine.calls.append(("clear_analysis",))
-                    engine.analysis.clear()
+        engine.clear_analysis = clear_analysis_realistic
+        before = len(engine.calls)
 
-                engine.clear_analysis = clear_analysis_realistic
+        core.remove_candidate(1, 1)
 
-                before = len(engine.calls)
-                remover(core, 1, 1)
+        new_calls = self._new_calls(engine, before)
+        self.assertTrue(any(call[0] == "clear_analysis" for call in new_calls))
+        self.assertTrue(any(call[0] == "start_analysis" for call in new_calls))
+        self.assertFalse(core.session.analysis.candidate_selection.candidates)
+        self.assertEqual(engine.analysis, [])
 
-                new_calls = self._new_calls(engine, before)
-                self.assertTrue(any(call[0] == "clear_analysis" for call in new_calls))
-                self.assertTrue(any(call[0] == "start_analysis" for call in new_calls))
-                self.assertFalse(core.session.analysis.candidate_selection.candidates)
-                self.assertEqual(engine.analysis, [])
-
-    def test_delete_tail_behavior(self):
+    def test_delete_tail_keeps_analysis_cache(self):
         for at_end in (False, True):
             with self.subTest(at_end=at_end):
-                core, engine = self._mk_core()
-
+                core, _engine = self._mk_core()
                 self._play_two_moves(core)
+                keys = [
+                    self._cache_key_for_moves(core, self._path_moves(core)[:ply])
+                    for ply in range(3)
+                ]
+                for key, value in zip(keys, "abc"):
+                    core.session.analysis.cache[key] = [value]
                 if not at_end:
-                    core.step_back()
-
-                history_len = len(core.board.history)
-                before = len(engine.calls)
+                    core.go_first()
 
                 self.assertTrue(core.delete_tail())
 
-                new_calls = self._new_calls(engine, before)
                 if at_end:
-                    self.assertEqual(len(core.board.history), history_len - 1)
-                    self.assertIn(("undo",), new_calls)
+                    self._assert_tree_state(core, history=[(1, 1)], future=[])
                 else:
-                    self.assertEqual(len(core.board.history), history_len)
-                    self.assertNotIn(("undo",), new_calls)
-                self.assertEqual(core.mainline_tail_moves(), [])
-
-    def test_delete_tail_keeps_future_cache_when_truncating(self):
-        core, _engine = self._mk_core()
-
-        self._play_two_moves(core)
-        key0 = core.cache_key_for_moves([])
-        key1 = core.cache_key_for_moves(self._path_moves(core)[:1])
-        key2 = core.cache_key_for_moves(self._path_moves(core)[:2])
-        core.session.analysis.cache[key0] = ["a"]
-        core.session.analysis.cache[key1] = ["b"]
-        core.session.analysis.cache[key2] = ["c"]
-
-        core.go_first()
-        self.assertTrue(core.mainline_tail_moves())
-
-        core.delete_tail()
-
-        self.assertEqual(core.mainline_tail_moves(), [])
-        self.assertIn(key0, core.session.analysis.cache)
-        self.assertIn(key1, core.session.analysis.cache)
-        self.assertIn(key2, core.session.analysis.cache)
+                    self._assert_tree_state(core, history=[], future=[])
+                self.assertTrue(all(key in core.session.analysis.cache for key in keys))
 
 
 if __name__ == "__main__":

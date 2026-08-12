@@ -65,41 +65,6 @@ class GuiModuleTests(unittest.TestCase):
                 else:
                     self.assertEqual(info.call_count, 3)
 
-    def test_cycle_engine_profile_delegates_replacement(self):
-        new_engine = SimpleNamespace(close=mock.Mock())
-        core = SimpleNamespace(
-            board=SimpleNamespace(n=11, game_type=GameType.HEX),
-            replace_engine=mock.Mock(return_value=True),
-        )
-        ui = gui.UiState(
-            prefs=gui.UiPrefs(),
-            engine_profiles=(
-                gui.EngineProfile("main", ("main",)),
-                gui.EngineProfile("alt", ("alt",)),
-            ),
-            current_engine_idx=0,
-            speed_last_t=1.0,
-            speed_last_total=10,
-            speed_vps=20.0,
-        )
-
-        with mock.patch("gui.app.KataHexEngine", return_value=new_engine) as ctor:
-            ok = gui.cycle_engine_profile(core, ui, engine_echo=True)
-
-        self.assertTrue(ok)
-        ctor.assert_called_once_with(
-            board_size=11,
-            cmd=["alt"],
-            game_type=GameType.HEX,
-            engine_echo=True,
-            suppress_stderr=True,
-        )
-        core.replace_engine.assert_called_once_with(new_engine)
-        self.assertEqual(ui.current_engine_name, "alt")
-        self.assertIsNone(ui.speed_last_t)
-        self.assertIsNone(ui.speed_last_total)
-        self.assertIsNone(ui.speed_vps)
-
     def test_cycle_engine_profile_failure_leaves_current_engine_running(self):
         old_engine = SimpleNamespace(close=mock.Mock())
         core = SimpleNamespace(
@@ -145,39 +110,34 @@ class GuiModuleTests(unittest.TestCase):
                 gui.EngineProfile("alt", ("alt",)),
             ),
             current_engine_idx=0,
+            speed_last_t=1.0,
+            speed_last_total=10,
+            speed_vps=20.0,
         )
 
         with (
             mock.patch("gui.app.KataHexEngine", side_effect=[RuntimeError("bad model"), new_engine]) as ctor,
             mock.patch("gui.app.logger.warning") as warning,
         ):
-            ok = gui.cycle_engine_profile(core, ui, engine_echo=False)
+            ok = gui.cycle_engine_profile(core, ui, engine_echo=True)
 
         self.assertTrue(ok)
         self.assertEqual(
-            ctor.call_args_list,
-            [
-                mock.call(
-                    board_size=11,
-                    cmd=["bad"],
-                    game_type=GameType.HEX,
-                    engine_echo=False,
-                    suppress_stderr=True,
-                ),
-                mock.call(
-                    board_size=11,
-                    cmd=["alt"],
-                    game_type=GameType.HEX,
-                    engine_echo=False,
-                    suppress_stderr=True,
-                ),
-            ],
+            [ctor_call.kwargs["cmd"] for ctor_call in ctor.call_args_list],
+            [["bad"], ["alt"]],
         )
+        for ctor_call in ctor.call_args_list:
+            self.assertEqual(ctor_call.kwargs["board_size"], 11)
+            self.assertEqual(ctor_call.kwargs["game_type"], GameType.HEX)
+            self.assertTrue(ctor_call.kwargs["engine_echo"])
         warning.assert_called_once()
         self.assertEqual(warning.call_args.args[:2], ("Engine switch to %s failed: %s", "bad"))
         self.assertEqual(str(warning.call_args.args[2]), "bad model")
         core.replace_engine.assert_called_once_with(new_engine)
         self.assertEqual(ui.current_engine_name, "alt")
+        self.assertIsNone(ui.speed_last_t)
+        self.assertIsNone(ui.speed_last_total)
+        self.assertIsNone(ui.speed_vps)
 
 
 if __name__ == "__main__":
