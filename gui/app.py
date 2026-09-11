@@ -21,6 +21,7 @@ import pygame
 
 from board import Board, GameType
 from engine import KataHexEngine
+from gui.analysis import AnalysisSnapshot
 from gui.core import DEFAULT_ANALYZE_INTERVAL_CS, GuiCore
 from gui.render import GuiRenderer
 
@@ -462,11 +463,12 @@ def run_gui(
         elif ev.key == pygame.K_x and (ev.mod & pygame.KMOD_SHIFT):
             core.clear_candidates()
         elif ch == ",":
-            pv = renderer.get_display_pv(current_hover_cell())
+            analysis = core.build_analysis_snapshot()
+            pv = renderer.get_display_pv(current_hover_cell(), analysis)
             if renderer.should_show_pv(pv):
                 core.try_play_moves(list(pv))
             else:
-                top, _ = core.get_top_move()
+                top, _ = analysis.top_move
                 if top is not None:
                     col, row = top
                     core.try_play_move(col, row)
@@ -593,7 +595,7 @@ def run_gui(
             elif ev.type == pygame.VIDEORESIZE:
                 renderer.apply_window_size(ev.w, ev.h)
 
-    def update_frame_state(now: float, ui: UiState) -> Tuple[bool, bool, Optional[Tuple[int, int]], int]:
+    def update_frame_state(now: float, ui: UiState) -> Tuple[bool, bool, AnalysisSnapshot]:
         # Snapshot live analysis for this position so undo/redo can instantly display cached overlays.
         core.tick(now)
         pressed = pygame.key.get_pressed()
@@ -602,13 +604,10 @@ def run_gui(
         show_coords = bool(pressed[pygame.K_c]) and not (
             mods & (pygame.KMOD_CTRL | pygame.KMOD_META | pygame.KMOD_GUI | pygame.KMOD_SHIFT)
         )
-        top_cell, top_visits = core.get_top_move()
+        analysis = core.build_analysis_snapshot()
 
         if core.session.analysis.enabled:
-            total_visits = 0
-            for r in core.get_engine_analysis():
-                if r.visits:
-                    total_visits += r.visits
+            total_visits = analysis.total_visits
             if total_visits > 0:
                 if ui.speed_last_t is None:
                     ui.speed_last_t = now
@@ -631,7 +630,7 @@ def run_gui(
             ui.speed_last_total = None
             ui.speed_vps = None
 
-        return show_prior, show_coords, top_cell, top_visits
+        return show_prior, show_coords, analysis
 
     current_engine_idx = 0
     for i, profile in enumerate(engine_profiles):
@@ -648,9 +647,9 @@ def run_gui(
         while running:
             handle_events(ui)
             now = time.monotonic()
-            show_prior, show_coords, top_cell, top_visits = update_frame_state(now, ui)
+            show_prior, show_coords, analysis = update_frame_state(now, ui)
             hover_cell = current_hover_cell()
-            renderer.draw_frame(ui, hover_cell, show_prior, show_coords, top_cell, top_visits)
+            renderer.draw_frame(ui, hover_cell, show_prior, show_coords, analysis)
             pygame.display.flip()
             clock.tick(60)
     finally:

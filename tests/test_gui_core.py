@@ -135,7 +135,7 @@ class GuiCoreTests(unittest.TestCase):
         return core.cache_key_for_applied_moves(probe.history)
 
     def _candidate_result(self, core: GuiCore, key):
-        row = core._analysis_row_for_key(key)
+        row = next((r for r in core.build_analysis_snapshot().candidates if (r.col, r.row) == key), None)
         return (None, None) if row is None else (row.winrate, row.visits)
 
     def test_y_board_uses_triangular_legal_cells(self):
@@ -1178,7 +1178,7 @@ class GuiCoreTests(unittest.TestCase):
         self.assertTrue(did)
         self.assertNotEqual(core.cache_key(), stale_key)
         self.assertIn(stale_key, core.session.analysis.cache)
-        self.assertEqual(core.get_active_analysis(), [])
+        self.assertEqual(core.build_analysis_snapshot().active, [])
 
     def test_undo_redo_does_not_clear_analysis_cache(self):
         core, _engine = self._mk_core()
@@ -1380,13 +1380,13 @@ class GuiCoreTests(unittest.TestCase):
         self.assertEqual(core.current_path_moves(), [])
         self.assertEqual(engine.calls, [("set_board_size", 6), ("clear_board",), ("clear_analysis",)])
 
-    def test_get_active_analysis_preference(self):
+    def test_analysis_snapshot_preference(self):
         core, engine = self._mk_core()
 
         cache_key = core.cache_key()
         cached = [AnalysisMove("a1", order=1, col=1, row=1, winrate=0.5, visits=10, prior=0.2, pv=None)]
         core.session.analysis.cache[cache_key] = cached
-        self.assertEqual(core.get_active_analysis(), cached)
+        self.assertEqual(core.build_analysis_snapshot().active, cached)
 
         core.clear_all_cached_analysis()
         core.add_candidate(1, 1)
@@ -1394,7 +1394,7 @@ class GuiCoreTests(unittest.TestCase):
             AnalysisMove("a1", order=0, col=1, row=1, winrate=0.4, visits=5, prior=0.2, pv=None),
             AnalysisMove("b2", order=1, col=2, row=2, winrate=0.6, visits=8, prior=0.3, pv=None),
         ]
-        active = core.get_active_analysis()
+        active = core.build_analysis_snapshot().active
         self.assertEqual(len(active), 1)
         self.assertEqual((active[0].col, active[0].row), (1, 1))
 
@@ -1403,10 +1403,12 @@ class GuiCoreTests(unittest.TestCase):
         engine.analysis = [
             AnalysisMove("b2", order=1, col=2, row=2, winrate=0.6, visits=8, prior=None, pv=None)
         ]
-        self.assertEqual(core.get_active_analysis(), engine.analysis)
+        self.assertEqual(core.build_analysis_snapshot().active, engine.analysis)
 
         core.set_analysis_enabled(False)
-        self.assertEqual(core.get_active_analysis(), [])
+        with mock.patch.object(engine, "get_analysis") as read:
+            self.assertEqual(core.build_analysis_snapshot().active, [])
+        read.assert_not_called()
 
     def test_start_batch_analysis_clears_candidates_and_starts_live(self):
         core, engine = self._mk_core()
@@ -1695,7 +1697,7 @@ class GuiCoreTests(unittest.TestCase):
         filter_calls = [call for call in engine.calls if call[0] == "start_analysis" and len(call) == 4]
         self.assertEqual(filter_calls[-1][1], Side.RED)
         self.assertEqual(filter_calls[-1][3], ((Side.RED, [(1, 1), (2, 1)]),))
-        self.assertEqual(core.get_top_move(), (None, 0))
+        self.assertEqual(core.build_analysis_snapshot().top_move, (None, 0))
 
         pv = ((1, 1), (3, 1))
         engine.analysis = [
@@ -1703,11 +1705,11 @@ class GuiCoreTests(unittest.TestCase):
         ]
         core.maybe_update_analysis_cache()
 
-        self.assertEqual(core.get_top_move(), ((1, 1), 40))
-        candidate = core.get_candidate_analysis()[0]
+        self.assertEqual(core.build_analysis_snapshot().top_move, ((1, 1), 40))
+        candidate = core.build_analysis_snapshot().candidates[0]
         self.assertEqual((candidate.prior, candidate.pv), (0.8, pv))
         core.clear_candidates()
-        self.assertEqual(core.get_top_move(), ((2, 2), 20))
+        self.assertEqual(core.build_analysis_snapshot().top_move, ((2, 2), 20))
 
     def test_candidate_analysis_keeps_displayed_rows_during_awrn_restart(self):
         core, engine = self._mk_core()

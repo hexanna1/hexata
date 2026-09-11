@@ -16,7 +16,7 @@ from board import (
     col_to_human_letters,
     coord_to_human,
 )
-from engine import AnalysisMove
+from gui.analysis import AnalysisSnapshot
 from gui.core import GuiCore
 from gui.state import SessionState
 
@@ -575,6 +575,7 @@ class GuiRenderer:
     def get_display_pv(
         self,
         hover_cell: Optional[Tuple[int, int]],
+        analysis: AnalysisSnapshot,
     ) -> Optional[Tuple[Tuple[int, int], ...]]:
         cell = hover_cell
         if cell is None or (not self.board.is_empty(cell[0], cell[1])):
@@ -590,7 +591,7 @@ class GuiRenderer:
         pv = None
         if cell is not None:
             col, row = cell
-            for r in self.core.get_active_analysis():
+            for r in analysis.active:
                 if r.col == col and r.row == row and r.pv:
                     pv = r.pv
                     break
@@ -604,15 +605,15 @@ class GuiRenderer:
 
     def draw_grid_and_stones(
         self,
-        top_cell: Optional[Tuple[int, int]],
-        top_visits: int,
+        analysis: AnalysisSnapshot,
         show_prior: bool,
     ) -> None:
+        top_cell, top_visits = analysis.top_move
         visits_map: dict[Tuple[int, int], int] = {}
         winrate_map: dict[Tuple[int, int], float] = {}
         prior_map: dict[Tuple[int, int], float] = {}
         candidate_wr_map: dict[Tuple[int, int], Optional[float]] = {}
-        for r in self.core.get_active_analysis():
+        for r in analysis.active:
             if r.col is None or r.row is None:
                 continue
             if not self.board.is_empty(r.col, r.row):
@@ -626,7 +627,7 @@ class GuiRenderer:
         if self.session.analysis.candidate_selection.candidates:
             candidate_wr_map = {
                 (r.col, r.row): r.winrate
-                for r in self.core.get_candidate_analysis()
+                for r in analysis.candidates
                 if r.col is not None and r.row is not None
             }
 
@@ -814,6 +815,7 @@ class GuiRenderer:
     def draw_analysis_text(
         self,
         ui: UiStateLike,
+        analysis: AnalysisSnapshot,
         show_prior: bool,
         show_coords: bool,
         *,
@@ -831,7 +833,7 @@ class GuiRenderer:
                     self.text.board.blit_center(txt, colr, cx, cy)
             return
 
-        for r in self.core.get_active_analysis():
+        for r in analysis.active:
             if r.col is None or r.row is None:
                 continue
             col, row = r.col, r.row
@@ -1102,28 +1104,7 @@ class GuiRenderer:
 
         pygame.draw.line(self.screen, LINE, (x0, 0), (x0, self.screen.get_height()), 1)
 
-    def _hud_best_analysis(self) -> Optional[AnalysisMove]:
-        display: Optional[AnalysisMove] = None
-        candidate_mode = bool(self.session.analysis.candidate_selection.candidates)
-        recs = (
-            self.core.get_candidate_analysis()
-            if candidate_mode
-            else self.core.get_active_analysis()
-        )
-        for r in recs:
-            if r.col is None or r.row is None:
-                continue
-            if r.order is None:
-                continue
-            if candidate_mode and not self.core.has_candidate_result(r):
-                continue
-            if not self.board.is_empty(r.col, r.row):
-                continue
-            if display is None or r.order < display.order:
-                display = r
-        return display
-
-    def _hud_parts(self, ui: UiStateLike) -> List[Tuple[str, Tuple[int, int, int]]]:
+    def _hud_parts(self, ui: UiStateLike, analysis: AnalysisSnapshot) -> List[Tuple[str, Tuple[int, int, int]]]:
         turn_side = self.core.current_side()
         turn_color = RED if turn_side == Side.RED else BLUE
         turn_name = "Red" if turn_side == Side.RED else "Blue"
@@ -1146,7 +1127,7 @@ class GuiRenderer:
             ("Analysis: ", analysis_color),
             (analysis_txt, analysis_color),
         ]
-        display = self._hud_best_analysis()
+        display = analysis.best
         if display is not None:
             best_label = "Batch: " if self.core.is_batch_analysis_active() else "Best: "
             parts += [("   |   ", TEXT_ON_LIGHT), (best_label, TEXT_ON_LIGHT)]
@@ -1163,9 +1144,9 @@ class GuiRenderer:
                 parts += [(" ", TEXT_ON_LIGHT), (f"({vv})", TEXT_ON_LIGHT)]
         return parts
 
-    def draw_hud(self, ui: UiStateLike) -> None:
+    def draw_hud(self, ui: UiStateLike, analysis: AnalysisSnapshot) -> None:
         pygame.draw.rect(self.screen, SURFACE_BG, pygame.Rect(0, 0, self.screen.get_width(), HUD_H))
-        parts = self._hud_parts(ui)
+        parts = self._hud_parts(ui, analysis)
         self.blit_segments(12, 10, parts, use_small=False)
 
         help_line = "space:analysis • ,:play best • +/-/enter:size • ?:help"
@@ -1245,12 +1226,11 @@ class GuiRenderer:
         hover_cell: Optional[Tuple[int, int]],
         show_prior: bool,
         show_coords: bool,
-        top_cell: Optional[Tuple[int, int]],
-        top_visits: int,
+        analysis: AnalysisSnapshot,
     ) -> None:
         self.screen.fill(SURFACE_BG)
-        self.draw_hud(ui)
-        pv = self.get_display_pv(hover_cell)
+        self.draw_hud(ui, analysis)
+        pv = self.get_display_pv(hover_cell, analysis)
         show_pv = self.should_show_pv(pv)
         pv_cells = set(pv[1:]) if show_pv else None
         drag_target = None
@@ -1267,7 +1247,7 @@ class GuiRenderer:
                     and self.board.is_empty(*hover_cell)
                 ):
                     drag_target = hover_cell
-        self.draw_grid_and_stones(top_cell, top_visits, show_prior)
+        self.draw_grid_and_stones(analysis, show_prior)
         if show_pv and pv is not None:
             self.draw_pv_ghosts(pv, self.core.current_side())
         if drag_side is not None:
@@ -1283,7 +1263,7 @@ class GuiRenderer:
             pygame.draw.circle(self.screen, LINE, (int(cx), int(cy)), dot_r, 0)
         self.draw_borders()
         self.draw_side_coords()
-        self.draw_analysis_text(ui, show_prior, show_coords, suppress_cells=pv_cells)
+        self.draw_analysis_text(ui, analysis, show_prior, show_coords, suppress_cells=pv_cells)
         if not show_coords and show_pv and pv is not None:
             self.draw_pv_numbers(pv)
         if not show_coords:

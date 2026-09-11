@@ -29,6 +29,20 @@ class AnalysisRequest:
     allowed_moves: tuple[Tuple[int, int], ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class AnalysisSnapshot:
+    active: List[AnalysisMove]
+    candidates: List[AnalysisMove]
+    best: Optional[AnalysisMove]
+    total_visits: int
+
+    @property
+    def top_move(self) -> Tuple[Optional[Tuple[int, int]], int]:
+        if self.best is None:
+            return None, 0
+        return (self.best.col, self.best.row), self.best.visits or 0
+
+
 class GuiCoreAnalysisMixin:
     # -------------------- mode and engine mapping --------------------
     def is_batch_analysis_active(self) -> bool:
@@ -57,9 +71,6 @@ class GuiCoreAnalysisMixin:
     def map_coords_to_engine(self, col: int, row: int) -> Tuple[int, int]:
         return map_engine_coords(col, row, self.swap_transpose_active())
 
-    def map_coords_from_engine(self, col: int, row: int) -> Tuple[int, int]:
-        return map_engine_coords(col, row, self.swap_transpose_active())
-
     def get_engine_analysis(self) -> List[AnalysisMove]:
         recs = self.engine.get_analysis()
         if not self.swap_transpose_active():
@@ -70,12 +81,12 @@ class GuiCoreAnalysisMixin:
             col, row = r.col, r.row
             move = r.move
             if col is not None and row is not None:
-                col, row = self.map_coords_from_engine(col, row)
+                col, row = map_engine_coords(col, row, True)
                 move = coord_to_human(col, row)
 
             pv = r.pv
             if pv is not None:
-                pv = tuple(self.map_coords_from_engine(c, rr) for c, rr in pv)
+                pv = tuple(map_engine_coords(c, rr, True) for c, rr in pv)
 
             out.append(
                 AnalysisMove(
@@ -190,12 +201,6 @@ class GuiCoreAnalysisMixin:
         self.session.analysis.cache[cache_key] = merged
         self.cache_reset_sig()
 
-    def _cached_analysis_row(self, key: Tuple[int, int]) -> Optional[AnalysisMove]:
-        for r in self.session.analysis.cache.get(self.cache_key(), []):
-            if r.col == key[0] and r.row == key[1]:
-                return r
-        return None
-
     def _candidate_cache_rows(self, live: List[AnalysisMove]) -> List[AnalysisMove]:
         selected = self.session.analysis.candidate_selection.candidates
         out: List[AnalysisMove] = []
@@ -207,21 +212,6 @@ class GuiCoreAnalysisMixin:
             # Unordered candidate rows can inform display without becoming top moves.
             out.append(replace(r, move=coord_to_human(r.col, r.row), order=None))
         return out
-
-    def _live_analysis_row(self, key: Tuple[int, int]) -> Optional[AnalysisMove]:
-        for r in self.get_engine_analysis():
-            if r.col == key[0] and r.row == key[1]:
-                return r
-        return None
-
-    def _analysis_row_for_key(self, key: Tuple[int, int]) -> Optional[AnalysisMove]:
-        live = self._live_analysis_row(key)
-        cached = self._cached_analysis_row(key)
-        if live is None:
-            return cached
-        if cached is None:
-            return live
-        return self._merge_analysis(live, cached)
 
     def _cache_root_eval(self, blue_win: float) -> None:
         side_to_play = self.current_side()
@@ -317,28 +307,19 @@ class GuiCoreAnalysisMixin:
             self.restart_analysis()
 
     # -------------------- analysis queries --------------------
-    def get_active_analysis(self) -> List[AnalysisMove]:
-        # Prefer the most informative analysis (cache/live) while candidates can
-        # upgrade cached winrate/visits.
-        if self.session.analysis.candidate_selection.candidates:
-            base = self.session.analysis.cache.get(self.cache_key(), [])
-            if not base:
-                return self.get_candidate_analysis()
-            return self._merge_analysis_lists(base, self.get_candidate_analysis())
-        base = self.session.analysis.cache.get(self.cache_key(), [])
-        if base:
-            return base
-        if self.session.analysis.enabled:
-            live = self.get_engine_analysis()
-            if live:
-                return live
-        return []
-
-    def get_top_move(self) -> Tuple[Optional[Tuple[int, int]], int]:
-        best: Optional[AnalysisMove] = None
+    def build_analysis_snapshot(self) -> AnalysisSnapshot:
         candidate_mode = bool(self.session.analysis.candidate_selection.candidates)
-        recs = self.get_candidate_analysis() if candidate_mode else self.get_active_analysis()
-        for r in recs:
+        live = self.get_engine_analysis() if self.session.analysis.enabled or candidate_mode else []
+        base = self.session.analysis.cache.get(self.cache_key(), [])
+        candidates = self._candidate_analysis(live, base) if candidate_mode else []
+        # Cached rows keep display order; candidates can upgrade their eval metadata.
+        if candidate_mode:
+            active = self._merge_analysis_lists(base, candidates) if base else candidates
+        else:
+            active = base or (live if self.session.analysis.enabled else [])
+
+        best: Optional[AnalysisMove] = None
+        for r in candidates if candidate_mode else active:
             if r.col is None or r.row is None or r.order is None:
                 continue
             if candidate_mode and not self.has_candidate_result(r):
@@ -347,9 +328,7 @@ class GuiCoreAnalysisMixin:
                 continue
             if best is None or r.order < best.order:
                 best = r
-        if best is None:
-            return None, 0
-        return (best.col, best.row), self._visits(best.visits)
+        return AnalysisSnapshot(active, candidates, best, sum(r.visits or 0 for r in live))
 
     # -------------------- engine analysis lifecycle --------------------
     def _desired_analysis_request(self) -> Optional[AnalysisRequest]:
@@ -506,11 +485,17 @@ class GuiCoreAnalysisMixin:
     def check_candidate_root(self) -> bool:
         return self._invalidate_candidate_root()
 
-    def get_candidate_analysis(self) -> List[AnalysisMove]:
+    def _candidate_analysis(
+        self, live: List[AnalysisMove], cached: List[AnalysisMove]
+    ) -> List[AnalysisMove]:
+        live_by_cell = {(r.col, r.row): r for r in live}
+        cached_by_cell = {(r.col, r.row): r for r in cached}
         selection = self.session.analysis.candidate_selection
         rows: List[Tuple[Tuple[int, int], AnalysisMove]] = []
         for key in selection.candidates:
-            source = self._analysis_row_for_key(key)
+            source = live_by_cell.get(key)
+            cached_row = cached_by_cell.get(key)
+            source = self._merge_analysis(source, cached_row) if source is not None else cached_row
             if source is None:
                 col, row = key
                 source = AnalysisMove(
