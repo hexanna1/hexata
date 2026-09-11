@@ -449,7 +449,7 @@ class GuiCoreTests(unittest.TestCase):
         board.place(Side.BLUE, 2, 1)
         board.pass_move(Side.RED)
 
-        core.rebuild_engine_from_applied_history()
+        core.lifecycle.rebuild_position()
 
         expected = [
             ("clear_board",),
@@ -1588,6 +1588,25 @@ class GuiCoreTests(unittest.TestCase):
                 core.tick(0.1)
                 tick_calls = self._new_calls(engine, before)
                 self.assertFalse(any(call[0] == "start_analysis" for call in tick_calls))
+
+    def test_same_position_import_cancels_pending_raw_batch_once(self):
+        engine = RawCaptureBlockingEngine()
+        core = GuiCore(Board(5), engine)
+        core.start_batch_analysis(fast=True)
+        core.tick(0.0)
+        self.assertTrue(engine.raw_capture_pending)
+        before = len(engine.calls)
+
+        self.assertIsNone(core.load_hexata_format(core.build_hexata_format()))
+
+        self.assertEqual(core.session.analysis.mode, AnalysisModeTag.LIVE)
+        self.assertFalse(engine.raw_capture_pending)
+        commands = [call[0] for call in engine.calls[before:]]
+        self.assertEqual(commands.count("start_analysis"), 1)
+        self.assertNotIn("stop_analysis", commands)
+        before = len(engine.calls)
+        core.tick(0.1)
+        self.assertEqual(len(engine.calls), before)
 
     def test_batch_cancel_clears_stale_engine_analysis_before_live_resume(self):
         core, engine = self._mk_core()

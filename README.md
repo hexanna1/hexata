@@ -37,9 +37,10 @@ A lightweight, keyboard-first GUI and CLI for analyzing Hex with the [KataHex](h
 - `cli.py`: CLI for root analysis, batch line analysis, and engine matches.
 - `gui/`: GUI implementation.
   - `app.py`: Pygame app loop, input handling, and UI flow.
-  - `core.py`: Session transitions, move history, import/export, and engine coordination.
+  - `core.py`: Session transitions, move history, and import/export.
   - `state.py`: Canonical GUI session state and analysis modes.
-  - `analysis.py`: Analysis lifecycle, candidate filtering, and cache management.
+  - `analysis.py`: Analysis snapshots, candidate filtering, batch progression, and cache management.
+  - `lifecycle.py`: Engine synchronization, analysis restarts, and engine replacement.
   - `render.py`: Pygame rendering, layout, HUD, and panels.
 - `formats/`: Position format parsing and serialization.
   - `hexworld.py`: HexWorld import/export parsing utilities.

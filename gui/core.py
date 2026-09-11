@@ -16,7 +16,8 @@ from board import (
 from engine import KataHexEngine
 from formats import flexible_moves, hexata, hexworld
 from gui.analysis import GuiCoreAnalysisMixin
-from gui.state import EditSnapshot, SessionState, TransitionKind
+from gui.lifecycle import EngineLifecycle
+from gui.state import EditSnapshot, SessionState
 from history_tree import HistoryNode, MoveTree
 
 DEFAULT_ANALYZE_INTERVAL_CS = 15
@@ -79,6 +80,7 @@ class GuiCore(GuiCoreAnalysisMixin):
             raise ValueError("Engine game type does not match board game type")
 
         self.session = SessionState(pending_size=board.n)
+        self.lifecycle = EngineLifecycle(self)
 
     # -------------------- tree accessors --------------------
     # The move tree is the canonical logical history. `board.history` is only the
@@ -145,169 +147,80 @@ class GuiCore(GuiCoreAnalysisMixin):
                 raise AssertionError(f"Illegal move while materializing tree: {mv}")
         return probe
 
-    def _commit_transition(
+    def _install_position(
         self,
         tree: MoveTree,
         *,
-        kind: TransitionKind = TransitionKind.USER_POSITION,
         cursor: Optional[HistoryNode] = None,
         board_size: Optional[int] = None,
-        pending_size: Optional[int] = None,
         candidates: Optional[Sequence[Tuple[int, int]]] = None,
-        clear_analysis_cache: bool = False,
-        clear_edit_history: bool = False,
-        track_edit: bool = False,
-        replacement_engine: Optional[KataHexEngine] = None,
     ) -> None:
-        if replacement_engine is None:
-            target_engine = self.engine
-            target_board_size = self.board.n if board_size is None else board_size
-        else:
-            if board_size is not None:
-                raise AssertionError("Replacement engine declares its board size")
-            target_engine = replacement_engine
-            target_board_size = replacement_engine.board_n
-        target_game_type = target_engine.game_type
+        """Install logical state inside a lifecycle.position_change scope."""
+        target_board_size = self.board.n if board_size is None else board_size
         target_cursor = tree.cursor if cursor is None else cursor
         new_path = self._path_moves_to(tree, target_cursor)
         target_board = self._materialize_position(
-            new_path, target_board_size, target_game_type
+            new_path, target_board_size, self.engine.game_type
         )
         if candidates is not None and any(
             not target_board.is_empty(*candidate) for candidate in candidates
         ):
             raise AssertionError("Candidate is not empty in target position")
 
-        if track_edit and tree is self.session.tree:
-            raise AssertionError("Tracked edits must install a detached tree")
-        before = self._take_edit_snapshot() if track_edit else None
-        old_path = tuple(self.current_path_moves())
-        old_engine_moves = self._engine_position_moves()
-        old_candidates = frozenset(self.session.analysis.candidate_selection.candidates)
-        was_running = self.session.analysis.enabled
-        was_batch = self.is_batch_analysis_active()
-        size_changed = target_board_size != self.board.n
-        game_changed = target_game_type != self.board.game_type
-        engine_changed = target_engine is not self.engine
-        session_reset = size_changed or game_changed
-        path_changed = new_path != old_path
-        target_candidates = old_candidates if candidates is None else frozenset(candidates)
-        candidates_changed = target_candidates != old_candidates
-        if game_changed != engine_changed:
-            raise AssertionError("Game transitions must replace the engine")
-        if engine_changed and new_path:
-            raise AssertionError("Game transitions must install an empty position")
-        if session_reset and kind != TransitionKind.USER_POSITION:
-            raise AssertionError("Only user position transitions may reset the session")
-        if kind == TransitionKind.USER_TREE and (
-            session_reset or path_changed or candidates_changed
-        ):
-            raise AssertionError("Tree-only transition changed position state")
-
-        position_changed = session_reset or path_changed
-        old_engine = self.engine
-        if session_reset:
-            if was_running:
-                self.pause_engine_analysis()
-            if engine_changed:
-                self.engine = target_engine
-            else:
-                self.engine.set_board_size(target_board_size)
-
+        position_changed = (
+            target_board_size != self.board.n
+            or self.engine.game_type != self.board.game_type
+            or new_path != tuple(self.current_path_moves())
+        )
         self.session.tree = tree
         tree.cursor = target_cursor
         if position_changed:
             self.board.replace_position(target_board)
-        if pending_size is not None:
-            self.session.pending_size = pending_size
         if candidates is not None:
             selection = self.session.analysis.candidate_selection
             selection.candidates.clear()
             selection.candidates.update(candidates)
             selection.root_key = None
-        if clear_analysis_cache:
+
+    def _commit_cursor(self, cursor: HistoryNode) -> None:
+        with self.lifecycle.position_change():
+            self._install_position(self.session.tree, cursor=cursor)
+
+    def _commit_edit(self, tree: MoveTree) -> None:
+        before = self._take_edit_snapshot()
+        with self.lifecycle.position_change():
+            self._install_position(tree)
+        self.session.edit_undo.append(before)
+        self.session.edit_redo.clear()
+
+    def _reset_session(
+        self,
+        tree: MoveTree,
+        *,
+        size: Optional[int] = None,
+        engine: Optional[KataHexEngine] = None,
+    ) -> None:
+        with self.lifecycle.position_change():
+            if engine is not None:
+                self.engine = engine
+            self._install_position(tree, board_size=size, candidates=())
+            if size is not None:
+                self.session.pending_size = size
             self.clear_all_cached_analysis()
-
-        if session_reset:
-            if not engine_changed:
-                self.rebuild_engine_from_applied_history()
-                self.engine.clear_analysis()
-            self.check_candidate_root()
-            self._ensure_candidate_root()
-            if was_batch:
-                self._exit_batch_mode()
-            if engine_changed:
-                old_engine.close()
-            if was_running:
-                self.restart_analysis()
-        elif kind == TransitionKind.USER_TREE:
-            if was_batch:
-                # Tree-only edits are user-driven even when the position is unchanged.
-                self.leave_batch_for_live()
-        else:
-            exits_batch = kind != TransitionKind.BATCH_STEP
-            analysis_changed = path_changed or candidates_changed or (was_batch and exits_batch)
-            if was_running and analysis_changed:
-                self.pause_engine_analysis()
-            if path_changed:
-                self._sync_engine_position(old_engine_moves)
-                self.engine.clear_analysis()
-                self.check_candidate_root()
-            self._ensure_candidate_root()
-            if was_batch and exits_batch:
-                # User-driven changes leave batch mode; batch stepping opts out.
-                self._exit_batch_mode()
-            if (
-                was_running
-                and analysis_changed
-                and kind == TransitionKind.USER_POSITION
-            ):
-                self.restart_analysis()
-
-        selection = self.session.analysis.candidate_selection
-        if bool(selection.candidates) != (selection.root_key is not None):
-            raise AssertionError("Candidate selection is not bound to a position")
-        if selection.candidates and selection.root_key != self.cache_key():
-            raise AssertionError("Candidate selection is bound to a stale position")
-        if self.engine.game_type != self.board.game_type:
-            raise AssertionError("Engine and board game types diverged")
-        if clear_edit_history:
             self.session.edit_undo.clear()
             self.session.edit_redo.clear()
-        elif track_edit:
-            if before is None:
-                raise AssertionError("Tracked state change missing snapshot")
-            self.session.edit_undo.append(before)
-            self.session.edit_redo.clear()
 
-    def _commit_cursor(
-        self,
-        cursor: HistoryNode,
-        *,
-        kind: TransitionKind = TransitionKind.USER_POSITION,
-    ) -> None:
-        self._commit_transition(
-            self.session.tree,
-            cursor=cursor,
-            kind=kind,
-        )
-
-    def _edit_tree(
-        self,
-        edit: Callable[[MoveTree], bool],
-        *,
-        kind: TransitionKind = TransitionKind.USER_POSITION,
-        track_edit: bool = False,
-    ) -> bool:
+    def _edit_tree(self, edit: Callable[[MoveTree], bool]) -> bool:
         tree = self.session.tree.clone()
         if not edit(tree):
             return False
-        self._commit_transition(tree, kind=kind, track_edit=track_edit)
+        self._commit_edit(tree)
         return True
 
     def _restore_edit_state(self, snap: EditSnapshot) -> None:
         tree, candidates = snap
-        self._commit_transition(tree, candidates=candidates)
+        with self.lifecycle.position_change():
+            self._install_position(tree, candidates=candidates)
 
     def undo_edit(self) -> bool:
         if not self.session.edit_undo:
@@ -370,50 +283,8 @@ class GuiCore(GuiCoreAnalysisMixin):
             if (engine_move := self._engine_move(mv)) is not None
         )
 
-    def _sync_engine_position(
-        self,
-        old_moves: Sequence[Tuple[Side, Optional[int], Optional[int]]],
-    ) -> None:
-        new_moves = self._engine_position_moves()
-        common = 0
-        while common < min(len(old_moves), len(new_moves)) and old_moves[common] == new_moves[common]:
-            common += 1
-        for _ in old_moves[common:]:
-            self.engine.undo()
-        for side, col, row in new_moves[common:]:
-            self.engine.play(side, col, row)
-
-    def rebuild_engine_from_applied_history(self) -> None:
-        self.engine.clear_board()
-        for side, col, row in self._engine_position_moves():
-            self.engine.play(side, col, row)
-
     def replace_engine(self, new_engine: KataHexEngine) -> bool:
-        if new_engine is self.engine:
-            return False
-        if new_engine.game_type != self.board.game_type:
-            new_engine.close()
-            return False
-        was_running = self.session.analysis.enabled
-        if was_running:
-            self.pause_engine_analysis()
-        old_engine = self.engine
-        self.engine = new_engine
-        try:
-            self.rebuild_engine_from_applied_history()
-        except Exception:
-            self.engine = old_engine
-            new_engine.close()
-            if was_running:
-                self.restart_analysis()
-            return False
-        self.clear_all_cached_analysis()
-        old_engine.close()
-        # Switching engines converts any batch run to live analysis.
-        self._exit_batch_mode()
-        if was_running:
-            self.restart_analysis()
-        return True
+        return self.lifecycle.replace_engine(new_engine)
 
     def switch_game_type(self, new_engine: KataHexEngine) -> bool:
         if new_engine is self.engine:
@@ -425,14 +296,7 @@ class GuiCore(GuiCoreAnalysisMixin):
         if not MIN_BOARD_SIZE <= new_engine.board_n <= MAX_BOARD_SIZE:
             new_engine.close()
             return False
-        self._commit_transition(
-            MoveTree(),
-            pending_size=new_engine.board_n,
-            candidates=(),
-            clear_analysis_cache=True,
-            clear_edit_history=True,
-            replacement_engine=new_engine,
-        )
+        self._reset_session(MoveTree(), size=new_engine.board_n, engine=new_engine)
         return True
 
     def find_applied_move_index(self, col: int, row: int) -> Optional[int]:
@@ -461,14 +325,7 @@ class GuiCore(GuiCoreAnalysisMixin):
             return None
 
     def _install_imported_tree(self, size: int, tree: MoveTree) -> None:
-        self._commit_transition(
-            tree,
-            board_size=size,
-            pending_size=size,
-            candidates=(),
-            clear_analysis_cache=True,
-            clear_edit_history=True,
-        )
+        self._reset_session(tree, size=size)
 
     def _url_game_type_error(self, text: str) -> Optional[str]:
         url_game_type = hexworld.url_game_type(text)
@@ -589,12 +446,7 @@ class GuiCore(GuiCoreAnalysisMixin):
 
     # -------------------- move navigation and editing --------------------
     def new_game(self) -> None:
-        self._commit_transition(
-            MoveTree(),
-            candidates=(),
-            clear_analysis_cache=True,
-            clear_edit_history=True,
-        )
+        self._reset_session(MoveTree())
 
     def step_back(self) -> bool:
         return self.step_back_n(1)
@@ -612,8 +464,6 @@ class GuiCore(GuiCoreAnalysisMixin):
     def shift_branch(self, direction: int) -> bool:
         return self._edit_tree(
             lambda tree: tree.shift_current_branch(direction),
-            kind=TransitionKind.USER_TREE,
-            track_edit=True,
         )
 
     def _cursor_after_steps(self, count: int, *, forward: bool) -> Optional[HistoryNode]:
@@ -664,14 +514,11 @@ class GuiCore(GuiCoreAnalysisMixin):
         if self.next_mainline_move() is not None:
             return self._edit_tree(
                 lambda tree: tree.delete_selected_tail(),
-                kind=TransitionKind.USER_TREE,
-                track_edit=True,
             )
         if self.current_ply() <= 0:
             return False
         return self._edit_tree(
             lambda tree: tree.delete_cursor_node(),
-            track_edit=True,
         )
 
     @staticmethod
@@ -705,7 +552,7 @@ class GuiCore(GuiCoreAnalysisMixin):
             did = True
         if not did:
             return False
-        self._commit_transition(tree, track_edit=True)
+        self._commit_edit(tree)
         return True
 
     def try_play_move(self, col: int, row: int) -> bool:
@@ -728,7 +575,7 @@ class GuiCore(GuiCoreAnalysisMixin):
         probe = self.board.copy()
         if not probe.apply_move(mv) or not self._play_move_into_tree(tree, mv):
             return False
-        self._commit_transition(tree, track_edit=True)
+        self._commit_edit(tree)
         return True
 
     def _swap_child_move(self) -> Move:
@@ -743,7 +590,7 @@ class GuiCore(GuiCoreAnalysisMixin):
         probe = self.board.copy()
         if not probe.apply_move(mv) or not self._play_move_into_tree(tree, mv):
             return False
-        self._commit_transition(tree, track_edit=True)
+        self._commit_edit(tree)
         return True
 
     def _update_swap_children_for_opening(self, node: HistoryNode, col: int, row: int) -> None:
@@ -809,19 +656,13 @@ class GuiCore(GuiCoreAnalysisMixin):
                 break
             cursor = next_node
         tree.cursor = cursor
-        self._commit_transition(tree, track_edit=True)
+        self._commit_edit(tree)
         return True
 
     def apply_pending_size(self) -> bool:
         if self.session.pending_size == self.board.n:
             return False
-        self._commit_transition(
-            MoveTree(),
-            board_size=self.session.pending_size,
-            candidates=(),
-            clear_analysis_cache=True,
-            clear_edit_history=True,
-        )
+        self._reset_session(MoveTree(), size=self.session.pending_size)
         return True
 
     def adjust_pending_size(self, delta: int) -> None:

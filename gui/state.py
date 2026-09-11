@@ -27,13 +27,6 @@ class BatchKind(Enum):
     TIMED = "timed"
 
 
-class TransitionKind(Enum):
-    USER_POSITION = "user_position"
-    USER_TREE = "user_tree"
-    BATCH_START = "batch_start"
-    BATCH_STEP = "batch_step"
-
-
 @dataclass(slots=True)
 class BatchRun:
     kind: BatchKind
