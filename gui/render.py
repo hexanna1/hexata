@@ -108,7 +108,7 @@ class BorderSpec:
 
 @dataclass(frozen=True, slots=True)
 class BoardProjection:
-    corner_degrees: Tuple[int, ...]
+    corner_units: Tuple[Tuple[float, float], ...]
     col_unit: Tuple[float, float]
     row_unit: Tuple[float, float]
     border_specs: Tuple[BorderSpec, ...]
@@ -125,13 +125,14 @@ class BoardProjection:
         self, origin_x: float, origin_y: float, r: int, ax: int, ay: int, i: int
     ) -> Tuple[int, int]:
         cx, cy = self.center(origin_x, origin_y, r, ax, ay)
-        a = math.radians(self.corner_degrees[i % 6])
-        return round(cx + r * math.cos(a)), round(cy + r * math.sin(a))
+        dx, dy = self.corner_units[i % 6]
+        return round(cx + r * dx), round(cy + r * dy)
 
     def poly(
         self, origin_x: float, origin_y: float, r: int, ax: int, ay: int
     ) -> List[Tuple[int, int]]:
-        return [self.corner(origin_x, origin_y, r, ax, ay, i) for i in range(6)]
+        cx, cy = self.center(origin_x, origin_y, r, ax, ay)
+        return [(round(cx + r * dx), round(cy + r * dy)) for dx, dy in self.corner_units]
 
     def cell_bounds(
         self, cells: Iterable[Tuple[int, int]], r: int
@@ -140,10 +141,9 @@ class BoardProjection:
         ys: List[float] = []
         for ax, ay in cells:
             cx, cy = self.center(0.0, 0.0, r, ax, ay)
-            for deg in self.corner_degrees:
-                a = math.radians(deg)
-                xs.append(cx + r * math.cos(a))
-                ys.append(cy + r * math.sin(a))
+            for dx, dy in self.corner_units:
+                xs.append(cx + r * dx)
+                ys.append(cy + r * dy)
         return min(xs), min(ys), max(xs), max(ys)
 
     def border_sides(self) -> Tuple[BorderSpec, ...]:
@@ -162,6 +162,11 @@ def _rotate_screen_vec(v: Tuple[float, float], deg: float) -> Tuple[float, float
     return x * math.cos(a) + y * math.sin(a), -x * math.sin(a) + y * math.cos(a)
 
 
+def _corner_units(rotation: int) -> Tuple[Tuple[float, float], ...]:
+    angles = (math.radians(deg + rotation) for deg in POINTY_CORNER_DEG)
+    return tuple((math.cos(a), math.sin(a)) for a in angles)
+
+
 FLAT_BORDER_SPECS = (
     BorderSpec(Side.RED, ((2, 3), (3, 4)), lambda i, n: (i, 0)),
     BorderSpec(Side.RED, ((5, 0), (0, 1)), lambda i, n: (i, n - 1)),
@@ -176,14 +181,14 @@ Y_BORDER_SPECS = (
 )
 
 FLAT_PROJECTION = BoardProjection(
-    corner_degrees=POINTY_CORNER_DEG,
+    corner_units=_corner_units(0),
     col_unit=(SQ3, 0.0),
     row_unit=(SQ3 / 2, 1.5),
     border_specs=FLAT_BORDER_SPECS,
 )
 
 DIAMOND_PROJECTION = BoardProjection(
-    corner_degrees=tuple(deg - 30 for deg in POINTY_CORNER_DEG),
+    corner_units=_corner_units(-30),
     col_unit=_rotate_screen_vec((SQ3, 0.0), 30),
     row_unit=_rotate_screen_vec((SQ3 / 2, 1.5), 30),
     border_specs=FLAT_BORDER_SPECS,
@@ -867,17 +872,20 @@ class GuiRenderer:
                 continue
 
             gap = 1
-            rect1 = self.text.board.font.get_rect(wr)
-            rect2 = self.text.board.font.get_rect(vv)
+            surf1, rect1 = self.text.board.font.render(wr, fgcolor=TEXT_ON_LIGHT)
+            surf2, rect2 = self.text.board.font.render(vv, fgcolor=TEXT_ON_LIGHT)
+            # Empty text has different measured and rendered heights in FreeType.
+            if not wr:
+                rect1 = self.text.board.font.get_rect(wr)
+            if not vv:
+                rect2 = self.text.board.font.get_rect(vv)
             total_h = rect1.height + gap + rect2.height
             top = cy - total_h / 2
             x1 = cx - rect1.width / 2
-            y1 = top - self.text.board.line_ref_y + rect1.y
-            self.text.board.blit_line(wr, TEXT_ON_LIGHT, x1, y1)
+            self.screen.blit(surf1, (x1, top))
             top2 = top + rect1.height + gap
             x2 = cx - rect2.width / 2
-            y2 = top2 - self.text.board.line_ref_y + rect2.y
-            self.text.board.blit_line(vv, TEXT_ON_LIGHT, x2, y2)
+            self.screen.blit(surf2, (x2, top2))
 
     def blit_segments(
         self, x: int, y: int, parts: List[Tuple[str, Tuple[int, int, int]]], use_small: bool
