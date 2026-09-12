@@ -19,6 +19,7 @@ from board import (
 from gui.analysis import AnalysisSnapshot
 from gui.core import GuiCore
 from gui.state import SessionState
+from history_tree import HistoryNode
 
 RED = (220, 60, 60)
 BLUE = (40, 100, 220)
@@ -200,6 +201,15 @@ class LayoutState:
     origin_y: float
     board_px_w: int
     board_px_h: int
+
+
+@dataclass(slots=True)
+class MovelistItem:
+    label: str
+    color: Tuple[int, int, int]
+    rect: pygame.Rect
+    node: Optional[HistoryNode] = None
+    hit_rect: Optional[pygame.Rect] = None
 
 
 @dataclass(slots=True)
@@ -985,7 +995,8 @@ class GuiRenderer:
         return self._eval_graph_data
 
     def get_movelist_view(self):
-        sig = self.core.session.tree.signature()
+        tree = self.core.session.tree
+        sig = (tree, tree.signature())
         if self._movelist_sig != sig or self._movelist_view is None:
             self._movelist_sig = sig
             self._movelist_view = self.core.build_movelist_view()
@@ -1024,14 +1035,10 @@ class GuiRenderer:
             max_left,
         )
 
-    def draw_movelist_panel(self, ui: UiStateLike) -> None:
+    def _movelist_layout(self, ui: UiStateLike) -> tuple[pygame.Rect, list[MovelistItem]]:
         x0 = self.layout.board_px_w
-        pygame.draw.rect(self.screen, SURFACE_PANEL, pygame.Rect(x0, 0, PANEL_W, self.screen.get_height()))
-
         pad = 12
-        y = 10
-        self.blit_segments(x0 + pad, y, [("Moves", TEXT_ON_LIGHT)], use_small=False)
-        y += 26
+        y = 36
 
         view = self.get_movelist_view()
         rows = view.rows
@@ -1039,6 +1046,8 @@ class GuiRenderer:
         cursor_ply = self.core.current_ply()
 
         line_h = self.fonts.movelist_font.get_sized_height() + 4
+        text_h = self.text.movelist.font.get_rect("0").height
+        hit_offset_y = (text_h - line_h) // 2
         io_line_h = self.text.line_io + 2
         io_max_lines = 30
         io_panel_h = (io_line_h * io_max_lines) + 10
@@ -1058,24 +1067,81 @@ class GuiRenderer:
         left_col = self._movelist_left_col(rows, view.focus_row, cursor_ply, visible_cols)
         scroll_px = left_col * space_w
         content_clip_rect = pygame.Rect(x0 + pad, 0, PANEL_W - (2 * pad), io_top)
-        prior_clip = self.screen.get_clip()
-        self.screen.set_clip(content_clip_rect)
-
+        column_widths: dict[int, int] = {}
+        for row in rows:
+            for cell in row.cells:
+                column_widths[cell.column] = max(column_widths.get(cell.column, 0), len(cell.label))
+        items: list[MovelistItem] = []
         for row in rows[start:end]:
             ply_label = f"{row.ply}."
             ply_w = self.text.movelist.font.get_rect(ply_label).width
+            first_node = next((cell.node for cell in row.cells if cell.column == 0), None)
             # Keep ply labels aligned with horizontally scrolled movelist rows.
-            self.text.movelist.blit_line(ply_label, TEXT_ON_LIGHT, x0 + pad + gutter_w - ply_w - scroll_px, y)
+            ply_rect = pygame.Rect(x0 + pad + gutter_w - ply_w - scroll_px, y, ply_w, line_h)
+            items.append(
+                MovelistItem(
+                    label=ply_label,
+                    color=TEXT_ON_LIGHT,
+                    rect=ply_rect,
+                    node=first_node,
+                    hit_rect=ply_rect.move(0, hit_offset_y) if first_node is not None else None,
+                )
+            )
             for cell in row.cells:
                 cx = content_x + (cell.column * space_w) - scroll_px
                 if not cell.played:
                     color = TEXT_MUTED
                 else:
                     color = RED if cell.side == Side.RED else BLUE
-                self.text.movelist.blit_line(cell.label, color, cx, y)
+                items.append(
+                    MovelistItem(
+                        label=cell.label,
+                        color=color,
+                        rect=pygame.Rect(cx, y, self.text.movelist.font.get_rect(cell.label).width, line_h),
+                        node=cell.node,
+                        # Split the one-character gap evenly between fixed columns.
+                        hit_rect=pygame.Rect(
+                            cx - space_w // 2,
+                            y + hit_offset_y,
+                            (column_widths[cell.column] + 1) * space_w,
+                            line_h,
+                        ),
+                    )
+                )
             y += line_h
+        return content_clip_rect, items
+
+    def movelist_node_at(self, mx: int, my: int, ui: UiStateLike) -> Optional[HistoryNode]:
+        if mx < self.layout.board_px_w:
+            return None
+        clip, items = self._movelist_layout(ui)
+        clip = clip.clip(self.screen.get_rect())
+        if not clip.collidepoint(mx, my):
+            return None
+        for item in items:
+            if (
+                item.hit_rect is not None
+                and item.rect.colliderect(clip)
+                and item.hit_rect.collidepoint(mx, my)
+            ):
+                return item.node
+        return None
+
+    def draw_movelist_panel(self, ui: UiStateLike) -> None:
+        x0 = self.layout.board_px_w
+        pygame.draw.rect(self.screen, SURFACE_PANEL, pygame.Rect(x0, 0, PANEL_W, self.screen.get_height()))
+        self.blit_segments(x0 + 12, 10, [("Moves", TEXT_ON_LIGHT)], use_small=False)
+        clip, items = self._movelist_layout(ui)
+        prior_clip = self.screen.get_clip()
+        self.screen.set_clip(clip)
+        for item in items:
+            self.text.movelist.blit_line(item.label, item.color, item.rect.x, item.rect.y)
         self.screen.set_clip(prior_clip)
 
+        io_top = clip.bottom
+        io_line_h = self.text.line_io + 2
+        io_max_lines = 30
+        graph_rect = self.eval_graph_rect(ui)
         if ui.show_engine_debug:
             io_rect = pygame.Rect(x0, io_top, PANEL_W, self.screen.get_height() - io_top)
             pygame.draw.rect(self.screen, SURFACE_PANEL, io_rect)
@@ -1090,7 +1156,7 @@ class GuiRenderer:
                     line = f"{prefix} {msg} ({count})"
                 else:
                     line = f"{prefix} {msg}"
-                self.text.io.blit_line(line, TEXT_ON_LIGHT, x0 + pad, io_y)
+                self.text.io.blit_line(line, TEXT_ON_LIGHT, x0 + 12, io_y)
                 io_y += io_line_h
         elif graph_rect is not None:
             moves, prefix_keys = self.get_eval_graph_data()
@@ -1098,7 +1164,7 @@ class GuiRenderer:
                 graph_rect,
                 moves,
                 prefix_keys,
-                cursor_ply,
+                self.core.current_ply(),
                 ui.prefs.show_elo,
             )
 
@@ -1181,6 +1247,7 @@ class GuiRenderer:
             ("item", "p:prev   n:next   f:first   l:last   scroll:prev/next"),
             ("item", "ctrl+p:prev 10   ctrl+n:next 10   left/right:branch"),
             ("item", "shift+left/right:move branch"),
+            ("item", "click move list:go to move"),
             ("header", "Moves / edit"),
             ("item", ",:play best/PV   shift+p:pass   s:swap"),
             ("item", "left-drag:move stone   del:delete tail"),

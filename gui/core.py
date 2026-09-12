@@ -25,6 +25,7 @@ DEFAULT_ANALYZE_INTERVAL_CS = 15
 
 @dataclass(slots=True)
 class MovelistCell:
+    node: HistoryNode
     # Character-cell column in the monospace movelist font.
     column: int
     label: str
@@ -445,6 +446,12 @@ class GuiCore(GuiCoreAnalysisMixin):
         return None
 
     # -------------------- move navigation and editing --------------------
+    def go_to_node(self, node: HistoryNode) -> bool:
+        if node is self.session.tree.cursor:
+            return False
+        self._commit_cursor(node)
+        return True
+
     def new_game(self) -> None:
         self._reset_session(MoveTree())
 
@@ -699,6 +706,7 @@ class GuiCore(GuiCoreAnalysisMixin):
         if mv is None:
             raise AssertionError("History tree node missing move")
         return MovelistCell(
+            node=node,
             column=0,
             label=self.move_to_label(mv),
             side=mv.side,
@@ -717,6 +725,7 @@ class GuiCore(GuiCoreAnalysisMixin):
                 _MovelistPlacement(
                     row=placement.row + row_delta,
                     cell=MovelistCell(
+                        node=placement.cell.node,
                         column=placement.cell.column + col_delta,
                         label=placement.cell.label,
                         side=placement.cell.side,
@@ -840,6 +849,7 @@ class GuiCore(GuiCoreAnalysisMixin):
         for placement in packed.placements:
             row_cells.setdefault(placement.row, []).append(
                 MovelistCell(
+                    node=placement.cell.node,
                     column=lane_starts[placement.cell.column],
                     label=placement.cell.label,
                     side=placement.cell.side,

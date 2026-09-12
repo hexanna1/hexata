@@ -57,6 +57,5 @@ A few implementation details were tricky to get right and are useful background 
 - Drag-edit branch merging was another tricky case. If a dragged move lands on a sibling move that already exists, the two branches must merge recursively, and sibling order becomes the tie-breaker for which continuation stays preferred.
 
 ## Limitations
-- No buttons or clickable move list.
 - Only tested on macOS; other platforms or some HiDPI setups may need tweaks.
 - No robust engine error handling or recovery yet, though it hasn’t been an issue in testing.
