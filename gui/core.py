@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
+from itertools import zip_longest
 from typing import Callable, NoReturn, Optional, Sequence, Tuple
 
 from board import (
@@ -49,15 +51,6 @@ class MovelistView:
 class _MovelistPlacement:
     row: int
     cell: MovelistCell
-
-    @property
-    def end_column(self) -> int:
-        return self.cell.column + 1
-
-
-@dataclass(slots=True)
-class _MovelistSubtree:
-    placements: tuple[_MovelistPlacement, ...]
 
 
 @dataclass(slots=True)
@@ -713,90 +706,12 @@ class GuiCore(GuiCoreAnalysisMixin):
             played=node.id in current_path_ids,
         )
 
-    @staticmethod
-    def _shift_movelist_subtree(
-        subtree: _MovelistSubtree,
-        *,
-        row_delta: int = 0,
-        col_delta: int = 0,
-    ) -> _MovelistSubtree:
-        return _MovelistSubtree(
-            placements=tuple(
-                _MovelistPlacement(
-                    row=placement.row + row_delta,
-                    cell=MovelistCell(
-                        node=placement.cell.node,
-                        column=placement.cell.column + col_delta,
-                        label=placement.cell.label,
-                        side=placement.cell.side,
-                        played=placement.cell.played,
-                    ),
-                )
-                for placement in subtree.placements
-            ),
-        )
-
-    @staticmethod
-    def _merge_movelist_subtrees(first: _MovelistSubtree, second: _MovelistSubtree) -> _MovelistSubtree:
-        return _MovelistSubtree(
-            placements=first.placements + second.placements,
-        )
-
-    @staticmethod
-    def _movelist_row_right_edge(subtree: _MovelistSubtree, row: int) -> int:
-        right = -1
-        for placement in subtree.placements:
-            if placement.row != row:
-                continue
-            right = max(right, placement.end_column)
-        return right
-
-    @staticmethod
-    def _movelist_required_shift(
-        existing: _MovelistSubtree,
-        incoming: _MovelistSubtree,
-        *,
-        min_col: int,
-    ) -> int:
-        # Pack each new sibling subtree as far left as possible while keeping
-        # lanes distinct on any overlapping ply row.
-        required = min_col
-        by_row: dict[int, list[_MovelistPlacement]] = {}
-        for placement in existing.placements:
-            by_row.setdefault(placement.row, []).append(placement)
-        for incoming_placement in incoming.placements:
-            for existing_placement in by_row.get(incoming_placement.row, []):
-                required = max(
-                    required,
-                    existing_placement.end_column - incoming_placement.cell.column,
-                )
-        return required
-
-    def _pack_movelist_subtrees(self, subtrees: Sequence[_MovelistSubtree]) -> _MovelistSubtree:
-        packed = _MovelistSubtree(placements=())
-        for idx, subtree in enumerate(subtrees):
-            if idx == 0:
-                packed = self._merge_movelist_subtrees(packed, subtree)
-                continue
-            shift = self._movelist_required_shift(
-                packed,
-                subtree,
-                min_col=self._movelist_row_right_edge(packed, 0),
-            )
-            packed = self._merge_movelist_subtrees(
-                packed,
-                self._shift_movelist_subtree(subtree, col_delta=shift),
-            )
-        return packed
-
-    def _build_movelist_subtree(
-        self,
-        node: HistoryNode,
-        *,
-        current_path_ids: set[int],
-    ) -> _MovelistSubtree:
-        built: dict[int, _MovelistSubtree] = {}
-        stack: list[tuple[HistoryNode, bool]] = [(node, False)]
+    def _movelist_lane_offsets(self) -> dict[int, int]:
+        # Per-depth left/right edges suffice to pack siblings. Reuse a child's
+        # contour along single-child lines instead of copying its descendants.
+        contours: dict[int, deque[tuple[int, int]]] = {}
+        offsets: dict[int, int] = {}
+        stack: list[tuple[HistoryNode, bool]] = [(self.session.tree.root, False)]
         while stack:
             current, expanded = stack.pop()
             if not expanded:
@@ -804,38 +719,44 @@ class GuiCore(GuiCoreAnalysisMixin):
                 for child in reversed(current.children):
                     stack.append((child, False))
                 continue
-            if current.move is None:
-                raise AssertionError("History tree node missing move")
-            root = _MovelistSubtree(
-                placements=(
-                    _MovelistPlacement(
-                        row=0,
-                        cell=self._make_movelist_cell(current, current_path_ids=current_path_ids),
-                    ),
-                ),
-            )
-            if current.children:
-                children = self._pack_movelist_subtrees([built[child.id] for child in current.children])
-                root = self._merge_movelist_subtrees(
-                    root,
-                    self._shift_movelist_subtree(children, row_delta=1),
-                )
-            built[current.id] = root
-        return built[node.id]
+            packed: deque[tuple[int, int]] = deque()
+            for child in current.children:
+                incoming = contours.pop(child.id)
+                shift = max((right - left for (_, right), (left, _) in zip(packed, incoming)), default=0)
+                offsets[child.id] = shift
+                if not packed:
+                    packed = incoming
+                    continue
+                merged: deque[tuple[int, int]] = deque()
+                for existing, added in zip_longest(packed, incoming):
+                    if added is None:
+                        merged.append(existing)
+                    elif existing is None:
+                        merged.append((added[0] + shift, added[1] + shift))
+                    else:
+                        merged.append((existing[0], added[1] + shift))
+                packed = merged
+            packed.appendleft((0, 1))
+            contours[current.id] = packed
+        return offsets
 
     def build_movelist_view(self) -> MovelistView:
         current_path_ids = {node.id for node in self.session.tree.current_path_nodes()}
         if not self.session.tree.root.children:
             return MovelistView(rows=(), focus_row=0)
 
-        packed = self._pack_movelist_subtrees(
-            [
-                self._build_movelist_subtree(child, current_path_ids=current_path_ids)
-                for child in self.session.tree.root.children
-            ]
-        )
+        offsets = self._movelist_lane_offsets()
+        placements: list[_MovelistPlacement] = []
+        stack = [(child, 0, offsets[child.id]) for child in reversed(self.session.tree.root.children)]
+        while stack:
+            node, row, lane = stack.pop()
+            cell = self._make_movelist_cell(node, current_path_ids=current_path_ids)
+            cell.column = lane
+            placements.append(_MovelistPlacement(row=row, cell=cell))
+            for child in reversed(node.children):
+                stack.append((child, row + 1, lane + offsets[child.id]))
         lane_widths: dict[int, int] = {}
-        for placement in packed.placements:
+        for placement in placements:
             lane_widths[placement.cell.column] = max(
                 lane_widths.get(placement.cell.column, 0),
                 len(placement.cell.label),
@@ -846,16 +767,10 @@ class GuiCore(GuiCoreAnalysisMixin):
             lane_starts[lane] = lane_x
             lane_x += lane_widths.get(lane, 0) + 1
         row_cells: dict[int, list[MovelistCell]] = {}
-        for placement in packed.placements:
-            row_cells.setdefault(placement.row, []).append(
-                MovelistCell(
-                    node=placement.cell.node,
-                    column=lane_starts[placement.cell.column],
-                    label=placement.cell.label,
-                    side=placement.cell.side,
-                    played=placement.cell.played,
-                )
-            )
+        for placement in placements:
+            cell = placement.cell
+            cell.column = lane_starts[cell.column]
+            row_cells.setdefault(placement.row, []).append(cell)
 
         rows = tuple(
             MovelistRow(
