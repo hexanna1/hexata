@@ -1108,6 +1108,11 @@ class GuiCoreTests(unittest.TestCase):
         )
         self.assertEqual(keys[2], self._cache_key_for_moves(core, core.visible_line_moves()))
 
+        self.assertTrue(core.go_first())
+        root_keys = core.build_eval_graph_data().prefix_keys
+        self.assertEqual(root_keys[0], self._cache_key_for_moves(core, core.visible_line_moves()[:1]))
+        self.assertEqual(root_keys[1:], keys[1:])
+
     def test_load_hexworld_text_with_swap(self):
         core, engine = self._mk_core()
 

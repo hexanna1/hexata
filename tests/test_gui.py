@@ -2,12 +2,34 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from board import GameType
+from board import Board, GameType
+from engine import AnalysisMove
 from gui import app as gui
+from gui.analysis import AnalysisSnapshot
+from gui.core import GuiCore
 from gui.render import GuiRenderer
 
 
 class GuiModuleTests(unittest.TestCase):
+    def test_hover_pv_freezes_until_cache_clear(self):
+        core = GuiCore(Board(5), SimpleNamespace(game_type=GameType.HEX))
+        renderer = object.__new__(GuiRenderer)
+        renderer.core = core
+        renderer._frozen_pv_sig = None
+        renderer._frozen_pv = None
+        short = AnalysisMove("a1", 0, 1, 1, 0.4, 5, 0.2, ((1, 1),))
+        first = AnalysisMove("a1", 0, 1, 1, 0.5, 10, 0.2, ((1, 1), (2, 1)))
+        second = AnalysisMove("a1", 0, 1, 1, 0.6, 20, 0.2, ((1, 1), (1, 2)))
+        snapshot = lambda row: AnalysisSnapshot([row] if row else [], [], row, 0)
+
+        self.assertIsNone(renderer.get_display_pv((1, 1), snapshot(None)))
+        self.assertEqual(renderer.get_display_pv((1, 1), snapshot(short)), short.pv)
+        self.assertEqual(renderer.get_display_pv((1, 1), snapshot(first)), first.pv)
+        self.assertEqual(renderer.get_display_pv((1, 1), snapshot(second)), first.pv)
+        core.clear_all_cached_analysis()
+        self.assertIsNone(renderer.get_display_pv((1, 1), snapshot(None)))
+        self.assertEqual(renderer.get_display_pv((1, 1), snapshot(second)), second.pv)
+
     def test_eval_graph_hit_ply_snaps_only_to_nearby_points(self):
         points = [
             (3, 50, 40, 0.6),

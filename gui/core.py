@@ -15,7 +15,7 @@ from board import (
     Side,
     coord_to_human,
 )
-from engine import KataHexEngine
+from engine import KataHexEngine, map_coords_to_engine, map_side_to_engine
 from formats import flexible_moves, hexata, hexworld
 from gui.analysis import GuiCoreAnalysisMixin
 from gui.lifecycle import EngineLifecycle
@@ -257,24 +257,27 @@ class GuiCore(GuiCoreAnalysisMixin):
                 return None
         return self._assert_never(mv.kind)
 
-    def _engine_move(self, mv: Move) -> Optional[Tuple[Side, Optional[int], Optional[int]]]:
+    def _engine_move(
+        self, mv: Move, swap_transform: bool
+    ) -> Optional[Tuple[Side, Optional[int], Optional[int]]]:
         match mv.kind:
             case MoveKind.PLACE:
-                side = self.map_side_to_engine(mv.side)
-                col, row = self.map_coords_to_engine(mv.col, mv.row)
+                side = map_side_to_engine(mv.side, swap_transform)
+                col, row = map_coords_to_engine(mv.col, mv.row, swap_transform)
                 return side, col, row
             case MoveKind.PASS:
-                return self.map_side_to_engine(mv.side), None, None
+                return map_side_to_engine(mv.side, swap_transform), None, None
             case MoveKind.SWAP:
                 # Swap is represented by the materialized opening, not a command.
                 return None
         self._assert_never(mv.kind)
 
     def _engine_position_moves(self) -> tuple[Tuple[Side, Optional[int], Optional[int]], ...]:
+        swap_transform = self.swap_transpose_active()
         return tuple(
             engine_move
             for mv in self.applied_history()
-            if (engine_move := self._engine_move(mv)) is not None
+            if (engine_move := self._engine_move(mv, swap_transform)) is not None
         )
 
     def replace_engine(self, new_engine: KataHexEngine) -> bool:
@@ -676,7 +679,8 @@ class GuiCore(GuiCoreAnalysisMixin):
         past_moves = list(self.applied_history())
         future_moves = self.mainline_tail_moves()
         moves = past_moves + future_moves
-        keys = [self.cache_key_for_applied_moves(past_moves[:i]) for i in range(1, len(past_moves) + 1)]
+        states = self._cache_key_states()
+        keys = [self._append_cache_key(states, mv) for mv in past_moves]
         if future_moves:
             # Eval-graph prefixes follow applied board history. Already-played moves
             # come from the materialized path, and future moves are replayed from the
@@ -686,7 +690,13 @@ class GuiCore(GuiCoreAnalysisMixin):
             for mv in future_moves:
                 if not probe.apply_move(mv):
                     raise AssertionError(f"Illegal eval-graph future move: {mv}")
-                keys.append(self.cache_key_for_applied_moves(probe.history))
+                if mv.kind == MoveKind.SWAP:
+                    # Swap rewrites the opening in applied board history. Keep
+                    # earlier graph points, then continue from the new history.
+                    states = self._cache_key_states()
+                    for applied in probe.history[:-1]:
+                        self._append_cache_key(states, applied)
+                keys.append(self._append_cache_key(states, probe.history[-1]))
         return EvalGraphData(moves=tuple(moves), prefix_keys=tuple(keys))
 
     def _make_movelist_cell(

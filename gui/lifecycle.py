@@ -50,6 +50,7 @@ class EngineLifecycle:
         mode = state.mode
         if mode == AnalysisModeTag.OFF:
             return
+        state.search_count += 1
         candidates: Sequence[Tuple[int, int]] = sorted(state.candidate_selection.candidates)
         if isinstance(mode, BatchRun):
             core.engine.cancel_reply_capture()

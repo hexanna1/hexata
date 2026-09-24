@@ -53,6 +53,7 @@ class UiState:
     show_engine_debug: bool = False
     speed_last_t: Optional[float] = None
     speed_last_total: Optional[int] = None
+    speed_search_count: Optional[int] = None
     speed_vps: Optional[float] = None
     swap_click_candidate: bool = False
 
@@ -609,6 +610,11 @@ def run_gui(
             mods & (pygame.KMOD_CTRL | pygame.KMOD_META | pygame.KMOD_GUI | pygame.KMOD_SHIFT)
         )
         analysis = core.build_analysis_snapshot()
+
+        search_count = core.session.analysis.search_count
+        if ui.speed_search_count != search_count:
+            _reset_engine_speed(ui)
+            ui.speed_search_count = search_count
 
         if core.session.analysis.enabled:
             total_visits = analysis.total_visits

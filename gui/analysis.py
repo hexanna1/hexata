@@ -108,18 +108,33 @@ class GuiCoreAnalysisMixin:
             kind = 2
         return (kind, int(mv.side), 0 if mv.col is None else mv.col, 0 if mv.row is None else mv.row)
 
-    def _hash_applied_history(self, moves: Sequence[Move]) -> bytes:
-        side = Side.RED if not moves else self.flip_side(moves[-1].side)
+    def _cache_key_state(self, side: Side):
         h = hashlib.blake2b(digest_size=16)
         h.update(self.board.game_type.value.encode("ascii") + b"\0")
         h.update(struct.pack("<IB", self.board.n, int(side)))
+        return h
+
+    def _cache_move_bytes(self, mv: Move) -> bytes:
+        return struct.pack("<BBHH", *self._cache_move_token(mv))
+
+    def _hash_applied_history(self, moves: Sequence[Move]) -> bytes:
+        side = Side.RED if not moves else self.flip_side(moves[-1].side)
+        h = self._cache_key_state(side)
         for mv in moves:
-            kind, mv_side, col, row = self._cache_move_token(mv)
-            h.update(struct.pack("<BBHH", kind, mv_side, col, row))
+            h.update(self._cache_move_bytes(mv))
         return h.digest()
 
     def cache_key_for_applied_moves(self, moves: Sequence[Move]) -> bytes:
         return self._hash_applied_history(moves)
+
+    def _cache_key_states(self):
+        return tuple(self._cache_key_state(side) for side in Side)
+
+    def _append_cache_key(self, states, mv: Move) -> bytes:
+        token = self._cache_move_bytes(mv)
+        for state in states:
+            state.update(token)
+        return states[int(self.flip_side(mv.side))].digest()
 
     def cache_key(self) -> bytes:
         return self._hash_applied_history(self.applied_history())
@@ -130,6 +145,7 @@ class GuiCoreAnalysisMixin:
     def clear_all_cached_analysis(self) -> None:
         self.session.analysis.cache.clear()
         self.session.analysis.root_eval_cache.clear()
+        self.session.analysis.cache_clear_count += 1
         self.cache_reset_sig()
 
     def clear_analysis_caches(self) -> None:
@@ -212,6 +228,7 @@ class GuiCoreAnalysisMixin:
         key = self.cache_key()
         sig = (
             key,
+            frozenset(self.session.analysis.candidate_selection.candidates),
             tuple(
                 (r.move, r.order, r.col, r.row, r.visits, r.winrate, r.prior, r.pv)
                 for r in live

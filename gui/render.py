@@ -364,7 +364,7 @@ class GuiRenderer:
         self._eval_graph_data: Optional[tuple[tuple[Move, ...], tuple[bytes, ...]]] = None
         self._movelist_sig: Optional[tuple] = None
         self._movelist_view = None
-        self._frozen_pv_sig: Optional[Tuple[Optional[Tuple[int, int]], int]] = None
+        self._frozen_pv_sig: Optional[Tuple[Optional[Tuple[int, int]], int, int]] = None
         self._frozen_pv: Optional[Tuple[Tuple[int, int], ...]] = None
         self.apply_window_size(DEFAULT_WIN_W, DEFAULT_WIN_H)
 
@@ -596,10 +596,8 @@ class GuiRenderer:
         if cell is None or (not self.board.is_empty(cell[0], cell[1])):
             cell = None
 
-        sig = (cell, self.board.rev)
-        # Intentionally freeze the displayed PV while hovering the same cell on the
-        # same position to avoid distracting PV flicker as analysis updates stream in.
-        if self._frozen_pv_sig == sig:
+        sig = (cell, self.board.rev, self.session.analysis.cache_clear_count)
+        if self._frozen_pv_sig == sig and self.should_show_pv(self._frozen_pv):
             return self._frozen_pv
         self._frozen_pv_sig = sig
 

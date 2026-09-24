@@ -45,6 +45,8 @@ class AnalysisState:
     cache: dict[bytes, list[AnalysisMove]] = field(default_factory=dict)
     root_eval_cache: dict[bytes, float] = field(default_factory=dict)
     last_cache_sig: Optional[tuple] = None
+    cache_clear_count: int = 0
+    search_count: int = 0
     wide_root_noise: float = 0.04
     mode: AnalysisMode = AnalysisModeTag.OFF
 
