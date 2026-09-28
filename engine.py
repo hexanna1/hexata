@@ -315,6 +315,7 @@ class KataHexEngine:
         self._lock = threading.Lock()
         self._analysis_mute_until_sync = False
         self._analysis_active = False
+        self._analysis_id = 0
         self._param_cache: Dict[str, Union[str, float, int]] = {}
         self._io_lock = threading.Lock()
         self._io_log: List[Tuple[str, str, int]] = []
@@ -325,27 +326,19 @@ class KataHexEngine:
         self._reply_lock = threading.Lock()
         self._raw_nn_capture: Optional[_RawNNCapture] = None
 
-        # KataHex uses a nonstandard GTP-ish dialect. The simplest sync that
-        # works reliably is to mute analysis until the first "=" response after
-        # kata-analyze. We tried more complex schemes (fresh/stale detection,
-        # monotonicity gates, cooldowns), but they were brittle and worse in
-        # practice. This "= handshake" has been stress-tested and never failed.
         def on_line(line: str):
-            if not self._analysis_active:
-                return
-            if self._analysis_mute_until_sync:
-                if line.lstrip().startswith("="):
-                    self._analysis_mute_until_sync = False
-                return
-            recs = parse_kata_analyze_line(
-                line, board_n=self.board_n, game_type=self.game_type
-            )
-            if not recs:
-                return
             with self._lock:
                 if not self._analysis_active:
                     return
-                self._by_move = {r.move: r for r in recs}
+                if self._analysis_mute_until_sync:
+                    if line.strip() == f"={self._analysis_id}":
+                        self._analysis_mute_until_sync = False
+                    return
+                recs = parse_kata_analyze_line(
+                    line, board_n=self.board_n, game_type=self.game_type
+                )
+                if recs:
+                    self._by_move = {r.move: r for r in recs}
 
         self.proc = subprocess.Popen(
             cmd,
@@ -398,7 +391,8 @@ class KataHexEngine:
 
     def stop_analysis(self) -> None:
         # Mark analysis inactive first so late lines get ignored.
-        self._analysis_active = False
+        with self._lock:
+            self._analysis_active = False
         self.cancel_reply_capture()
         self._send("stop")
 
@@ -440,10 +434,13 @@ class KataHexEngine:
                 tokens.append(tok)
             if tokens:
                 parts.extend(["allow", self._engine_side(side), ",".join(tokens), "1"])
-        self._send(" ".join(parts))
-        # Activate analysis and mute until we see the response header.
-        self._analysis_active = True
-        self._analysis_mute_until_sync = True
+        # Arm the reader before sending: the engine may acknowledge immediately.
+        with self._lock:
+            self._analysis_id += 1
+            analysis_id = self._analysis_id
+            self._analysis_active = True
+            self._analysis_mute_until_sync = True
+        self._send(f"{analysis_id} " + " ".join(parts))
 
     def get_analysis(self) -> List[AnalysisMove]:
         with self._lock:
@@ -481,7 +478,7 @@ class KataHexEngine:
     def _reset_analysis_sync(self) -> None:
         with self._lock:
             self._analysis_mute_until_sync = False
-        self._analysis_active = False
+            self._analysis_active = False
 
     def cancel_reply_capture(self) -> None:
         with self._reply_lock:
@@ -496,9 +493,7 @@ class KataHexEngine:
             if cap is None or cap.done:
                 return False
             if not cap.started:
-                # Start only on raw-NN's "= symmetry" header. We cannot key off
-                # any "=" / "?" line because KataHex has no command IDs and
-                # stale replies from earlier commands may appear first.
+                # Earlier commands may still have replies in stdout.
                 if line.lstrip().startswith("= symmetry"):
                     cap.started = True
                     cap.lines.append(line)

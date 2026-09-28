@@ -52,10 +52,8 @@ A lightweight, keyboard-first GUI and CLI for analyzing Hex with the [KataHex](h
 ## Notes on tricky parts
 A few implementation details were tricky to get right and are useful background for understanding the design:
 - Three coordinate systems are in play: GUI board coordinates, engine play coordinates, and KataHex analyze tokens.
-- KataHex uses a nonstandard GTP-ish dialect. The GUI uses a minimal handshake (mute until the first "=" after `kata-analyze`) to keep latency low while avoiding analysis leakage.
 - Swap support was especially tricky. Subtree pruning around moves 1 and 2 means editing either move can make the other collide with later descendants, and those invalid descendants need to be removed without disturbing surviving sibling branches. The inverse problem also appears after transposition: a coordinate that looks duplicated can still be valid because swap moved the opening stone away.
 - Drag-edit branch merging was another tricky case. If a dragged move lands on a sibling move that already exists, the two branches must merge recursively, and sibling order becomes the tie-breaker for which continuation stays preferred.
 
 ## Limitations
-- Only tested on macOS; other platforms or some HiDPI setups may need tweaks.
 - No robust engine error handling or recovery yet, though it hasn’t been an issue in testing.
