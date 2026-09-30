@@ -1002,7 +1002,8 @@ class GuiRenderer:
 
     def get_movelist_view(self):
         tree = self.core.session.tree
-        sig = (tree, tree.signature())
+        # Structural edits replace the tree; navigation changes its cursor.
+        sig = (tree, tree.cursor.id)
         if self._movelist_sig != sig or self._movelist_view is None:
             self._movelist_sig = sig
             self._movelist_view = self.core.build_movelist_view()
@@ -1079,22 +1080,28 @@ class GuiRenderer:
                 column_widths[cell.column] = max(column_widths.get(cell.column, 0), len(cell.label))
         items: list[MovelistItem] = []
         for row in rows[start:end]:
-            ply_label = f"{row.ply}."
-            ply_w = self.text.movelist.font.get_rect(ply_label).width
-            first_node = next((cell.node for cell in row.cells if cell.column == 0), None)
-            # Keep ply labels aligned with horizontally scrolled movelist rows.
-            ply_rect = pygame.Rect(x0 + pad + gutter_w - ply_w - scroll_px, y, ply_w, line_h)
-            items.append(
-                MovelistItem(
-                    label=ply_label,
-                    color=TEXT_ON_LIGHT,
-                    rect=ply_rect,
-                    node=first_node,
-                    hit_rect=ply_rect.move(0, hit_offset_y) if first_node is not None else None,
+            if scroll_px < gutter_w:
+                ply_label = f"{row.ply}."
+                ply_w = self.text.movelist.font.get_rect(ply_label).width
+                first_node = next((cell.node for cell in row.cells if cell.column == 0), None)
+                # Keep ply labels aligned with horizontally scrolled movelist rows.
+                ply_rect = pygame.Rect(x0 + pad + gutter_w - ply_w - scroll_px, y, ply_w, line_h)
+                items.append(
+                    MovelistItem(
+                        label=ply_label,
+                        color=TEXT_ON_LIGHT,
+                        rect=ply_rect,
+                        node=first_node,
+                        hit_rect=ply_rect.move(0, hit_offset_y) if first_node is not None else None,
+                    )
                 )
-            )
             for cell in row.cells:
                 cx = content_x + (cell.column * space_w) - scroll_px
+                if cx >= content_clip_rect.right:
+                    break
+                # Monospace advance bounds the label, with padding for glyph bearings.
+                if cx + (len(cell.label) + 1) * space_w <= content_clip_rect.left:
+                    continue
                 if not cell.played:
                     color = TEXT_MUTED
                 else:
