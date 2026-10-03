@@ -20,7 +20,7 @@ class GuiModuleTests(unittest.TestCase):
         short = AnalysisMove("a1", 0, 1, 1, 0.4, 5, 0.2, ((1, 1),))
         first = AnalysisMove("a1", 0, 1, 1, 0.5, 10, 0.2, ((1, 1), (2, 1)))
         second = AnalysisMove("a1", 0, 1, 1, 0.6, 20, 0.2, ((1, 1), (1, 2)))
-        snapshot = lambda row: AnalysisSnapshot([row] if row else [], [], row, 0)
+        snapshot = lambda row: AnalysisSnapshot([row] if row else [], [], row)
 
         self.assertIsNone(renderer.get_display_pv((1, 1), snapshot(None)))
         self.assertEqual(renderer.get_display_pv((1, 1), snapshot(short)), short.pv)

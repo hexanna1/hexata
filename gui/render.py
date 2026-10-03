@@ -1244,7 +1244,7 @@ class GuiRenderer:
             if len(engine_name) > 12:
                 engine_name = engine_name[:11] + "…"
             engine_tag = f"[{engine_name}] "
-        if ui.speed_vps is not None and ui.speed_vps > 0:
+        if ui.speed_vps is not None:
             vps_text = f"{engine_tag}{fmt_visits(int(ui.speed_vps))}{vps_suffix}"
         else:
             vps_text = f"{engine_tag}–{vps_suffix}"

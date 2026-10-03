@@ -22,7 +22,6 @@ class AnalysisSnapshot:
     active: List[AnalysisMove]
     candidates: List[AnalysisMove]
     best: Optional[AnalysisMove]
-    total_visits: int
 
     @property
     def top_move(self) -> Tuple[Optional[Tuple[int, int]], int]:
@@ -295,7 +294,7 @@ class GuiCoreAnalysisMixin:
                 continue
             if best is None or r.order < best.order:
                 best = r
-        return AnalysisSnapshot(active, candidates, best, sum(r.visits or 0 for r in live))
+        return AnalysisSnapshot(active, candidates, best)
 
     # -------------------- batch analysis --------------------
     def start_batch_analysis(self, *, fast: bool = False) -> None:

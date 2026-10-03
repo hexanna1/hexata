@@ -27,6 +27,8 @@ from gui.render import GuiRenderer
 
 logger = logging.getLogger(__name__)
 GAME_TYPES = tuple(GameType)
+SPEED_HALF_LIFE_SECONDS = 1.0
+SPEED_DISPLAY_INTERVAL_SECONDS = 0.5
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +56,9 @@ class UiState:
     speed_last_t: Optional[float] = None
     speed_last_total: Optional[int] = None
     speed_search_count: Optional[int] = None
+    speed_key: Optional[Tuple[bytes, int]] = None
+    speed_smoothed_vps: Optional[float] = None
+    speed_shown_at: Optional[float] = None
     speed_vps: Optional[float] = None
     swap_click_candidate: bool = False
 
@@ -131,7 +136,37 @@ def _default_engine_index(ui: UiState, game_type: GameType) -> Optional[int]:
 def _reset_engine_speed(ui: UiState) -> None:
     ui.speed_last_t = None
     ui.speed_last_total = None
+    ui.speed_smoothed_vps = None
+    ui.speed_shown_at = None
     ui.speed_vps = None
+    ui.speed_key = None
+
+
+def _update_engine_speed(core: GuiCore, ui: UiState, now: float) -> None:
+    state = core.session.analysis
+    key = (core.cache_key(), state.cache_clear_count)
+    if ui.speed_key != key:
+        _reset_engine_speed(ui)
+        ui.speed_key = key
+    if not state.enabled or ui.speed_search_count != state.search_count:
+        ui.speed_last_t = ui.speed_last_total = None
+        ui.speed_search_count = state.search_count
+    if not state.enabled:
+        return
+    total, reported_at = core.engine.get_analysis_progress()
+    if reported_at is not None and reported_at != ui.speed_last_t:
+        if ui.speed_last_t is not None:
+            elapsed = reported_at - ui.speed_last_t
+            rate = max(0, total - (ui.speed_last_total or 0)) / elapsed
+            blend = 1 - 2 ** (-elapsed / SPEED_HALF_LIFE_SECONDS)
+            average = ui.speed_smoothed_vps
+            ui.speed_smoothed_vps = rate if average is None else average + blend * (rate - average)
+        ui.speed_last_t, ui.speed_last_total = reported_at, total
+    if ui.speed_smoothed_vps is not None and (
+        ui.speed_shown_at is None or now - ui.speed_shown_at >= SPEED_DISPLAY_INTERVAL_SECONDS
+    ):
+        ui.speed_vps = ui.speed_smoothed_vps
+        ui.speed_shown_at = now
 
 
 def _start_engine(profile: EngineProfile, *, board_size: int, engine_echo: bool) -> KataHexEngine:
@@ -611,34 +646,7 @@ def run_gui(
         )
         analysis = core.build_analysis_snapshot()
 
-        search_count = core.session.analysis.search_count
-        if ui.speed_search_count != search_count:
-            _reset_engine_speed(ui)
-            ui.speed_search_count = search_count
-
-        if core.session.analysis.enabled:
-            total_visits = analysis.total_visits
-            if total_visits > 0:
-                if ui.speed_last_t is None:
-                    ui.speed_last_t = now
-                    ui.speed_last_total = total_visits
-                else:
-                    dt = now - ui.speed_last_t
-                    if dt >= 1.0:
-                        dv = total_visits - (ui.speed_last_total or 0)
-                        if dv < 0:
-                            dv = 0
-                        ui.speed_vps = dv / dt if dt > 0 else 0.0
-                        ui.speed_last_t = now
-                        ui.speed_last_total = total_visits
-            else:
-                ui.speed_last_t = None
-                ui.speed_last_total = None
-                ui.speed_vps = None
-        else:
-            ui.speed_last_t = None
-            ui.speed_last_total = None
-            ui.speed_vps = None
+        _update_engine_speed(core, ui, now)
 
         return show_prior, show_coords, analysis
 

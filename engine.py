@@ -175,6 +175,7 @@ class AnalysisMove:
     visits: Optional[int]
     prior: Optional[float]
     pv: Optional[Tuple[Tuple[int, int], ...]]
+    is_symmetry_of: Optional[str] = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -235,6 +236,7 @@ def parse_kata_analyze_line(
                 visits=visits,
                 prior=prior,
                 pv=pv,
+                is_symmetry_of=_get_field(rest, "isSymmetryOf", str),
             )
         )
 
@@ -312,6 +314,7 @@ class KataHexEngine:
         self.board_n = board_size
         self.game_type = game_type
         self._by_move: Dict[str, AnalysisMove] = {}
+        self._analysis_reported_at: Optional[float] = None
         self._lock = threading.Lock()
         self._analysis_mute_until_sync = False
         self._analysis_active = False
@@ -339,6 +342,7 @@ class KataHexEngine:
                 )
                 if recs:
                     self._by_move = {r.move: r for r in recs}
+                    self._analysis_reported_at = time.monotonic()
 
         self.proc = subprocess.Popen(
             cmd,
@@ -383,6 +387,7 @@ class KataHexEngine:
         with self._lock:
             self._analysis_active = False
             self._by_move.clear()
+            self._analysis_reported_at = None
 
     def clear_cache(self) -> None:
         self._reset_analysis_sync()
@@ -447,6 +452,11 @@ class KataHexEngine:
             items = list(self._by_move.values())
         items.sort(key=lambda r: r.order if r.order is not None else 10**9)
         return items
+
+    def get_analysis_progress(self) -> Tuple[int, Optional[float]]:
+        with self._lock:
+            visits = sum(r.visits or 0 for r in self._by_move.values() if r.is_symmetry_of is None)
+            return visits, self._analysis_reported_at
 
     def start_kata_raw_nn(self, symmetry: int = 0) -> bool:
         # KataHex implicitly stops live analysis when running kata-raw-nn, so callers
