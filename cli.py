@@ -24,6 +24,7 @@ from board import (
 from engine import (
     AnalysisMove,
     KataHexEngine,
+    analysis_total_visits,
     board_to_engine_vertex,
     engine_swap_transform_active,
     map_coords_to_engine,
@@ -151,7 +152,7 @@ def _search_payload_from_moves(
     return {
         "method": "search",
         "best": best,
-        "total_visits": _analysis_total_visits(recs),
+        "total_visits": analysis_total_visits(recs),
         "moves": moves,
     }
 
@@ -185,14 +186,12 @@ def _sample_weighted_match_move(
 ) -> Optional[tuple[int, int]]:
     if not moves:
         return None
-    if temp == 0.0:
-        best = max(weights)
+    best = max(weights)
+    if temp == 0.0 or best == 0.0:
         picks = [move for move, weight in zip(moves, weights) if weight == best]
         return picks[rng.randrange(len(picks))]
-    scaled = [weight ** (1.0 / temp) for weight in weights]
+    scaled = [(weight / best) ** (1.0 / temp) for weight in weights]
     total = sum(scaled)
-    if total <= 0.0:
-        return moves[rng.randrange(len(moves))]
     target = rng.random() * total
     upto = 0.0
     for move, weight in zip(moves, scaled):
@@ -223,10 +222,6 @@ def _sample_match_search_move(
         legal.append(key)
         weights.append(float(0 if r.visits is None else max(0, r.visits)))
     return _sample_weighted_match_move(legal, weights, temp=temp, rng=rng)
-
-
-def _analysis_total_visits(recs: list[AnalysisMove]) -> int:
-    return sum(0 if r.visits is None else max(0, r.visits) for r in recs)
 
 
 def _run_match_search_for_seconds(

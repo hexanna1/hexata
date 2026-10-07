@@ -8,7 +8,7 @@ import subprocess
 import math
 import time
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 from board import GameType, Move, MoveKind, Side, coord_to_human, human_letters_to_col
 
@@ -178,6 +178,10 @@ class AnalysisMove:
     is_symmetry_of: Optional[str] = None
 
 
+def analysis_total_visits(recs: Iterable[AnalysisMove]) -> int:
+    return sum(r.visits or 0 for r in recs if r.is_symmetry_of is None)
+
+
 @dataclass(frozen=True, slots=True)
 class RawNNResult:
     white_win: Optional[float]
@@ -296,6 +300,7 @@ def send_line(p: subprocess.Popen, s: str, hook: Optional[Callable[[str], None]]
 
 @dataclass(slots=True)
 class _RawNNCapture:
+    request_id: int
     lines: List[str]
     started: bool = False
     done: bool = False
@@ -327,6 +332,7 @@ class KataHexEngine:
         self._engine_echo = engine_echo
         self._suppress_stderr = suppress_stderr
         self._reply_lock = threading.Lock()
+        self._raw_nn_id = 0
         self._raw_nn_capture: Optional[_RawNNCapture] = None
 
         def on_line(line: str):
@@ -455,7 +461,7 @@ class KataHexEngine:
 
     def get_analysis_progress(self) -> Tuple[int, Optional[float]]:
         with self._lock:
-            visits = sum(r.visits or 0 for r in self._by_move.values() if r.is_symmetry_of is None)
+            visits = analysis_total_visits(self._by_move.values())
             return visits, self._analysis_reported_at
 
     def start_kata_raw_nn(self, symmetry: int = 0) -> bool:
@@ -468,8 +474,10 @@ class KataHexEngine:
             cap = self._raw_nn_capture
             if cap is not None and not cap.done:
                 return False
-            self._raw_nn_capture = _RawNNCapture(lines=[])
-        self._send(f"kata-raw-nn {symmetry}")
+            self._raw_nn_id += 1
+            cap = _RawNNCapture(request_id=self._raw_nn_id, lines=[])
+            self._raw_nn_capture = cap
+        self._send(f"{cap.request_id} kata-raw-nn {symmetry}")
         return True
 
     def poll_kata_raw_nn(self) -> Tuple[bool, Optional[RawNNResult]]:
@@ -504,7 +512,7 @@ class KataHexEngine:
                 return False
             if not cap.started:
                 # Earlier commands may still have replies in stdout.
-                if line.lstrip().startswith("= symmetry"):
+                if line.lstrip().startswith(f"={cap.request_id} symmetry "):
                     cap.started = True
                     cap.lines.append(line)
                 return True

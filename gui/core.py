@@ -376,8 +376,7 @@ class GuiCore(GuiCoreAnalysisMixin):
         return self._assert_never(mv.kind)
 
     def is_swapped_stone_index(self, idx: int) -> bool:
-        moves = self.current_path_moves()
-        return self.swap_active() and idx == 0 and len(moves) >= 2 and moves[1].kind == MoveKind.SWAP
+        return idx == 0 and self.swap_active()
 
     def build_hexworld_url(self) -> str:
         return hexworld.build_position_url(

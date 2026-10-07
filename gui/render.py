@@ -730,11 +730,9 @@ class GuiRenderer:
                     continue
                 ax, ay = coords[0] - 1, coords[1] - 1
                 cx, cy = self.center(ax, ay)
-                txt = "S" if self.core.is_swapped_stone_index(idx) else str(idx + 1)
-                swap_active_here = (
-                    self.core.is_swapped_stone_index(idx)
-                    and history[last_idx].kind == MoveKind.SWAP
-                )
+                is_swapped = self.core.is_swapped_stone_index(idx)
+                txt = "S" if is_swapped else str(idx + 1)
+                swap_active_here = is_swapped and history[last_idx].kind == MoveKind.SWAP
                 if idx == last_idx or swap_active_here:
                     colr = TEXT_ON_DARK
                 else:
